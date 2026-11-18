@@ -153,6 +153,8 @@ public sealed class PlutoLearningService : IDisposable
         public int ThumbsDown { get; set; }
         /// <summary>📈 외부 학습 보너스 XP(SNS 레이더 채널 학습 등).</summary>
         public int BonusXp { get; set; }
+        /// <summary>🎰 성과 패턴 시행 수(돌파 · 부진 · 평균 모두 +1 · 갱신 시 반감기 감쇠 후 재기준 · 구버전 파일 → 0 = <see cref="Interactions"/> 폴백).</summary>
+        public double Trials { get; set; }
     }
 
     /// <summary>🧠 누적 XP = 채택×1 + 내보내기×3 + 👍×1.</summary>
@@ -320,28 +322,97 @@ public sealed class PlutoLearningService : IDisposable
     /// <summary>📈 성과 패턴 기본 가중치(미추적) · 상한.</summary>
     public const double PatternBaseWeight = 1.0, PatternMaxWeight = 2.5;
 
-    /// <summary>📈 성과 패턴 가중치(미추적 → <see cref="PatternBaseWeight"/>).</summary>
-    public double GetPatternWeight(string patternToken)
+    /// <summary>⏳ 성과 패턴 보상 반감기(일) — 최근 텔레메트리가 오래된 이력을 압도.</summary>
+    public const double PatternHalfLifeDays = 14.0;
+
+    /// <summary>🕰️ 결정론 시계 주입(테스트 · 재현용) — 미지정 → <see cref="DateTime.UtcNow"/>. 성과 패턴 감쇠 · 재기준에만 사용.</summary>
+    public Func<DateTime>? UtcNowProvider { get; init; }
+
+    private DateTime PatternNow() => UtcNowProvider?.Invoke() ?? DateTime.UtcNow;
+
+    /// <summary>⏳ 반감기 계수 <c>0.5^(elapsedDays / halfLifeDays)</c> — 기준 시각 미상(default) · 시계 역행 → 1(감쇠 없음).</summary>
+    public static double HalfLifeFactor(DateTime lastUtc, DateTime nowUtc, double halfLifeDays)
     {
-        if (string.IsNullOrWhiteSpace(patternToken)) return PatternBaseWeight;
-        lock (_sync) return _entries.TryGetValue(PatternKeyPrefix + patternToken, out var e) && e.Weight > 0 ? e.Weight : PatternBaseWeight;
+        if (lastUtc == default || !(halfLifeDays > 0)) return 1.0;
+        var days = (nowUtc - lastUtc).TotalDays;
+        return days > 0 ? Math.Pow(0.5, days / halfLifeDays) : 1.0;
     }
 
-    /// <summary>📈 학습된 성과 패턴 스냅샷 — <paramref name="kindPrefix"/>(예: <c>hook:</c>)로 시작하는 토큰 → (접두사 제외 값, 가중치).</summary>
-    public IReadOnlyList<KeyValuePair<string, double>> GetPatternWeights(string kindPrefix)
+    /// <summary>
+    /// ⏳ 성과 패턴 가중치 시간 감쇠 — 기준(1.0) 대비 초과 보상에 <c>w(t) = w0 × 0.5^(Δt / 14일)</c> 적용 → 재확인 없는 과거 승자는 기본 탐색으로 수렴.
+    /// </summary>
+    public static double DecayPatternWeight(double weight, DateTime lastUtc, DateTime nowUtc)
+    {
+        if (!double.IsFinite(weight) || weight <= 0) return PatternBaseWeight;
+        return PatternBaseWeight + (weight - PatternBaseWeight) * HalfLifeFactor(lastUtc, nowUtc, PatternHalfLifeDays);
+    }
+
+    private static double EffectiveTrials(Entry e, DateTime nowUtc)
+    {
+        var raw = e.Trials > 0 && double.IsFinite(e.Trials) ? e.Trials : Math.Max(0, e.Interactions);   // 구버전 → 강화 횟수
+        return raw * HalfLifeFactor(e.LastUtc, nowUtc, PatternHalfLifeDays);
+    }
+
+    /// <summary>📈 성과 패턴 가중치(미추적 → <see cref="PatternBaseWeight"/>) — <paramref name="asOfUtc"/>(null → 주입 시계) 기준 반감기 감쇠 반영.</summary>
+    public double GetPatternWeight(string patternToken, DateTime? asOfUtc = null)
+    {
+        if (string.IsNullOrWhiteSpace(patternToken)) return PatternBaseWeight;
+        var now = asOfUtc ?? PatternNow();
+        lock (_sync) return _entries.TryGetValue(PatternKeyPrefix + patternToken, out var e) && e.Weight > 0 ? DecayPatternWeight(e.Weight, e.LastUtc, now) : PatternBaseWeight;
+    }
+
+    /// <summary>🎰 성과 패턴 유효 시행 수(반감기 감쇠 · 미추적 → 0) — UCB1 불확실성 항의 armTrials.</summary>
+    public double GetPatternTrials(string patternToken, DateTime? asOfUtc = null)
+    {
+        if (string.IsNullOrWhiteSpace(patternToken)) return 0.0;
+        var now = asOfUtc ?? PatternNow();
+        lock (_sync) return _entries.TryGetValue(PatternKeyPrefix + patternToken, out var e) ? EffectiveTrials(e, now) : 0.0;
+    }
+
+    /// <summary>📈 학습된 성과 패턴 스냅샷 — <paramref name="kindPrefix"/>(예: <c>hook:</c>)로 시작하는 토큰 → (접두사 제외 값, 감쇠 반영 가중치).</summary>
+    public IReadOnlyList<KeyValuePair<string, double>> GetPatternWeights(string kindPrefix, DateTime? asOfUtc = null)
     {
         ArgumentNullException.ThrowIfNull(kindPrefix);
         var full = PatternKeyPrefix + kindPrefix;
+        var now = asOfUtc ?? PatternNow();
         var list = new List<KeyValuePair<string, double>>();
         lock (_sync)
             foreach (var kv in _entries)
             {
                 if (!kv.Key.StartsWith(full, StringComparison.Ordinal) || kv.Key.Length == full.Length || kv.Value is null) continue;
-                var w = kv.Value.Weight > 0 && double.IsFinite(kv.Value.Weight) ? kv.Value.Weight : PatternBaseWeight;
-                list.Add(new KeyValuePair<string, double>(kv.Key[full.Length..], w));
+                list.Add(new KeyValuePair<string, double>(kv.Key[full.Length..], DecayPatternWeight(kv.Value.Weight, kv.Value.LastUtc, now)));
             }
         list.Sort(static (a, b) => string.CompareOrdinal(a.Key, b.Key));   // 결정론 순서
         return list;
+    }
+
+    /// <summary>
+    /// 🎰 성과 패턴 시행 기록(부진 · 평균 성과 영상) — 가중치 변화 없이 시행 수만 +1(감쇠 후 재기준) → UCB1이 '검증됐지만 평범한' 후보와 '미검증' 후보를 구분.
+    /// 유효 토큰 0건 → 무변경.
+    /// </summary>
+    public async Task RecordPatternTrialsAsync(IReadOnlyList<string> patternTokens, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(patternTokens);
+        await EnsureLoadedAsync(ct).ConfigureAwait(false);
+        var touched = 0;
+        lock (_sync)
+        {
+            var now = PatternNow();
+            for (var i = 0; i < patternTokens.Count; i++)
+            {
+                var t = patternTokens[i];
+                if (string.IsNullOrWhiteSpace(t)) continue;
+                var key = PatternKeyPrefix + t.Trim();
+                if (!_entries.TryGetValue(key, out var e)) { e = new Entry { Weight = PatternBaseWeight }; _entries[key] = e; }
+                e.Trials = EffectiveTrials(e, now) + 1.0;
+                e.Weight = DecayPatternWeight(e.Weight, e.LastUtc, now);   // 기준 시각 이동 → 가중치도 재기준
+                e.LastUtc = now;
+                touched++;
+            }
+        }
+        if (touched == 0) return;
+        await PersistAsync(ct).ConfigureAwait(false);
+        RaiseChanged();
     }
 
     /// <summary>
@@ -357,14 +428,15 @@ public sealed class PlutoLearningService : IDisposable
         var touched = 0;
         lock (_sync)
         {
-            var now = DateTime.UtcNow;
+            var now = PatternNow();
             for (var i = 0; i < patternTokens.Count; i++)
             {
                 var t = patternTokens[i];
                 if (string.IsNullOrWhiteSpace(t)) continue;
                 var key = PatternKeyPrefix + t.Trim();
                 if (!_entries.TryGetValue(key, out var e)) { e = new Entry { Weight = PatternBaseWeight }; _entries[key] = e; }
-                var basis = e.Weight > 0 ? e.Weight : PatternBaseWeight;
+                var basis = DecayPatternWeight(e.Weight, e.LastUtc, now);   // ⏳ 오래된 보상은 감쇠 후 재강화
+                e.Trials = EffectiveTrials(e, now) + 1.0;
                 e.Weight = Math.Clamp(basis * multiplier, 0.1, PatternMaxWeight);
                 e.Interactions++;
                 e.LastUtc = now;

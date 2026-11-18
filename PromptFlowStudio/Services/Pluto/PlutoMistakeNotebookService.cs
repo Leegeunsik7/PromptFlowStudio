@@ -12,7 +12,7 @@ namespace PromptFlowStudio.Services.Pluto;
 public sealed record PlutoMistakeRuleSnapshot(string PatternKey, string FailureDimension, string DiagnosticReasonKorean, double PenaltyWeight, DateTimeOffset RecordedAtUtc);
 
 /// <summary>
-/// 🛡️ Pluto 오답 노트 — 👎/소프트 스킵 패턴 토큰(바이럴 태그 · 카메라 앵글 · BGM 무드)에 벌점 누적 → 14일 반감기 감쇠 →
+/// 🛡️ Pluto 오답 노트 — 👎/소프트 스킵 패턴 토큰(바이럴 태그 · 카메라 앵글 · BGM 무드)에 벌점 누적 → 21일 반감기 감쇠 →
 /// 슈미트 트리거 히스테리시스(차단 ≥ 1.8 · 해제 &lt; 0.8)로 자율 회피. 👍/채택은 벌점 상쇄.
 /// </summary>
 public interface IPlutoMistakeNotebookService
@@ -48,18 +48,41 @@ public interface IPlutoMistakeNotebookService
     /// <summary>🕊️ 오탐 용서 — 패턴 규칙 제거 + 원자 영속(제거됨 → true · 미추적 → false).</summary>
     Task<bool> RemoveMistakeRuleAsync(string patternKey, CancellationToken ct = default) => Task.FromResult(false);
 
+    /// <summary>⏳ 지정 시각(<paramref name="asOfUtc"/>) 기준 유효 벌점 — 재현 가능한 감쇠 평가(기본 구현 → 현재 시각).</summary>
+    double GetEffectivePenalty(string token, DateTime asOfUtc) => GetEffectivePenalty(token);
+
+    /// <summary>🔗 차단 중 조합 키(<c>pair:</c> · <c>domain_hook:</c>) — 단일 특성 차단 집합(<see cref="GetSuppressedTokens"/>)과 분리.</summary>
+    IReadOnlySet<string> GetSuppressedCompositeKeys() => PlutoMistakeDecayStatus.NoKeys;
+
+    /// <summary>⏳ 시간 감쇠 현황(추적 · 가드 · 회복 중 · 감쇠율 · 다음 자연 해제 예상).</summary>
+    PlutoMistakeDecayStatus GetDecayStatus() => PlutoMistakeDecayStatus.Empty;
+
     /// <summary>상태 변경 통지(백그라운드 스레드 가능).</summary>
     event Action? Changed;
 }
 
 /// <summary>
+/// ⏳ 오답 노트 시간 감쇠 현황 — 추적 토큰 · 활성 가드(조합 키 포함) · 조합 가드 · 회복 중(벌점 잔존 · 비차단) ·
+/// 감쇠로 소멸한 벌점 비율(%) · 반감기 · 가장 가까운 자연 해제까지 남은 일수(가드 없음 → null).
+/// </summary>
+public sealed record PlutoMistakeDecayStatus(int TrackedCount, int ActiveGuardCount, int CompositeGuardCount, int RecoveringCount, double DecayedAwayPct, double HalfLifeDays, double? DaysUntilNextRelease)
+{
+    public static readonly PlutoMistakeDecayStatus Empty = new(0, 0, 0, 0, 0.0, PlutoMistakeNotebookService.HalfLifeDays, null);
+    internal static readonly IReadOnlySet<string> NoKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+}
+
+/// <summary>
 /// 🛡️ <see cref="IPlutoMistakeNotebookService"/> 구현 — <c>pluto_mistake_notebook.json</c>(☁️ Drive 볼트 · 로컬 폴백 · 원자 기록).
-/// 유효 벌점 P_eff(t) = P_raw × 2^(−Δt_days / 14). 원시 벌점은 갱신 시점에 감쇠 반영 후 재기준(LastUtc = now).
+/// 유효 벌점 P_eff(t) = P_raw × 0.5^(Δt_days / 21). 원시 벌점은 갱신 시점에 감쇠 반영 후 재기준(LastUtc = now).
+/// 조합 키(<c>pair:</c> · <c>domain_hook:</c>)는 같은 감쇠·히스테리시스를 따르되 단일 특성 차단 집합 · LLM 부정 제약에는 노출하지 않는다.
 /// </summary>
 public sealed class PlutoMistakeNotebookService : IPlutoMistakeNotebookService, IDisposable
 {
     public const string FileName = "pluto_mistake_notebook.json";
-    public const double HalfLifeDays = 14.0;
+    /// <summary>⏳ 벌점 반감기(일) — 재범 없으면 21일마다 절반으로 감쇠해 점진 복권.</summary>
+    public const double HalfLifeDays = 21.0;
+    /// <summary>회복 중 판정 최소 유효 벌점(미만 → 사실상 소멸).</summary>
+    public const double RecoveringFloor = 0.05;
     public const double BlockThreshold = 1.8;
     public const double ReleaseThreshold = 0.8;
     public const double DislikePenalty = 1.0;
@@ -146,13 +169,13 @@ public sealed class PlutoMistakeNotebookService : IPlutoMistakeNotebookService, 
         public Dictionary<string, Entry>? Entries { get; set; }
     }
 
-    /// <summary>P_eff = P_raw × 2^(−Δt_days / 14) — 음수 Δt(시계 역행) → 감쇠 없음.</summary>
+    /// <summary>P_eff = P_raw × 0.5^(Δt_days / 21) — 음수 Δt(시계 역행) → 감쇠 없음.</summary>
     public static double Decay(double raw, DateTime lastUtc, DateTime nowUtc)
     {
         if (!(raw > 0) || !double.IsFinite(raw)) return 0;
         var days = (nowUtc - lastUtc).TotalDays;
         if (!(days > 0)) return raw;
-        return raw * Math.Pow(2.0, -days / HalfLifeDays);
+        return raw * Math.Pow(0.5, days / HalfLifeDays);
     }
 
     /// <summary>슈미트 트리거 — 해제 상태는 ≥ 차단 임계에서만 차단 · 차단 상태는 &lt; 해제 임계에서만 해제.</summary>
@@ -206,7 +229,9 @@ public sealed class PlutoMistakeNotebookService : IPlutoMistakeNotebookService, 
                 var key = Normalize(raw);
                 if (key is null || !seen.Add(key)) continue;
                 if (!_entries.TryGetValue(key, out var e)) { e = new Entry { Label = key }; _entries[key] = e; }
-                var eff = Decay(e.RawPenalty, e.LastUtc, now) + penaltyWeight;
+                var decayed = Decay(e.RawPenalty, e.LastUtc, now);
+                var settled = NextSuppressedState(e.IsSuppressed, decayed);   // 🩹 감쇠로 이미 해제됐어야 할 낡은 래치를 먼저 정산(조회 유무와 무관한 히스테리시스)
+                var eff = decayed + penaltyWeight;
                 e.RawPenalty = eff;
                 e.LastUtc = now;
                 e.Hits++;
@@ -216,7 +241,7 @@ public sealed class PlutoMistakeNotebookService : IPlutoMistakeNotebookService, 
                     e.FailureDimension = dimension ?? DimensionGeneral;
                     e.DiagnosticReason = DiagnosticReasonFor(e.FailureDimension);
                 }
-                e.IsSuppressed = NextSuppressedState(e.IsSuppressed, eff);
+                e.IsSuppressed = NextSuppressedState(settled, eff);
                 changed++;
             }
         }
@@ -239,8 +264,9 @@ public sealed class PlutoMistakeNotebookService : IPlutoMistakeNotebookService, 
             {
                 var key = Normalize(raw);
                 if (key is null || !seen.Add(key) || !_entries.TryGetValue(key, out var e)) continue;   // 미추적 토큰 → 상쇄 대상 없음
-                var eff = Math.Max(0.0, Decay(e.RawPenalty, e.LastUtc, now) - reliefWeight);
-                e.IsSuppressed = NextSuppressedState(e.IsSuppressed, eff);
+                var decayed = Decay(e.RawPenalty, e.LastUtc, now);
+                var eff = Math.Max(0.0, decayed - reliefWeight);
+                e.IsSuppressed = NextSuppressedState(NextSuppressedState(e.IsSuppressed, decayed), eff);
                 if (eff <= 0 && !e.IsSuppressed) _entries.Remove(key);   // 완전 상쇄 → 노트에서 삭제
                 else { e.RawPenalty = eff; e.LastUtc = now; }
                 changed++;
@@ -251,11 +277,13 @@ public sealed class PlutoMistakeNotebookService : IPlutoMistakeNotebookService, 
         RaiseChanged();
     }
 
-    public double GetEffectivePenalty(string token)
+    public double GetEffectivePenalty(string token) => GetEffectivePenalty(token, _utcNow());
+
+    public double GetEffectivePenalty(string token, DateTime asOfUtc)
     {
         var key = Normalize(token);
         if (key is null) return 0;
-        lock (_sync) return _entries.TryGetValue(key, out var e) ? Decay(e.RawPenalty, e.LastUtc, _utcNow()) : 0;
+        lock (_sync) return _entries.TryGetValue(key, out var e) ? Decay(e.RawPenalty, e.LastUtc, asOfUtc) : 0;
     }
 
     /// <summary>토큰 차단 여부(감쇠 반영 · 해제 임계 미만 → 해제 전이).</summary>
@@ -271,7 +299,12 @@ public sealed class PlutoMistakeNotebookService : IPlutoMistakeNotebookService, 
         }
     }
 
-    public IReadOnlySet<string> GetSuppressedTokens()
+    public IReadOnlySet<string> GetSuppressedTokens() => CollectSuppressed(composite: false);
+
+    public IReadOnlySet<string> GetSuppressedCompositeKeys() => CollectSuppressed(composite: true);
+
+    /// <summary>차단 집합 — 단일 특성 / 조합 키 분리(조합 키가 부분 일치 차단 · LLM 부정 제약에 새지 않도록).</summary>
+    private HashSet<string> CollectSuppressed(bool composite)
     {
         var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         lock (_sync)
@@ -283,10 +316,41 @@ public sealed class PlutoMistakeNotebookService : IPlutoMistakeNotebookService, 
                 var e = kv.Value;
                 if (!e.IsSuppressed) continue;
                 e.IsSuppressed = NextSuppressedState(true, Decay(e.RawPenalty, e.LastUtc, now));   // 반감기 경과 → 자연 해제
-                if (e.IsSuppressed) set.Add(e.Label);
+                if (e.IsSuppressed && PlutoPairAttribution.IsCompositeKey(e.Label) == composite) set.Add(e.Label);
             }
         }
         return set;
+    }
+
+    public PlutoMistakeDecayStatus GetDecayStatus()
+    {
+        int tracked, guards = 0, composite = 0, recovering = 0;
+        double raw = 0, effSum = 0;
+        double? nextRelease = null;
+        lock (_sync)
+        {
+            tracked = _entries.Count;
+            if (tracked == 0) return PlutoMistakeDecayStatus.Empty;
+            var now = _utcNow();
+            foreach (var kv in _entries)
+            {
+                var e = kv.Value;
+                var eff = Decay(e.RawPenalty, e.LastUtc, now);
+                if (double.IsFinite(e.RawPenalty) && e.RawPenalty > 0) { raw += e.RawPenalty; effSum += eff; }
+                if (e.IsSuppressed) e.IsSuppressed = NextSuppressedState(true, eff);
+                if (e.IsSuppressed)
+                {
+                    guards++;
+                    if (PlutoPairAttribution.IsCompositeKey(e.Label)) composite++;
+                    var days = Math.Max(0.0, HalfLifeDays * Math.Log2(eff / ReleaseThreshold));   // eff × 0.5^(d / HL) = 해제 임계
+                    if (nextRelease is null || days < nextRelease.Value) nextRelease = days;
+                }
+                else if (eff >= RecoveringFloor) recovering++;
+            }
+        }
+        var decayedPct = raw > 0 ? Math.Clamp((1.0 - effSum / raw) * 100.0, 0.0, 100.0) : 0.0;
+        return new PlutoMistakeDecayStatus(tracked, guards, composite, recovering, Math.Round(decayedPct, 1, MidpointRounding.AwayFromZero), HalfLifeDays,
+            nextRelease is { } d ? Math.Round(d, 1, MidpointRounding.AwayFromZero) : null);
     }
 
     public string BuildNegativeConstraintPrompt(int maxTokens = 3)
@@ -303,7 +367,7 @@ public sealed class PlutoMistakeNotebookService : IPlutoMistakeNotebookService, 
                 if (!e.IsSuppressed) continue;
                 var eff = Decay(e.RawPenalty, e.LastUtc, now);
                 e.IsSuppressed = NextSuppressedState(true, eff);
-                if (e.IsSuppressed) list.Add((e.Label, eff));
+                if (e.IsSuppressed && !PlutoPairAttribution.IsCompositeKey(e.Label)) list.Add((e.Label, eff));   // 조합 키는 LLM 제약 문구에서 제외
             }
         }
         if (list.Count == 0) return string.Empty;

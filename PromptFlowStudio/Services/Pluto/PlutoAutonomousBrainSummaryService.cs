@@ -7,7 +7,23 @@ namespace PromptFlowStudio.Services.Pluto;
 
 /// <summary>🧠 Pluto 4.6 두뇌 리포트 스냅샷 — 실험 판정/대기 · 챌린저 승률 · 학습 1위 훅/룩/BGM · 오답 노트 차단 수 · 다음 가설 배너.</summary>
 public sealed record PlutoBrainSummarySnapshot(int TotalEvaluatedExperiments, int PendingExperimentsCount, double ChallengerWinRatePct, string TopHookLabel, string TopLookLabel,
-    string TopBgmLabel, int ActiveMistakeGuardCount, string NextHypothesisBanner);
+    string TopBgmLabel, int ActiveMistakeGuardCount, string NextHypothesisBanner)
+{
+    /// <summary>🔗 최강 시너지 조합 라벨(<c>훅 × 룩</c>) — 없음 → <see cref="PlutoAutonomousBrainSummaryService.NoneLabel"/>.</summary>
+    public string TopSynergyPairLabel { get; init; } = PlutoAutonomousBrainSummaryService.NoneLabel;
+    /// <summary>🔗 최강 시너지 조합 점수(조합 배수 × 감점 반영 · 없음 → 1.0).</summary>
+    public double TopSynergyScore { get; init; } = 1.0;
+    /// <summary>🎰 UCB1 탐색 비중(%) — 훅 + 룩 결정 점수 중 불확실성 보너스가 차지하는 몫.</summary>
+    public double ExplorationRatePct { get; init; }
+    /// <summary>🎰 탐색 후보 수(비감점 · 덜 검증된 훅 + 룩).</summary>
+    public int ExplorationCandidateCount { get; init; }
+    /// <summary>🎰 누적 유효 시행 수(14일 반감기 감쇠 반영).</summary>
+    public double TotalBanditTrials { get; init; }
+    /// <summary>⏳ 오답 노트 시간 감쇠 현황.</summary>
+    public PlutoMistakeDecayStatus MistakeDecay { get; init; } = PlutoMistakeDecayStatus.Empty;
+    /// <summary>⏳ 오답 노트 감쇠 상태 1줄(결정론 한국어).</summary>
+    public string MistakeDecayLabel { get; init; } = PlutoAutonomousBrainSummaryService.NoneLabel;
+}
 
 /// <summary>🧠 Pluto 4.6 자율 두뇌 텔레메트리 요약 — 실험 장부 × 적응형 랭커 × 오답 노트 집계.</summary>
 public interface IPlutoAutonomousBrainSummaryService
@@ -41,6 +57,9 @@ public sealed class PlutoAutonomousBrainSummaryService : IPlutoAutonomousBrainSu
         ct.ThrowIfCancellationRequested();
         int evaluated = 0, pending = 0, challengerWins = 0, guards = 0;
         string hook = NoneLabel, look = NoneLabel, bgm = NoneLabel;
+        PlutoPairSynergy? topPair = null;
+        var explore = PlutoExplorationTelemetry.Empty;
+        var decay = PlutoMistakeDecayStatus.Empty;
 
         if (_ledger is not null)
         {
@@ -63,6 +82,7 @@ public sealed class PlutoAutonomousBrainSummaryService : IPlutoAutonomousBrainSu
             {
                 await _notebook.EnsureLoadedAsync(ct).ConfigureAwait(false);
                 guards = _notebook.GetSuppressedTokens().Count;
+                decay = _notebook.GetDecayStatus() ?? PlutoMistakeDecayStatus.Empty;
             }
             catch (OperationCanceledException) { throw; }
             catch (Exception ex) { Program.Log("Pluto.BrainSummary.Notebook", ex); }
@@ -77,13 +97,35 @@ public sealed class PlutoAutonomousBrainSummaryService : IPlutoAutonomousBrainSu
                 hook = Label(rec.TopHook);
                 look = Label(rec.TopColorLook);
                 bgm = Label(rec.TopBgmMood);
+                topPair = _ranker.GetTopSynergyPair();
+                explore = _ranker.GetExplorationTelemetry() ?? PlutoExplorationTelemetry.Empty;
             }
             catch (OperationCanceledException) { throw; }
             catch (Exception ex) { Program.Log("Pluto.BrainSummary.Ranker", ex); }
         }
 
         var winRate = evaluated > 0 ? Math.Round(challengerWins * 100.0 / evaluated, 1, MidpointRounding.AwayFromZero) : 0.0;
-        return new PlutoBrainSummarySnapshot(evaluated, pending, winRate, hook, look, bgm, guards, BuildHypothesisBanner(evaluated, pending, winRate, hook, look, bgm, guards));
+        return new PlutoBrainSummarySnapshot(evaluated, pending, winRate, hook, look, bgm, guards, BuildHypothesisBanner(evaluated, pending, winRate, hook, look, bgm, guards))
+        {
+            TopSynergyPairLabel = topPair is null ? NoneLabel : topPair.First + " × " + topPair.Second,
+            TopSynergyScore = topPair?.Score ?? 1.0,
+            ExplorationRatePct = explore.ExplorationRatePct,
+            ExplorationCandidateCount = explore.ExplorationCandidateCount,
+            TotalBanditTrials = explore.TotalTrials,
+            MistakeDecay = decay,
+            MistakeDecayLabel = BuildDecayLabel(decay),
+        };
+    }
+
+    /// <summary>⏳ 오답 노트 감쇠 상태 1줄(결정론) — 추적 0 → "기록 없음".</summary>
+    public static string BuildDecayLabel(PlutoMistakeDecayStatus? status)
+    {
+        if (status is null || status.TrackedCount == 0) return "기록 없음 · 반감기 " + PlutoMistakeNotebookService.HalfLifeDays.ToString("0", Inv) + "일";
+        var s = "추적 " + status.TrackedCount.ToString(Inv) + " · 가드 " + status.ActiveGuardCount.ToString(Inv);
+        if (status.CompositeGuardCount > 0) s += "(조합 " + status.CompositeGuardCount.ToString(Inv) + ")";
+        s += " · 회복 중 " + status.RecoveringCount.ToString(Inv) + " · 감쇠 −" + status.DecayedAwayPct.ToString("0.#", Inv) + "% · 반감기 " + status.HalfLifeDays.ToString("0", Inv) + "일";
+        if (status.DaysUntilNextRelease is { } d) s += " · 다음 자연 해제 ≈ " + d.ToString("0.#", Inv) + "일";
+        return s;
     }
 
     private static string Label(PlutoRankedOption? o)

@@ -126,6 +126,10 @@
                     <span class="ws-retry" data-brain-winrate="@(bs.ChallengerWinRatePct.ToString("0.#", CultureInfo.InvariantCulture))">⚔️ 챌린저 승률 @(bs.ChallengerWinRatePct.ToString("0.#", CultureInfo.InvariantCulture))%</span>
                     <span class="ws-retry" data-brain-guards="@(bs.ActiveMistakeGuardCount.ToString(CultureInfo.InvariantCulture))">🛡️ 오답 가드 @(bs.ActiveMistakeGuardCount.ToString(CultureInfo.InvariantCulture))개</span>
                     <span class="ws-pcore on" data-brain-hypothesis="1" style="white-space:normal">💡 @(bs.NextHypothesisBanner)</span>
+                    @* 🔗 최강 시너지 조합 · 🎰 UCB1 탐색 · ⏳ 오답 노트 시간 감쇠 *@
+                    <span class="@(bs.TopSynergyScore > 1.0 ? "ws-pcore on" : "ws-retry")" data-brain-synergy="@(bs.TopSynergyPairLabel)" style="white-space:normal" title="훅 × 룩 조합 키(pair:) 학습 배수 × 조합 감점 반영 — 14일 반감기 감쇠">🔗 최강 시너지 조합: @(bs.TopSynergyPairLabel) · ×@(bs.TopSynergyScore.ToString("0.00", CultureInfo.InvariantCulture))</span>
+                    <span class="ws-retry" data-brain-explore="@(bs.ExplorationRatePct.ToString("0.#", CultureInfo.InvariantCulture))" title="UCB1 = 사후 평균 + C·√(ln(전체 시행+1)/(시행+1)) — 덜 검증된 훅·룩을 챌린저 B와 탐색 기획안에 배정">🎰 UCB1 탐색 @(bs.ExplorationRatePct.ToString("0.#", CultureInfo.InvariantCulture))% · 후보 @(bs.ExplorationCandidateCount.ToString(CultureInfo.InvariantCulture))개 · 시행 @(bs.TotalBanditTrials.ToString("0.#", CultureInfo.InvariantCulture))회</span>
+                    <span class="ws-retry" data-brain-decay="@(bs.MistakeDecay.RecoveringCount.ToString(CultureInfo.InvariantCulture))" style="white-space:normal" title="오답 노트 벌점은 21일 반감기로 감쇠 — 재범이 없으면 자연 복권">⏳ 오답 노트 감쇠: @(bs.MistakeDecayLabel)</span>
                     @* 🛡️ 오답 노트 활성 가드 인스펙터 — 패턴 · 유효 벌점 · 진단 사유 · [해제](오탐 용서) *@
                     <div class="ws-brain-guards" data-mistake-inspector="@(_mistakeRules.Count.ToString(CultureInfo.InvariantCulture))" style="flex-basis:100%;display:flex;flex-wrap:wrap;gap:4px;align-items:center;font-size:12px">
                         <span class="ws-retry">🛡️ 오답 노트 활성 가드</span>
@@ -3296,7 +3300,7 @@
             var tags = string.IsNullOrWhiteSpace(_perfStyleTags) ? ActiveViralTagsSafe(3) : SplitPerfTags(_perfStyleTags);
             var telemetry = new PromptFlowStudio.Services.Pluto.PlutoVideoPerformanceTelemetry(videoId, _perfPlatform, hook, look,
                 bgm, tags,
-                _perfHook, _perfCompletion, _perfCtr, DateTimeOffset.UtcNow);
+                _perfHook, _perfCompletion, _perfCtr, DateTimeOffset.UtcNow) { Domain = PromptDomain.ToString() };   // 🧭 domain_hook 상호작용 키
             _perfOutcome = await svc.IngestPerformanceAsync(telemetry, _mediaCts.Token);
             _snsToast = null;
             try

@@ -35,7 +35,7 @@ public sealed class Pluto42FeatureUpgradeTests : IDisposable
     {
         var learningPath = Path.Combine(_dir, "trend.json");
         var storage = Storage();
-        using var learning = new PlutoLearningService(learningPath);
+        using var learning = new PlutoLearningService(learningPath) { UtcNowProvider = static () => new DateTime(2026, 11, 1, 0, 0, 0, DateTimeKind.Utc) };   // ⏳ 고정 시계 — 14일 반감기 감쇠와 무관한 정확 비교
         using var notebook = new PlutoMistakeNotebookService(Path.Combine(_dir, "nb.json"));
         using var svc = new PlutoClosedLoopReinforcementService(learning, notebook, storage);
         var raised = 0;
@@ -77,7 +77,7 @@ public sealed class Pluto42FeatureUpgradeTests : IDisposable
         Assert.Equal(r.XpDelta + 6 * PlutoClosedLoopReinforcementService.MaxXp, learning.CurrentXP);
 
         // 원자 영속 → 재적재 시 가중치 · XP 보존
-        using var reloaded = new PlutoLearningService(learningPath);
+        using var reloaded = new PlutoLearningService(learningPath) { UtcNowProvider = static () => new DateTime(2026, 11, 1, 0, 0, 0, DateTimeKind.Utc) };
         await reloaded.EnsureLoadedAsync();
         Assert.Equal(PlutoLearningService.PatternMaxWeight, reloaded.GetPatternWeight("hook:0.5초 휩줌 훅"), 9);
         Assert.Equal(learning.CurrentXP, reloaded.CurrentXP);

@@ -16,6 +16,8 @@ public sealed record PlutoTrendOpportunityBrief(string BriefId, string Title, st
     public bool UsedLlm { get; init; }
     /// <summary>트렌드 출처(<c>live</c> · <c>memory</c> · <c>seasonal</c>).</summary>
     public string Source { get; init; } = PlutoTrendOpportunityEngine.SourceSeasonal;
+    /// <summary>🎰 탐색 기획안 — 검증된 승자 대신 UCB1 최상위(덜 검증된) 훅/룩을 배정.</summary>
+    public bool IsExploration { get; init; }
 }
 
 /// <summary>🔭 Pluto 4.3 자율 트렌드 기회 레이더 — 트렌드 × 학습 랭커 × 오답 노트 → 일일 기획안.</summary>
@@ -33,6 +35,7 @@ public interface IPlutoTrendOpportunityEngine
 ///   ▸ 트렌드 우선순위: 하베스터 실시간 캐시 → 웹 수집기(<see cref="LiveFetchTimeout"/>) → 학습 메모리 활성 바이럴 태그 → 시즌/상시 폴백.
 ///   ▸ 차단: 오답 노트 차단 토큰과 양방향 부분 일치(대소문자 무시) 또는 유효 벌점 ≥ <see cref="PlutoMistakeNotebookService.BlockThreshold"/>.
 ///   ▸ LLM 응답은 스키마 즉시 검증 · 차단 토큰 포함/길이 초과 필드는 템플릿 유지.
+///   ▸ 🎰 활용/탐색 균형: 2건 이상이면 마지막 1건은 UCB1 최상위 덜 검증된 훅/룩의 탐색 기획안(탐색 이력 없음 → 전부 활용) · 🔗 역시너지 훅×룩 조합 회피.
 /// </summary>
 public sealed class PlutoTrendOpportunityEngine : IPlutoTrendOpportunityEngine
 {
@@ -139,12 +142,27 @@ public sealed class PlutoTrendOpportunityEngine : IPlutoTrendOpportunityEngine
         {
             var (kw, source) = picked[i];
             var hook = ResolveHook(ranker, rec, kw, suppressed, out var hookSkipped, out var hookReinforced);
+            var briefLook = look;
+            var exploration = false;
+            if (briefs.Length >= 2 && i == briefs.Length - 1)   // 🎰 마지막 1건 = 탐색 슬롯(이력 없으면 활용 유지)
+            {
+                var exHook = PickExplorationHook(ranker, kw, hook, suppressed);
+                var exLook = PickExplorationLook(ranker, look, suppressed);
+                if (exHook is not null) { hook = exHook; hookReinforced = false; exploration = true; }
+                if (exLook is not null) { briefLook = exLook; exploration = true; }
+            }
+            var synergyAvoided = 0;
+            if (IsAntiSynergy(ranker, hook, briefLook))   // 🔗 역시너지 조합 → 대체 룩
+            {
+                var alt = PickSynergySafeLook(ranker, looks, hook, briefLook, suppressed);
+                if (alt is not null) { briefLook = alt; synergyAvoided = 1; }
+            }
             var platform = Platforms[i % Platforms.Length];
             var title = BuildTemplateTitle(kw, i);
-            var prompt = BuildTemplatePrompt(kw, hook, look, bgm, platform, negative);
-            var badge = BuildBadge(source, hookReinforced, rec, false);
-            briefs[i] = new PlutoTrendOpportunityBrief("brief-" + date + "-" + Fnv(kw).ToString("x8", Inv), title, kw, platform, prompt, hook, look, bgm, badge,
-                avoidedKeywords + hookSkipped + lookSkipped + bgmSkipped) { Source = source };
+            var prompt = BuildTemplatePrompt(kw, hook, briefLook, bgm, platform, negative);
+            var badge = BuildBadge(source, hookReinforced, rec, false, exploration);
+            briefs[i] = new PlutoTrendOpportunityBrief("brief-" + date + "-" + Fnv(kw).ToString("x8", Inv), title, kw, platform, prompt, hook, briefLook, bgm, badge,
+                avoidedKeywords + hookSkipped + lookSkipped + bgmSkipped + synergyAvoided) { Source = source, IsExploration = exploration };
         }
 
         if (briefs.Length > 0 && _llm is not null)
@@ -253,6 +271,58 @@ public sealed class PlutoTrendOpportunityEngine : IPlutoTrendOpportunityEngine
         return rec?.TopHook.DisplayLabel ?? PlutoMontageStoryGenerator.TemplateHookLines(keyword)[0];
     }
 
+    // ── 🎰 탐색 · 🔗 조합 ──
+
+    /// <summary>🎰 탐색 훅 — 키워드 테마 훅 + 활용 훅을 한 풀로 UCB1 랭킹 → 활용 훅이 아닌 첫 비감점 · 비차단 · 덜 검증된(보너스 &gt; 0) 후보(없음 → null).</summary>
+    private string? PickExplorationHook(IPlutoAdaptivePatternRanker ranker, string keyword, string exploitHook, IReadOnlySet<string>? suppressed)
+    {
+        try
+        {
+            var themed = PlutoMontageStoryGenerator.TemplateHookLines(keyword);
+            var pool = new List<string>(themed.Count + 1);
+            for (var i = 0; i < themed.Count; i++) pool.Add(themed[i]);
+            pool.Add(exploitHook);
+            return FirstExplorationCandidate(ranker.RankForExploration(PlutoPatternKind.Hook, pool), exploitHook, suppressed);
+        }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Opportunity] explore hook: " + ex.Message); return null; }
+    }
+
+    private string? PickExplorationLook(IPlutoAdaptivePatternRanker ranker, string exploitLook, IReadOnlySet<string>? suppressed)
+    {
+        try { return FirstExplorationCandidate(ranker.RankForExploration(PlutoPatternKind.Look), exploitLook, suppressed); }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Opportunity] explore look: " + ex.Message); return null; }
+    }
+
+    private string? FirstExplorationCandidate(IReadOnlyList<PlutoRankedOption> ranked, string exploit, IReadOnlySet<string>? suppressed)
+    {
+        for (var i = 0; i < ranked.Count; i++)
+        {
+            var o = ranked[i];
+            if (string.Equals(o.DisplayLabel, exploit, StringComparison.Ordinal)) continue;
+            if (o.ExplorationBonus <= PlutoAdaptivePatternRanker.Epsilon || o.ArmTrials >= PlutoAdaptivePatternRanker.UnderSampledTrials) continue;
+            if (o.IsPenalized || IsBlocked(o.DisplayLabel, suppressed)) continue;
+            return o.DisplayLabel;
+        }
+        return null;
+    }
+
+    private static bool IsAntiSynergy(IPlutoAdaptivePatternRanker ranker, string hook, string look)
+    {
+        try { return ranker.GetPairSynergy(hook, look) is { IsAntiSynergy: true }; }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Opportunity] synergy: " + ex.Message); return false; }
+    }
+
+    private string? PickSynergySafeLook(IPlutoAdaptivePatternRanker ranker, IReadOnlyList<PlutoRankedOption> looks, string hook, string current, IReadOnlySet<string>? suppressed)
+    {
+        for (var i = 0; i < looks.Count; i++)
+        {
+            var o = looks[i];
+            if (string.Equals(o.DisplayLabel, current, StringComparison.Ordinal) || o.IsPenalized || IsBlocked(o.DisplayLabel, suppressed)) continue;
+            if (!IsAntiSynergy(ranker, hook, o.DisplayLabel)) return o.DisplayLabel;
+        }
+        return null;
+    }
+
     // ── 📝 템플릿 ──
 
     private static readonly string[] TitlePatterns = { "{0}, 15초로 담은 우리 이야기", "지금 뜨는 {0} 감성 몽타주", "{0} 모먼트 하이라이트" };
@@ -273,10 +343,11 @@ public sealed class PlutoTrendOpportunityEngine : IPlutoTrendOpportunityEngine
         return sb.Length > MaxPromptLength ? sb.ToString(0, MaxPromptLength) : sb.ToString();
     }
 
-    private static string BuildBadge(string source, bool hookReinforced, PlutoAdaptiveRecommendation? rec, bool llm)
+    private static string BuildBadge(string source, bool hookReinforced, PlutoAdaptiveRecommendation? rec, bool llm, bool exploration = false)
     {
         var s = source switch { SourceLive => "🔥 실시간 급상승", SourceMemory => "🧠 트렌드 메모리", _ => "🌱 시즌·상시 기획" };
-        if (hookReinforced && rec is not null) s += " · 학습 훅 ×" + rec.TopHook.LearnedWeightMultiplier.ToString("0.00", Inv);
+        if (exploration) s += " · 🎰 탐색 기획";
+        else if (hookReinforced && rec is not null) s += " · 학습 훅 ×" + rec.TopHook.LearnedWeightMultiplier.ToString("0.00", Inv);
         else if (rec is { HasReinforcedHistory: true }) s += " · 🧠 학습 반영";
         return s + (llm ? " · AI" : " · 템플릿");
     }
@@ -322,7 +393,7 @@ public sealed class PlutoTrendOpportunityEngine : IPlutoTrendOpportunityEngine
                 {
                     Title = title ?? b.Title,
                     ReadyPrompt = prompt is null ? b.ReadyPrompt : EnsureDirectives(prompt, b),
-                    RationaleBadge = BuildBadge(b.Source, b.RationaleBadge.Contains("학습 훅", StringComparison.Ordinal), rec, true),
+                    RationaleBadge = BuildBadge(b.Source, b.RationaleBadge.Contains("학습 훅", StringComparison.Ordinal), rec, true, b.IsExploration),
                     UsedLlm = true,
                 };
                 any = true;

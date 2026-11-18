@@ -16,13 +16,21 @@ public sealed record PlutoVariantABPlan(string ExperimentId, string ThemeHint, P
     /// <summary>유효 실험(훅 또는 룩이 다름).</summary>
     public bool IsValidExperiment => !string.Equals(ChampionA.HookStyle, ChallengerB.HookStyle, StringComparison.Ordinal)
                                      || !string.Equals(ChampionA.ColorLookId, ChallengerB.ColorLookId, StringComparison.Ordinal);
+    /// <summary>🎰 챌린저 훅/룩 중 최대 UCB1 탐색 보너스(0 → 탐색 이력 없음 · 활용 차순위).</summary>
+    public double ChallengerExplorationBonus { get; init; }
+    /// <summary>🎰 챌린저가 덜 검증된 후보(탐색 보너스 &gt; 0)로 배정됨.</summary>
+    public bool IsExplorationChallenger => ChallengerExplorationBonus > PlutoAdaptivePatternRanker.Epsilon;
+    /// <summary>🔗 챔피언 훅 × 룩 조합 시너지 점수(이력 없음 → 1.0).</summary>
+    public double ChampionSynergyScore { get; init; } = 1.0;
+    /// <summary>🔗 챌린저 훅 × 룩 조합 시너지 점수(이력 없음 → 1.0).</summary>
+    public double ChallengerSynergyScore { get; init; } = 1.0;
 }
 
 /// <summary>⚖️ Pluto 4.3 통제 A/B 변형 생성기.</summary>
 public interface IPlutoVariantABGenerator
 {
     /// <summary>
-    /// ⚖️ 챔피언 A = 랭커 1위 훅·룩·BGM · 챌린저 B = 오답 노트 감점 제외 차순위 탐색 후보.
+    /// ⚖️ 챔피언 A = 랭커 1위 훅·룩·BGM(강한 조합 시너지 반영) · 챌린저 B = 오답 노트 감점 제외 UCB1 최상위(덜 검증된) 탐색 후보 · 역시너지 조합 회피.
     /// 몽타주 플랜 제공 시 양 변형 자막은 동일 컷 구간(<see cref="PlutoMontageStoryGenerator.ComputeCueWindows"/>)에 정렬 · Act 1은 각 변형 훅.
     /// 호출자 취소만 전파 · 그 외 실패 → 결정론 템플릿.
     /// </summary>
@@ -41,6 +49,8 @@ public sealed class PlutoVariantABGenerator : IPlutoVariantABGenerator
     internal static readonly (double Start, double End)[] NominalWindows = { (0.20, 4.95), (5.05, 9.95), (10.05, 14.70) };
 
     private static readonly string[] ExcludedBgmMoods = { "custom", "none" };
+    /// <summary>🔗 챔피언 조합 탐색 시 고려할 상위 훅 수.</summary>
+    public const int SynergyHookDepth = 4;
 
     private readonly IPlutoAdaptivePatternRanker? _ranker;
     private readonly IPlutoMontageStoryGenerator? _story;
@@ -79,17 +89,30 @@ public sealed class PlutoVariantABGenerator : IPlutoVariantABGenerator
         }
         catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.AB] ranker: " + ex.Message); }   // [부분 구제] 템플릿 기본값
 
+        // 🎰 탐색 순위(UCB1) — 실패 시 활용 순위로 [부분 구제]
+        IReadOnlyList<PlutoRankedOption> exploreHooks = hooks, exploreLooks = looks;
+        try
+        {
+            exploreHooks = ranker.RankForExploration(PlutoPatternKind.Hook);
+            exploreLooks = ranker.RankForExploration(PlutoPatternKind.Look);
+        }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.AB] explore: " + ex.Message); exploreHooks = hooks; exploreLooks = looks; }
+
+        var domain = PromptDomainClassifier.Classify(themeHint).ToString();
         var themeHooks = PlutoMontageStoryGenerator.TemplateHookLines(themeHint);
         var champHook = rec?.TopHook.DisplayLabel ?? themeHooks[0];
         var champLook = rec?.TopColorLook.DisplayLabel ?? PlutoColorGradingCompiler.NaturalPastelName;
         var champBgm = FirstUsable(bgms, rec?.TopBgmMood.DisplayLabel, ExcludedBgmMoods) ?? BabyBgmTrack.Lullaby.ToString();
+        var champSynergy = PromoteSynergisticChampion(ranker, hooks, looks, domain, ref champHook, ref champLook);   // 🔗 강한 조합 시너지 → 챔피언 승격
 
-        // 🧪 챌린저 — 감점·차단 제외 차순위(테마 훅 우선) · 훅/룩 차이 보장
-        var challHook = PickChallenger(PreferThemed(hooks, themeHooks), champHook, null, suppressed) ?? AlternateTemplateHook(themeHooks, champHook);
-        var challLook = PickChallenger(looks, champLook, null, suppressed) ?? AlternateLook(champLook);
+        // 🧪 챌린저 — 감점·차단 제외 UCB1 최상위(테마 훅 우선 · 덜 검증된 후보 우대) · 역시너지 조합 회피 · 훅/룩 차이 보장
+        var challHook = PickChallenger(PreferThemed(WithoutDomainAntiSynergy(ranker, exploreHooks, domain), themeHooks), champHook, null, suppressed) ?? AlternateTemplateHook(themeHooks, champHook);
+        var challLook = PickChallengerLook(ranker, exploreLooks, champLook, challHook, suppressed) ?? AlternateLook(champLook);
         var challBgm = PickChallenger(bgms, champBgm, ExcludedBgmMoods, suppressed) ?? champBgm;
         if (string.Equals(champHook, challHook, StringComparison.Ordinal) && string.Equals(champLook, challLook, StringComparison.Ordinal))
             challLook = AlternateLook(champLook);   // 불변식 최종 가드
+        var challBonus = Math.Max(BonusOf(exploreHooks, challHook), BonusOf(exploreLooks, challLook));
+        var challSynergy = SafeSynergy(ranker, challHook, challLook).Score;
 
         // 💬 3막 자막 — 동일 컷 구간 · Act 1 = 변형 훅
         var champTask = BuildSubtitlesAsync(montagePlan, curatedCuts, themeHint, champHook, suppressed, ranker, ct);
@@ -99,7 +122,113 @@ public sealed class PlutoVariantABGenerator : IPlutoVariantABGenerator
 
         var a = new PlutoExperimentVariant(ChampionLabel, champHook, champLook, champBgm, BuildSuffix(champHook, champLook, champBgm), champTask.Result);
         var b = new PlutoExperimentVariant(ChallengerLabel, challHook, challLook, challBgm, BuildSuffix(challHook, challLook, challBgm), challTask.Result);
-        return new PlutoVariantABPlan(_idFactory(), themeHint, a, b, BuildHypothesis(a, b, rec));
+        var hypothesis = BuildHypothesis(a, b, rec);
+        if (challBonus > PlutoAdaptivePatternRanker.Epsilon) hypothesis += " · 🎰 UCB1 탐색 보너스 +" + challBonus.ToString("0.00", CultureInfo.InvariantCulture) + "(덜 검증된 후보)";
+        if (champSynergy >= PlutoPairAttribution.StrongSynergyScore) hypothesis += " · 🔗 챔피언 조합 시너지 ×" + champSynergy.ToString("0.00", CultureInfo.InvariantCulture);
+        return new PlutoVariantABPlan(_idFactory(), themeHint, a, b, hypothesis)
+        {
+            ChallengerExplorationBonus = challBonus,
+            ChampionSynergyScore = champSynergy,
+            ChallengerSynergyScore = challSynergy,
+        };
+    }
+
+    // ── 🔗 조합 시너지 · 🎰 탐색 ──
+
+    private static PlutoPairSynergy SafeSynergy(IPlutoAdaptivePatternRanker ranker, string hook, string look)
+    {
+        try { return ranker.GetPairSynergy(hook, look) ?? PlutoPairSynergy.Neutral; }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.AB] synergy: " + ex.Message); return PlutoPairSynergy.Neutral; }
+    }
+
+    private static PlutoPairSynergy SafeDomainSynergy(IPlutoAdaptivePatternRanker ranker, string domain, string hook)
+    {
+        try { return ranker.GetDomainHookSynergy(domain, hook) ?? PlutoPairSynergy.Neutral; }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.AB] domain synergy: " + ex.Message); return PlutoPairSynergy.Neutral; }
+    }
+
+    /// <summary>
+    /// 🔗 챔피언 조합 승격 — 상위 <see cref="SynergyHookDepth"/> 비감점 훅 × 비감점 룩에서 <c>훅 점수 × 룩 점수 × 조합 시너지 × 도메인 시너지</c>가
+    /// 현재 챔피언(1위 훅 × 1위 룩)보다 엄격히 큰 조합이 있으면 교체. 조합 이력 없음 → 모든 시너지 1.0 → 무변경. 반환 = 최종 챔피언 조합 시너지 점수.
+    /// </summary>
+    private static double PromoteSynergisticChampion(IPlutoAdaptivePatternRanker ranker, IReadOnlyList<PlutoRankedOption> hooks, IReadOnlyList<PlutoRankedOption> looks,
+        string domain, ref string champHook, ref string champLook)
+    {
+        var current = SafeSynergy(ranker, champHook, champLook).Score;
+        var best = ScoreOf(hooks, champHook) * ScoreOf(looks, champLook) * current * SafeDomainSynergy(ranker, domain, champHook).Score;
+        var bestSynergy = current;
+        var depth = 0;
+        for (var i = 0; i < hooks.Count && depth < SynergyHookDepth; i++)
+        {
+            var h = hooks[i];
+            if (h.IsPenalized) continue;
+            depth++;
+            var dom = SafeDomainSynergy(ranker, domain, h.DisplayLabel).Score;
+            for (var k = 0; k < looks.Count; k++)
+            {
+                var l = looks[k];
+                if (l.IsPenalized) continue;
+                var syn = SafeSynergy(ranker, h.DisplayLabel, l.DisplayLabel).Score;
+                var score = h.FinalScore * l.FinalScore * syn * dom;
+                if (score > best + PlutoAdaptivePatternRanker.Epsilon)
+                {
+                    best = score;
+                    bestSynergy = syn;
+                    champHook = h.DisplayLabel;
+                    champLook = l.DisplayLabel;
+                }
+            }
+        }
+        return bestSynergy;
+    }
+
+    private static double ScoreOf(IReadOnlyList<PlutoRankedOption> ranked, string label)
+    {
+        for (var i = 0; i < ranked.Count; i++) if (string.Equals(ranked[i].DisplayLabel, label, StringComparison.Ordinal)) return ranked[i].FinalScore;
+        return 1.0;
+    }
+
+    private static double BonusOf(IReadOnlyList<PlutoRankedOption> ranked, string label)
+    {
+        for (var i = 0; i < ranked.Count; i++) if (string.Equals(ranked[i].DisplayLabel, label, StringComparison.Ordinal)) return ranked[i].ExplorationBonus;
+        return 0.0;
+    }
+
+    /// <summary>🔗 현재 도메인에서 역시너지(<c>domain_hook:</c> 감점)인 훅 제외 — 전부 제외되면 원본 유지.</summary>
+    private static IReadOnlyList<PlutoRankedOption> WithoutDomainAntiSynergy(IPlutoAdaptivePatternRanker ranker, IReadOnlyList<PlutoRankedOption> hooks, string domain)
+    {
+        List<PlutoRankedOption>? kept = null;
+        for (var i = 0; i < hooks.Count; i++)
+        {
+            if (SafeDomainSynergy(ranker, domain, hooks[i].DisplayLabel).IsAntiSynergy)
+            {
+                if (kept is null) { kept = new List<PlutoRankedOption>(hooks.Count); for (var k = 0; k < i; k++) kept.Add(hooks[k]); }
+                continue;
+            }
+            kept?.Add(hooks[i]);
+        }
+        return kept is { Count: > 0 } ? kept : hooks;
+    }
+
+    /// <summary>
+    /// 🧪 챌린저 룩 — 챔피언 · 감점 · 차단 · (챌린저 훅과) 역시너지 조합 제외 후 <c>UCB1 점수 × 조합 시너지</c> 최대(동점 → 탐색 순위 우선).
+    /// 전부 역시너지면 기존 규칙(<see cref="PickChallenger"/>)으로 폴백.
+    /// </summary>
+    private static string? PickChallengerLook(IPlutoAdaptivePatternRanker ranker, IReadOnlyList<PlutoRankedOption> ranked, string champion, string challengerHook, IReadOnlySet<string>? suppressed)
+    {
+        string? pick = null;
+        var best = double.NegativeInfinity;
+        for (var i = 0; i < ranked.Count; i++)
+        {
+            var o = ranked[i];
+            if (string.Equals(o.DisplayLabel, champion, StringComparison.Ordinal)) continue;
+            if (o.IsPenalized || (suppressed is { Count: > 0 } && suppressed.Contains(o.DisplayLabel))) continue;
+            var syn = SafeSynergy(ranker, challengerHook, o.DisplayLabel);
+            if (syn.IsAntiSynergy) continue;
+            var score = o.UcbScore * syn.Score;
+            if (score > best + PlutoAdaptivePatternRanker.Epsilon) { best = score; pick = o.DisplayLabel; }
+        }
+        return pick ?? PickChallenger(ranked, champion, null, suppressed);
     }
 
     // ── 선택 ──

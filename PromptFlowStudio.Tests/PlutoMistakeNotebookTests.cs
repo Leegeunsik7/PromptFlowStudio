@@ -3,7 +3,7 @@ using PromptFlowStudio.Services.Pluto;
 
 namespace PromptFlowStudio.Tests;
 
-/// <summary>🛡️ 플루토 오답 노트 — 히스테리시스(1.8/0.8) · 14일 반감기 · 분석기/압축기 회피 · 원자적 영속.</summary>
+/// <summary>🛡️ 플루토 오답 노트 — 히스테리시스(1.8/0.8) · 21일 반감기 · 분석기/압축기 회피 · 원자적 영속.</summary>
 public class PlutoMistakeNotebookTests
 {
     private static readonly DateTime T0 = new(2026, 11, 1, 9, 0, 0, DateTimeKind.Utc);
@@ -57,7 +57,7 @@ public class PlutoMistakeNotebookTests
     }
 
     [Fact]
-    public async Task MistakeNotebook_AppliesHalfLifeDecay_OverFourteenDays()
+    public async Task MistakeNotebook_AppliesHalfLifeDecay_OverTwentyOneDays()
     {
         var dir = TempDir();
         try
@@ -67,29 +67,29 @@ public class PlutoMistakeNotebookTests
 
             await nb.RecordNegativeFeedbackAsync(new[] { "Playful ukulele" }, 1.0);
             Assert.Equal(1.0, nb.GetEffectivePenalty("Playful ukulele"), 6);
-            now = T0.AddDays(14);
+            now = T0.AddDays(21);
             Assert.Equal(0.5, nb.GetEffectivePenalty("Playful ukulele"), 6);
-            now = T0.AddDays(28);
+            now = T0.AddDays(42);
             Assert.Equal(0.25, nb.GetEffectivePenalty("playful UKULELE"), 6);   // 대소문자 무시
 
-            Assert.Equal(1.0, PlutoMistakeNotebookService.Decay(2.0, T0, T0.AddDays(14)), 6);
+            Assert.Equal(1.0, PlutoMistakeNotebookService.Decay(2.0, T0, T0.AddDays(21)), 6);
             Assert.Equal(2.0, PlutoMistakeNotebookService.Decay(2.0, T0, T0.AddDays(-3)), 6);   // 시계 역행 → 감쇠 없음
 
-            // 차단 상태는 반감기 경과로 자연 해제(2.0 → 14일 1.0 유지 · 28일 0.5 해제)
+            // 차단 상태는 반감기 경과로 자연 해제(2.0 → 21일 1.0 유지 · 42일 0.5 해제)
             now = T0;
             await nb.RecordNegativeFeedbackAsync(new[] { "#POV" }, 1.0);
             await nb.RecordNegativeFeedbackAsync(new[] { "#POV" }, 1.0);
             Assert.Contains("#POV", nb.GetSuppressedTokens());
-            now = T0.AddDays(14);
+            now = T0.AddDays(21);
             Assert.Contains("#POV", nb.GetSuppressedTokens());
-            now = T0.AddDays(28);
+            now = T0.AddDays(42);
             Assert.DoesNotContain("#POV", nb.GetSuppressedTokens());
 
-            // 감쇠 후 가산: 14일 경과 0.5 + 1.0 = 1.5
+            // 감쇠 후 가산: 21일 경과 0.5 + 1.0 = 1.5
             now = T0;
             using var fresh = new PlutoMistakeNotebookService(Path.Combine(dir, "decay2.json"), () => now);
             await fresh.RecordNegativeFeedbackAsync(new[] { "soft piano" }, 1.0);
-            now = T0.AddDays(14);
+            now = T0.AddDays(21);
             await fresh.RecordNegativeFeedbackAsync(new[] { "soft piano" }, 1.0);
             Assert.Equal(1.5, fresh.GetEffectivePenalty("soft piano"), 6);
         }

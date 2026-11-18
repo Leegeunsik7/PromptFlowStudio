@@ -32,7 +32,7 @@ public sealed class PlutoAdaptiveRankerTests : IDisposable
     [Fact]
     public async Task EndToEndClosedLoop_BreakoutTelemetry_PromotesHookAndLookToRank1()
     {
-        using var learning = new PlutoLearningService(Path.Combine(_dir, "trend.json"));
+        using var learning = new PlutoLearningService(Path.Combine(_dir, "trend.json")) { UtcNowProvider = static () => new DateTime(2026, 11, 1, 0, 0, 0, DateTimeKind.Utc) };   // ⏳ 고정 시계 — 14일 반감기 감쇠와 무관한 정확 비교
         using var notebook = new PlutoMistakeNotebookService(Path.Combine(_dir, "nb.json"));
         using var loop = new PlutoClosedLoopReinforcementService(learning, notebook, Storage());
         var ranker = new PlutoAdaptivePatternRanker(learning, notebook);

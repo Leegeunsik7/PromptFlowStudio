@@ -43,7 +43,7 @@ public sealed class Pluto44ExperimentAndSeriesTests : IDisposable
     [Fact]
     public async Task ExperimentLedger_ChallengerOutperformsChampion_CrownsChallengerAndBoostsTrait()
     {
-        using var learning = new PlutoLearningService(Path.Combine(_dir, "trend.json"));
+        using var learning = new PlutoLearningService(Path.Combine(_dir, "trend.json")) { UtcNowProvider = static () => new DateTime(2026, 11, 1, 9, 0, 0, DateTimeKind.Utc) };   // ⏳ 고정 시계 — 가중치 정확 비교가 실시간 반감기 감쇠(부하 시 수 초)에 흔들리지 않도록
         using var notebook = new PlutoMistakeNotebookService(Path.Combine(_dir, "nb.json"));
         var storage = Storage("vault");
         using var loop = new PlutoClosedLoopReinforcementService(learning, notebook, storage);
@@ -92,7 +92,7 @@ public sealed class Pluto44ExperimentAndSeriesTests : IDisposable
     [Fact]
     public async Task ExperimentLedger_CloseChallengerLossAboveFailureThreshold_AvoidsMistakePenalty()
     {
-        using var learning = new PlutoLearningService(Path.Combine(_dir, "trend.json"));
+        using var learning = new PlutoLearningService(Path.Combine(_dir, "trend.json")) { UtcNowProvider = static () => new DateTime(2026, 11, 1, 9, 0, 0, DateTimeKind.Utc) };   // ⏳ 고정 시계 — 가중치 정확 비교가 실시간 반감기 감쇠(부하 시 수 초)에 흔들리지 않도록
         using var notebook = new PlutoMistakeNotebookService(Path.Combine(_dir, "nb.json"));
         using var loop = new PlutoClosedLoopReinforcementService(learning, notebook);
         using var ledger = new PlutoExperimentLedgerService(loop);

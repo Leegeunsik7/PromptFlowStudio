@@ -258,7 +258,7 @@ public sealed class PlutoTelemetryBatchImporter : IPlutoTelemetryBatchImporter
                 if (clip is null) { unmatched.Add(label); continue; }
 
                 var telemetry = new PlutoVideoPerformanceTelemetry(clip.VideoId, plat, clip.HookStyle, clip.ColorLookId, clip.BgmMood, clip.Tags,
-                    row.HookPct, row.CompletionPct, row.CtrPct, DateTimeOffset.UtcNow);
+                    row.HookPct, row.CompletionPct, row.CtrPct, DateTimeOffset.UtcNow) { Domain = PromptDomainClassifier.Classify(clip.Title + " " + clip.HookStyle).ToString() };   // 🧭 domain_hook 상호작용 키
                 var outcome = await _loop.IngestPerformanceAsync(telemetry, ct).ConfigureAwait(false);
                 if (outcome.AlreadyRegistered) dup++;
                 else

@@ -116,7 +116,7 @@
     @if (guarded.Count > 0)
     {
         <div class="pl-pills" data-pluto-mistake-guard="1">
-            <span class="pl-guard" title="@("차단 패턴: " + string.Join(", ", guarded) + " — 👎 누적 벌점 ≥ 1.8 차단 · 14일 반감기 · 👍/적용 시 < 0.8 로 내려가면 해제")">🛡️ 오답 노트 회피 활성: @(guarded.Count.ToString(System.Globalization.CultureInfo.InvariantCulture))개 패턴 차단 중</span>
+            <span class="pl-guard" title="@("차단 패턴: " + string.Join(", ", guarded) + " — 👎 누적 벌점 ≥ 1.8 차단 · 21일 반감기 · 👍/적용 시 < 0.8 로 내려가면 해제")">🛡️ 오답 노트 회피 활성: @(guarded.Count.ToString(System.Globalization.CultureInfo.InvariantCulture))개 패턴 차단 중</span>
             <button class="pl-guard-reset" data-pluto-mistake-reset="1" disabled="@_mistakeBusy" @onclick="ClearMistakesAsync">[초기화]</button>
         </div>
     }

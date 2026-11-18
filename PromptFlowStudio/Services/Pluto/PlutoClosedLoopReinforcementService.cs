@@ -10,7 +10,11 @@ namespace PromptFlowStudio.Services.Pluto;
 
 /// <summary>📈 게시 후 영상 성과 텔레메트리(퍼센트 0~100) — 크리에이터가 YouTube/Instagram 지표를 직접 입력.</summary>
 public sealed record PlutoVideoPerformanceTelemetry(string VideoId, string Platform, string HookStyle, string ColorLookId, string BgmMood, IReadOnlyList<string> StyleTags,
-    double ThreeSecondHookRetentionPct, double AverageCompletionPct, double ClickThroughRatePct, DateTimeOffset MeasuredAtUtc);
+    double ThreeSecondHookRetentionPct, double AverageCompletionPct, double ClickThroughRatePct, DateTimeOffset MeasuredAtUtc)
+{
+    /// <summary>🧭 콘텐츠 도메인(예: <c>BabyStudio</c> · <c>GeneralCinematic</c>) — 지정 시 <c>domain_hook:{Domain}+{HookStyle}</c> 상호작용 키 추적(미지정 → 생략).</summary>
+    public string? Domain { get; init; }
+}
 
 /// <summary>📈 폐루프 강화 결과 — 돌파 성공(패턴 부스트 + XP) · 오답 노트 벌점 기록 여부 · XP 증분 · 패턴 배수 · 요약.</summary>
 public sealed record PlutoReinforcementOutcome(bool IsBreakoutSuccess, bool RecordedMistakePenalty, int XpDelta, double PatternWeightMultiplier, string SummaryMessage)
@@ -23,6 +27,8 @@ public sealed record PlutoReinforcementOutcome(bool IsBreakoutSuccess, bool Reco
     public string? FailureDimension { get; init; }
     /// <summary>🛡️ 이번 벌점만으로 오답 노트 차단 가드 임계(≥ <see cref="PlutoMistakeNotebookService.BlockThreshold"/>) 도달.</summary>
     public bool GuardActivated => PenaltySeverity >= PlutoMistakeNotebookService.BlockThreshold;
+    /// <summary>🎯 2-way 귀속 — 훅이 다른 조합/도메인에서 성공 이력이 있어 벌점을 이 조합 키(<c>pair:</c> · <c>domain_hook:</c>)로 격리(전역 훅 벌점 면제 · 없음 → null).</summary>
+    public string? IsolatedPairKey { get; init; }
 }
 
 /// <summary>
@@ -60,8 +66,11 @@ public interface IPlutoClosedLoopReinforcementService
 /// <summary>
 /// 📈 <see cref="IPlutoClosedLoopReinforcementService"/> 구현.
 ///   ▸ 돌파: 3초 유지율 ≥ 65 % · CTR ≥ 7.5 % · 완주율 ≥ 55 % 중 하나 → 훅/스타일/LUT/BGM 패턴 ×1.15~1.35(상한 2.5) + XP +15~35 · 오답 노트 벌점 상쇄.
-///   ▸ 부진: 3초 유지율 &lt; 42 % · 완주율 &lt; 30 % · CTR &lt; 2.2 % 중 최대 정규화 결손 &gt; 0 → 훅 스타일 + 스타일 태그를 결손 비례 벌점(1.0~2.0 · 완주/CTR ×1.25)으로 오답 노트 기록(14일 반감기 · 1.8 차단).
+///   ▸ 부진: 3초 유지율 &lt; 42 % · 완주율 &lt; 30 % · CTR &lt; 2.2 % 중 최대 정규화 결손 &gt; 0 → 훅 스타일 + 스타일 태그를 결손 비례 벌점(1.0~2.0 · 완주/CTR ×1.25)으로 오답 노트 기록(21일 반감기 · 1.8 차단).
 ///   ▸ 돌파 판정 우선(혼합 신호에서 승리 패턴을 벌하지 않음). 반영 장부 <c>pluto_reinforcement_ledger.json</c>(원자 기록)로 중복 반영 차단.
+///   ▸ 🔗 2-way 귀속: 훅×룩(<c>pair:</c>) · 도메인×훅(<c>domain_hook:</c>) 조합 키를 단일 특성과 함께 강화/시행 기록 ·
+///     부진 훅이 다른 조합/도메인에서 성공 이력이 있으면 벌점을 조합 키에만 격리(훅 전역 오염 방지).
+///   ▸ 🎰 모든 반영(돌파 · 부진 · 평균)이 패턴 시행 수를 +1 → 랭커 UCB1 탐색 항의 표본 수.
 /// </summary>
 public sealed class PlutoClosedLoopReinforcementService : IPlutoClosedLoopReinforcementService, IDisposable
 {
@@ -82,6 +91,8 @@ public sealed class PlutoClosedLoopReinforcementService : IPlutoClosedLoopReinfo
     /// <summary>A/B 상승률 이 값(%) 이상 → 최대 차등 부스트.</summary>
     public const double FullBoostLiftPct = 50.0;
     public const string ExperimentLedgerPrefix = "ab|";
+    /// <summary>🎯 '다른 곳에서 성공' 증거 최소 초과 가중치(반감기 감쇠 반영) — 1.15 부스트가 약 22일 뒤 소멸.</summary>
+    public const double SuccessEvidenceMargin = 0.05;
 
     private static readonly CultureInfo Inv = CultureInfo.InvariantCulture;
 
@@ -92,6 +103,7 @@ public sealed class PlutoClosedLoopReinforcementService : IPlutoClosedLoopReinfo
     private readonly List<string> _ledger = new(32);
     private readonly HashSet<string> _ledgerSet = new(StringComparer.OrdinalIgnoreCase);
     private bool _ledgerLoaded;
+    private bool _ledgerReadOnly;   // 🛡️ 장부 읽기 불가(잠금·권한) 세션 — 디스크 장부 덮어쓰기 금지(중복 차단 이력 보호)
     private volatile PlutoReinforcementOutcome? _last;
     private int _disposed;
 
@@ -105,6 +117,9 @@ public sealed class PlutoClosedLoopReinforcementService : IPlutoClosedLoopReinfo
     public event Action? Changed;
 
     public PlutoReinforcementOutcome? LastOutcome => _last;
+
+    /// <summary>🛡️ 장부 읽기 불가 세션 여부 — true면 이번 세션 반영은 메모리 장부로만 중복 차단하고 디스크 장부는 보존.</summary>
+    public bool IsLedgerReadOnly => _ledgerReadOnly;
 
     /// <summary>📈 판정(순수 함수) — 돌파 강도 0~1 · 결손 강도 0~1.</summary>
     public static (bool Breakout, double Strength, bool Poor, double Deficit) Evaluate(PlutoVideoPerformanceTelemetry t)
@@ -205,6 +220,92 @@ public sealed class PlutoClosedLoopReinforcementService : IPlutoClosedLoopReinfo
         return list;
     }
 
+    /// <summary>🔗 2-way 상호작용 키 — <c>pair:{Hook}+{Look}</c> · <c>domain_hook:{Domain}+{Hook}</c>(구성 요소 누락 → 생략).</summary>
+    public static IReadOnlyList<string> InteractionTokens(PlutoVideoPerformanceTelemetry t)
+    {
+        ArgumentNullException.ThrowIfNull(t);
+        var list = new List<string>(2);
+        if (PlutoPairAttribution.PairKey(t.HookStyle, t.ColorLookId) is { } pair) list.Add(pair);
+        if (PlutoPairAttribution.DomainHookKey(t.Domain, t.HookStyle) is { } dh) list.Add(dh);
+        return list;
+    }
+
+    private static List<string> Concat(IReadOnlyList<string> a, IReadOnlyList<string> b)
+    {
+        var list = new List<string>(a.Count + b.Count);
+        for (var i = 0; i < a.Count; i++) list.Add(a[i]);
+        for (var i = 0; i < b.Count; i++) list.Add(b[i]);
+        return list;
+    }
+
+    /// <summary>
+    /// 🎯 부진 귀속(2-way) — 훅이 ① 다른 룩과의 조합 ② 다른 도메인 ③ (조합 이력 없는) 단일 특성 강화로 성공 증거
+    /// (감쇠 반영 가중치 &gt; 1 + <see cref="SuccessEvidenceMargin"/>)가 있으면 벌점 대상을 조합 키로 교체해 훅 전역 오염을 막는다.
+    /// 증거 없음 · 조합 키 구성 불가 · 학습 메모리 미연결 → 기존 전역 토큰(<see cref="MistakeTokens"/>). 스타일 태그는 항상 전역 유지.
+    /// </summary>
+    public (IReadOnlyList<string> Tokens, string? IsolatedKey) AttributeMistake(PlutoVideoPerformanceTelemetry t)
+    {
+        ArgumentNullException.ThrowIfNull(t);
+        var global = MistakeTokens(t);
+        if (_learning is null || string.IsNullOrWhiteSpace(t.HookStyle)) return (global, null);
+        var pairKey = PlutoPairAttribution.PairKey(t.HookStyle, t.ColorLookId);
+        var domainKey = PlutoPairAttribution.DomainHookKey(t.Domain, t.HookStyle);
+        if (pairKey is null && domainKey is null) return (global, null);
+
+        bool otherLook = false, otherDomain = false, marginal;
+        try
+        {
+            const double threshold = PlutoLearningService.PatternBaseWeight + SuccessEvidenceMargin;
+            var hookPart = PlutoPairAttribution.HookPart(t.HookStyle);
+            var lookPart = PlutoPairAttribution.Part(t.ColorLookId, PlutoPairAttribution.MaxSidePartLength) ?? "";
+            var domainPart = PlutoPairAttribution.Part(t.Domain, PlutoPairAttribution.MaxSidePartLength) ?? "";
+
+            var pairs = _learning.GetPatternWeights(PlutoPairAttribution.PairPrefix + hookPart + PlutoPairAttribution.Separator);
+            for (var i = 0; i < pairs.Count; i++)
+            {
+                var look = pairs[i].Key;
+                if (look.IndexOf(PlutoPairAttribution.Separator) >= 0) continue;   // 더 긴 훅('A+B')의 키 — 이 훅의 조합 아님
+                if (pairs[i].Value > threshold && !string.Equals(look, lookPart, StringComparison.Ordinal)) { otherLook = true; break; }
+            }
+            var domains = _learning.GetPatternWeights(PlutoPairAttribution.DomainHookPrefix);
+            for (var i = 0; i < domains.Count; i++)
+            {
+                if (!(domains[i].Value > threshold)) continue;
+                if (!PlutoPairAttribution.TrySplitDomainHook(PlutoPairAttribution.DomainHookPrefix + domains[i].Key, out var d, out var h)) continue;
+                if (string.Equals(h, hookPart, StringComparison.Ordinal) && !string.Equals(d, domainPart, StringComparison.OrdinalIgnoreCase)) { otherDomain = true; break; }
+            }
+            var hookRaw = t.HookStyle.Trim();
+            if (hookRaw.Length > PlutoMistakeNotebookService.MaxTokenLength) hookRaw = hookRaw[..PlutoMistakeNotebookService.MaxTokenLength];
+            var ownPair = pairKey is null ? PlutoLearningService.PatternBaseWeight : _learning.GetPatternWeight(pairKey);
+            var ownDomain = domainKey is null ? PlutoLearningService.PatternBaseWeight : _learning.GetPatternWeight(domainKey);
+            // 조합 이력 이전(Step 11 이하) 데이터 — 훅 단독 강화 이력은 있으나 이 조합 자체는 승리한 적 없음
+            marginal = !otherLook && !otherDomain && _learning.GetPatternWeight("hook:" + hookRaw) > threshold && ownPair <= threshold && ownDomain <= threshold;
+        }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.ClosedLoop] attribution: " + ex.Message); return (global, null); }   // [부분 구제] 전역 귀속
+
+        var isolated = new List<string>(2 + global.Count);
+        if (pairKey is not null && (otherLook || marginal)) isolated.Add(pairKey);
+        if (domainKey is not null && (otherDomain || (marginal && pairKey is null))) isolated.Add(domainKey);
+        if (isolated.Count == 0) return (global, null);
+        var first = isolated[0];
+        var seen = new HashSet<string>(isolated, StringComparer.OrdinalIgnoreCase);
+        if (t.StyleTags is not null) for (var i = 0; i < t.StyleTags.Count; i++) Add(isolated, seen, "", t.StyleTags[i]);
+        return (isolated, first);
+    }
+
+    /// <summary>🎰 시행 기록(가중치 불변) — 실패 격리([부분 구제] 반영 결과 유지).</summary>
+    private async Task RecordTrialsSafeAsync(PlutoVideoPerformanceTelemetry t, CancellationToken ct)
+    {
+        if (_learning is null) return;
+        try
+        {
+            var tokens = Concat(PatternTokens(t), InteractionTokens(t));
+            if (tokens.Count > 0) await _learning.RecordPatternTrialsAsync(tokens, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.ClosedLoop] trials: " + ex.Message); }
+    }
+
     public async Task<PlutoReinforcementOutcome> IngestPerformanceAsync(PlutoVideoPerformanceTelemetry telemetry, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(telemetry);
@@ -224,6 +325,7 @@ public sealed class PlutoClosedLoopReinforcementService : IPlutoClosedLoopReinfo
             var mult = 1.0;
             var penalty = 0.0;
             string? dimension = null;
+            string? isolatedKey = null;
             var warn = "";
 
             if (breakout)
@@ -232,14 +334,14 @@ public sealed class PlutoClosedLoopReinforcementService : IPlutoClosedLoopReinfo
                 xp = XpFor(strength);
                 try
                 {
-                    if (_learning is not null) await _learning.ApplyPatternReinforcementAsync(PatternTokens(telemetry), mult, XpSourceKey, xp, ct).ConfigureAwait(false);
+                    if (_learning is not null) await _learning.ApplyPatternReinforcementAsync(Concat(PatternTokens(telemetry), InteractionTokens(telemetry)), mult, XpSourceKey, xp, ct).ConfigureAwait(false);
                     else { xp = 0; warn = " · ⚠ 학습 메모리 미연결"; }
                 }
                 catch (OperationCanceledException) { throw; }
                 catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.ClosedLoop] boost: " + ex.Message); xp = 0; warn = " · ⚠ 학습 기록 실패"; }   // [부분 구제]
                 try
                 {
-                    if (_notebook is not null) await _notebook.RecordPositiveReliefAsync(MistakeTokens(telemetry), ct: ct).ConfigureAwait(false);
+                    if (_notebook is not null) await _notebook.RecordPositiveReliefAsync(Concat(MistakeTokens(telemetry), InteractionTokens(telemetry)), ct: ct).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) { throw; }
                 catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.ClosedLoop] relief: " + ex.Message); }
@@ -248,20 +350,28 @@ public sealed class PlutoClosedLoopReinforcementService : IPlutoClosedLoopReinfo
             {
                 dimension = ClassifyFailureDimension(telemetry);
                 penalty = PenaltyForSteepestDeficit(deficit, dimension);   // 📐 훅 · 완주 · CTR 최대 정규화 결손 비례
+                var (mistakes, isolated) = AttributeMistake(telemetry);   // 🎯 2-way 귀속(조합 격리)
                 try
                 {
                     if (_notebook is not null)
-                        await _notebook.RecordDiagnosedMistakeAsync(MistakeTokens(telemetry), penalty, dimension, "closed-loop: " + telemetry.Platform + " " + telemetry.VideoId.Trim(), ct).ConfigureAwait(false);
+                    {
+                        await _notebook.RecordDiagnosedMistakeAsync(mistakes, penalty, dimension, "closed-loop: " + telemetry.Platform + " " + telemetry.VideoId.Trim(), ct).ConfigureAwait(false);
+                        isolatedKey = isolated;
+                    }
                     else { penalty = 0; warn = " · ⚠ 오답 노트 미연결"; }
                 }
                 catch (OperationCanceledException) { throw; }
                 catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.ClosedLoop] penalty: " + ex.Message); penalty = 0; warn = " · ⚠ 오답 노트 기록 실패"; }
             }
+            if (!breakout) await RecordTrialsSafeAsync(telemetry, ct).ConfigureAwait(false);   // 🎰 부진 · 평균도 시행으로 집계(돌파는 강화에서 +1)
 
-            var outcome = new PlutoReinforcementOutcome(breakout, penalty > 0, xp, mult, Summarize(telemetry, breakout, poor, xp, mult, penalty, dimension) + warn)
+            var summary = Summarize(telemetry, breakout, poor, xp, mult, penalty, dimension);
+            if (isolatedKey is not null) summary += " · 🎯 조합 격리(" + isolatedKey + ") — 훅 전역 벌점 면제";
+            var outcome = new PlutoReinforcementOutcome(breakout, penalty > 0, xp, mult, summary + warn)
             {
                 PenaltySeverity = penalty,
                 FailureDimension = penalty > 0 ? dimension : null,
+                IsolatedPairKey = isolatedKey,
             };
             await AppendLedgerAsync(key, ct).ConfigureAwait(false);
             return Publish(outcome);
@@ -298,13 +408,14 @@ public sealed class PlutoClosedLoopReinforcementService : IPlutoClosedLoopReinfo
             var mult = 1.0;
             var penalty = 0.0;
             string? loserDim = null;
+            string? isolatedKey = null;
             var boosted = false;
             var warn = "";
             var winHook = Pct(request.Winner.ThreeSecondHookRetentionPct);
 
             if (!request.IsTie && winHook >= PoorHookPct)
             {
-                var tokens = PatternTokens(request.Winner);
+                var tokens = Concat(PatternTokens(request.Winner), InteractionTokens(request.Winner));
                 var strength = ExperimentStrength(request.Winner, request.LiftPct);
                 mult = BoostFor(strength);
                 xp = XpFor(strength);
@@ -318,7 +429,7 @@ public sealed class PlutoClosedLoopReinforcementService : IPlutoClosedLoopReinfo
                 catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.ClosedLoop] ab boost: " + ex.Message); xp = 0; mult = 1.0; boosted = false; warn = " · ⚠ 학습 기록 실패"; }   // [부분 구제]
                 try
                 {
-                    var relief = MistakeTokens(request.Winner);
+                    var relief = Concat(MistakeTokens(request.Winner), InteractionTokens(request.Winner));
                     if (boosted && _notebook is not null && relief.Count > 0) await _notebook.RecordPositiveReliefAsync(relief, ct: ct).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) { throw; }
@@ -330,7 +441,7 @@ public sealed class PlutoClosedLoopReinforcementService : IPlutoClosedLoopReinfo
             if (request.LoserSteepestDeficit is { } given && double.IsFinite(given)) loseDeficit = Math.Clamp(given, 0.0, 1.0);
             if (loseDeficit > 0)
             {
-                var mistakes = MistakeTokens(request.Loser);
+                var (mistakes, isolated) = AttributeMistake(request.Loser);   // 🎯 2-way 귀속(조합 격리)
                 if (mistakes.Count > 0)
                 {
                     loserDim = request.LoserFailureDimension ?? loseDimCalc;
@@ -338,13 +449,20 @@ public sealed class PlutoClosedLoopReinforcementService : IPlutoClosedLoopReinfo
                     try
                     {
                         if (_notebook is not null)
+                        {
                             await _notebook.RecordDiagnosedMistakeAsync(mistakes, penalty, loserDim, "ab-experiment: " + request.ExperimentId.Trim(), ct).ConfigureAwait(false);
+                            isolatedKey = isolated;
+                        }
                         else { penalty = 0; warn += " · ⚠ 오답 노트 미연결"; }
                     }
                     catch (OperationCanceledException) { throw; }
                     catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.ClosedLoop] ab penalty: " + ex.Message); penalty = 0; warn += " · ⚠ 오답 노트 기록 실패"; }
                 }
             }
+
+            // 🎰 시행 집계 — 부스트된 승자는 강화에서 +1 · 그 외 승자/패자는 가중치 불변 시행
+            if (!boosted) await RecordTrialsSafeAsync(request.Winner, ct).ConfigureAwait(false);
+            await RecordTrialsSafeAsync(request.Loser, ct).ConfigureAwait(false);
 
             var sb = new StringBuilder(160);
             if (request.IsTie) sb.Append("🤝 무승부 · 패턴 변경 없음");
@@ -357,11 +475,13 @@ public sealed class PlutoClosedLoopReinforcementService : IPlutoClosedLoopReinfo
                 if (penalty >= PlutoMistakeNotebookService.BlockThreshold) sb.Append(" · 🚫 ").Append(DimensionLabelKorean(loserDim)).Append(" 가드 활성화");
             }
             else if (!request.IsTie) sb.Append(" · 🛡️ 패자 보호(오답 노트 면제)");
+            if (penalty > 0 && isolatedKey is not null) sb.Append(" · 🎯 조합 격리(").Append(isolatedKey).Append(')');
 
             var outcome = new PlutoReinforcementOutcome(boosted, penalty > 0, xp, mult, sb.ToString() + warn)
             {
                 PenaltySeverity = penalty,
                 FailureDimension = penalty > 0 ? loserDim : null,
+                IsolatedPairKey = penalty > 0 ? isolatedKey : null,
             };
             await AppendLedgerAsync(key, ct).ConfigureAwait(false);
             return Publish(outcome);
@@ -407,7 +527,13 @@ public sealed class PlutoClosedLoopReinforcementService : IPlutoClosedLoopReinfo
         try
         {
             var json = await _storage.ReadAllTextAsync(LedgerFileName, ct).ConfigureAwait(false);
-            if (string.IsNullOrWhiteSpace(json)) return;
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                // 🛡️ 저장소는 '파일 없음'과 '읽기 실패(잠금·권한)'를 모두 빈 문자열로 돌려준다 — 디스크에 내용이 있는데 못 읽었다면
+                //    빈 장부로 덮어쓰지 않도록 읽기 전용 세션으로 전환(메모리 장부로만 중복 차단).
+                _ledgerReadOnly = LedgerHasContentOnDisk();
+                return;
+            }
             var arr = JsonSerializer.Deserialize<List<string>>(json);
             if (arr is null) return;
             foreach (var k in arr)
@@ -417,6 +543,21 @@ public sealed class PlutoClosedLoopReinforcementService : IPlutoClosedLoopReinfo
         catch (Exception ex) when (ex is JsonException or NotSupportedException or System.IO.IOException or UnauthorizedAccessException)
         {
             System.Diagnostics.Debug.WriteLine("[Pluto.ClosedLoop] ledger load: " + ex.Message);   // [부분 구제] 빈 장부
+            if (ex is System.IO.IOException or UnauthorizedAccessException) _ledgerReadOnly = true;   // 🛡️ 읽기 불가 → 기존 장부 보존
+        }
+    }
+
+    private bool LedgerHasContentOnDisk()
+    {
+        try
+        {
+            var path = _storage?.ResolveDataPath(LedgerFileName);
+            return !string.IsNullOrEmpty(path) && System.IO.File.Exists(path) && new System.IO.FileInfo(path).Length > 0;
+        }
+        catch (Exception ex) when (ex is System.IO.IOException or UnauthorizedAccessException or NotSupportedException or ArgumentException)
+        {
+            System.Diagnostics.Debug.WriteLine("[Pluto.ClosedLoop] ledger probe: " + ex.Message);
+            return true;   // 존재 여부조차 확인 불가 → 보수적으로 보존
         }
     }
 
@@ -424,7 +565,7 @@ public sealed class PlutoClosedLoopReinforcementService : IPlutoClosedLoopReinfo
     {
         if (_ledgerSet.Add(key)) _ledger.Add(key);
         while (_ledger.Count > LedgerCapacity) { _ledgerSet.Remove(_ledger[0]); _ledger.RemoveAt(0); }
-        if (_storage is null) return;
+        if (_storage is null || _ledgerReadOnly) return;
         try { await _storage.WriteAllTextAtomicAsync(LedgerFileName, JsonSerializer.Serialize(_ledger), CancellationToken.None).ConfigureAwait(false); }
         catch (Exception ex) when (ex is System.IO.IOException or UnauthorizedAccessException or NotSupportedException)
         {
