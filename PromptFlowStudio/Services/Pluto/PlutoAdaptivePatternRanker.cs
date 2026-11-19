@@ -34,6 +34,16 @@ public sealed record PlutoRankedOption(string Key, string DisplayLabel, double B
     public double UpperConfidenceBound => Posterior.UpperConfidenceBound;
     /// <summary>📐 컨텍스트 잔차 알파 기대치(합성 점수 0~1 척도 · 포맷 기준선 대비 평균 초과분 · 미추적 → 0).</summary>
     public double ResidualAlpha { get; init; }
+    /// <summary>⚖️ 다목적(훅 · 완주 · CTR) 파레토 평가 — 근거 없음 → <see cref="PlutoParetoAssessment.None"/>(배수 1.0 · 기존 점수 불변).</summary>
+    public PlutoParetoAssessment Pareto { get; init; } = PlutoParetoAssessment.None;
+    /// <summary>⚖️ 다목적 성과 EWMA(근거 없음 → default).</summary>
+    public PlutoObjectiveVector Objectives { get; init; }
+    /// <summary>⚖️ 다목적 표본 수.</summary>
+    public double ObjectiveSamples { get; init; }
+    /// <summary>⚖️ 파레토 프런티어(티어 0) · 비클릭베이트.</summary>
+    public bool IsParetoFrontier => Pareto.IsFrontier && !Pareto.IsClickbaitSpike;
+    /// <summary>🎣 3초 유지율만 높고 완주율이 붕괴한 클릭베이트 급등(학습 부스트 무효 + 강등).</summary>
+    public bool IsClickbaitSpike => Pareto.IsClickbaitSpike;
 }
 
 /// <summary>
@@ -90,6 +100,12 @@ public interface IPlutoAdaptivePatternRanker
 
     /// <summary>🎯 메타 보정(Brier/RMSE · 반사실 후회 · 탐색 배수) 현황(기본 구현 → 기록 없음).</summary>
     PlutoCalibrationStatus GetCalibrationStatus() => PlutoCalibrationStatus.Empty;
+
+    /// <summary>🔁 능동 후회 리허설 대상(오답 노트 차단 제외 · 부스트 내림차순 · 기본 구현 → 없음).</summary>
+    IReadOnlyList<PlutoRegretRecoveryBoost> GetRegretRecoveryBoosts() => Array.Empty<PlutoRegretRecoveryBoost>();
+
+    /// <summary>⚖️ 파레토 프런티어 선두 훅(다목적 근거 없음 → null).</summary>
+    PlutoParetoLeader? GetParetoFrontierLeader() => null;
 }
 
 /// <summary>
@@ -102,6 +118,8 @@ public interface IPlutoAdaptivePatternRanker
 ///   ▸ 🔗 조합 시너지 = <c>pair:</c>/<c>domain_hook:</c> 학습 배수 × (1 − clamp(조합 감점, 0, 0.85)).
 ///   ▸ 🌊 레짐 드리프트 감지 시 탐색 상수 C × 탐색 온도(1~3) — 활용 순위(FinalScore)는 불변 · 탐색 순위만 공격적으로.
 ///   ▸ 🎯 후보마다 Normal–Normal 사후 신뢰 구간(<see cref="PlutoPosteriorConfidence"/>) 동봉 — '검증된 승자'와 '1회 급등' 구분.
+///   ▸ ⚖️ 다목적 근거(표본 ≥ <see cref="PlutoParetoFrontier.MinObjectiveSamples"/>)가 있는 후보는 FinalScore × 파레토 배수(티어 · 최약 축 보너스) —
+///     클릭베이트 급등은 학습 부스트(배수 &gt; 1)를 무효화하고 ×<see cref="PlutoParetoFrontier.ClickbaitFactor"/> 강등. 근거 없는 후보는 완전 불변.
 /// </summary>
 public sealed class PlutoAdaptivePatternRanker : IPlutoAdaptivePatternRanker
 {
@@ -273,6 +291,44 @@ public sealed class PlutoAdaptivePatternRanker : IPlutoAdaptivePatternRanker
         if (MetaCalibration is null) return 1.0;
         try { return MetaCalibration.GetCalibratedExplorationScale(); }
         catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Ranker] calibration scale: " + ex.Message); return 1.0; }
+    }
+
+    public IReadOnlyList<PlutoRegretRecoveryBoost> GetRegretRecoveryBoosts()
+    {
+        if (MetaCalibration is null) return Array.Empty<PlutoRegretRecoveryBoost>();
+        try
+        {
+            HashSet<string>? blocked = null;
+            if (SafeSuppressed() is { Count: > 0 } s) blocked = new HashSet<string>(s, StringComparer.OrdinalIgnoreCase);
+            if (SafeCompositeSuppressed() is { Count: > 0 } c) { blocked ??= new HashSet<string>(StringComparer.OrdinalIgnoreCase); blocked.UnionWith(c); }
+            return MetaCalibration.GetRegretRecoveryBoosts(blocked) ?? Array.Empty<PlutoRegretRecoveryBoost>();
+        }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Ranker] regret recovery: " + ex.Message); return Array.Empty<PlutoRegretRecoveryBoost>(); }
+    }
+
+    public PlutoParetoLeader? GetParetoFrontierLeader()
+    {
+        var hooks = Rank(PlutoPatternKind.Hook, null, SafeSuppressed());
+        PlutoRankedOption? leader = null;
+        int frontier = 0, evidenced = 0, clickbait = 0;
+        for (var i = 0; i < hooks.Count; i++)
+        {
+            var o = hooks[i];
+            if (!o.Pareto.HasEvidence) continue;
+            evidenced++;
+            if (o.IsClickbaitSpike) { clickbait++; continue; }
+            if (!o.Pareto.IsFrontier) continue;
+            frontier++;
+            if (!o.IsPenalized && leader is null) leader = o;   // 목록은 FinalScore 내림차순 → 첫 프런티어 = 선두
+        }
+        return leader is null ? null : new PlutoParetoLeader(leader.DisplayLabel, leader.Objectives, leader.ObjectiveSamples, frontier, evidenced, clickbait);
+    }
+
+    private (PlutoObjectiveVector Objectives, double Samples) SafeObjectives(string prefix, string label)
+    {
+        if (_learning is null) return (default, 0.0);
+        try { return _learning.GetPatternObjectives(prefix + label); }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Ranker] objectives: " + ex.Message); return (default, 0.0); }
     }
 
     public PlutoCalibrationStatus GetCalibrationStatus()
@@ -483,6 +539,22 @@ public sealed class PlutoAdaptivePatternRanker : IPlutoAdaptivePatternRanker
         }
         var list = new List<PlutoRankedOption>(labels.Count);
         var explorationC = EffectiveExplorationC();   // 🌊 레짐 드리프트 → 탐색 서지
+        // ⚖️ 다목적 파레토 티어 — 훅 · 룩만(텔레메트리가 귀속되는 종류) · 근거 있는 후보끼리 비지배 정렬
+        PlutoObjectiveVector[]? objectives = null; double[]? objectiveN = null; int[]? tiers = null;
+        if (_learning is not null && (kind == PlutoPatternKind.Hook || kind == PlutoPatternKind.Look) && labels.Count > 0)
+        {
+            objectives = new PlutoObjectiveVector[labels.Count];
+            objectiveN = new double[labels.Count];
+            var evidence = new bool[labels.Count];
+            var any = false;
+            for (var i = 0; i < labels.Count; i++)
+            {
+                (objectives[i], objectiveN[i]) = SafeObjectives(prefix, labels[i]);
+                evidence[i] = objectiveN[i] >= PlutoParetoFrontier.MinObjectiveSamples;
+                any |= evidence[i];
+            }
+            if (any) tiers = PlutoParetoFrontier.ComputeTiers(objectives, evidence);
+        }
         for (var i = 0; i < labels.Count; i++)
         {
             var label = labels[i];
@@ -490,12 +562,18 @@ public sealed class PlutoAdaptivePatternRanker : IPlutoAdaptivePatternRanker
             var mult = LearnedWeight(prefix, label, isTag);
             var pf = PenaltyFactor(label, isTag, suppressed);
             var b = BaseScoreFor(i);
-            list.Add(new PlutoRankedOption(key, label, b, mult, pf, ComputeFinalScore(b, mult, pf, key), BadgeFor(mult, pf))
+            var pareto = tiers is null ? PlutoParetoAssessment.None : PlutoParetoFrontier.Assess(tiers[i], objectives![i]);
+            // 🎣 클릭베이트 급등은 학습 부스트를 점수에 싣지 않는다(배수 자체 · 사후 신뢰는 그대로 노출)
+            var scoreMult = (pareto.IsClickbaitSpike ? Math.Min(mult, PlutoLearningService.PatternBaseWeight) : mult) * pareto.Multiplier;
+            list.Add(new PlutoRankedOption(key, label, b, mult, pf, ComputeFinalScore(b, scoreMult, pf, key), BadgeFor(mult, pf))
             {
                 ArmTrials = trials[i],
                 ExplorationBonus = ExplorationBonusFor(explorationC, totalTrials, trials[i]),
                 Posterior = PlutoPosteriorConfidence.Compute(mult, trials[i]),
                 ResidualAlpha = SafeResidualAlpha(prefix, label),
+                Pareto = pareto,
+                Objectives = pareto.HasEvidence ? objectives![i] : default,
+                ObjectiveSamples = pareto.HasEvidence ? objectiveN![i] : 0.0,
             });
         }
         list.Sort(static (a, b) =>

@@ -183,7 +183,8 @@ public sealed class PlutoMetaCalibrationAndCoherenceTests : IDisposable
             Assert.False(old.IsReadOnlySession);
         }
 
-        // 손상 JSON → .corrupt 격리 후 빈 상태로 시작(기록 가능)
+        // 손상 JSON + 마지막 정상본(.bak) 없음 → .corrupt 격리 후 빈 상태로 시작(기록 가능) · .bak 이 있으면 복구(Step 15 전용 테스트)
+        File.Delete(path + PlutoMetaCalibrationService.BackupSuffix);
         File.WriteAllText(path, "{\"Window\":[{\"P\":0.9");
         using (var broken = Calibration())
         {
@@ -199,11 +200,15 @@ public sealed class PlutoMetaCalibrationAndCoherenceTests : IDisposable
         var original = File.ReadAllText(path);
         using (var locked = Calibration())
         {
+            // 잠금이 유지되는 동안의 기록(잠금 해제 뒤 자가 치유 · 병합은 Step 15 전용 테스트)
             using (new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+            {
                 await locked.EnsureLoadedAsync();
-            Assert.True(locked.IsReadOnlySession);
-            await locked.RecordOutcomeAsync(Obs(0.9, 0.1));
-            Assert.Equal(1, locked.GetStatus().CalibrationSamples);
+                Assert.True(locked.IsReadOnlySession);
+                await locked.RecordOutcomeAsync(Obs(0.9, 0.1));
+                Assert.True(locked.IsReadOnlySession);
+                Assert.Equal(1, locked.GetStatus().CalibrationSamples);
+            }
         }
         Assert.Equal(original, File.ReadAllText(path));
 

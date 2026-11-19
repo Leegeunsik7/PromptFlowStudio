@@ -18,6 +18,10 @@ public sealed record PlutoCalibrationObservation(double PredictedExpectedScore, 
     public string? BestAlternativeLabel { get; init; }
     /// <summary>출처(<c>closed-loop</c> · <c>ab</c>).</summary>
     public string? Source { get; init; }
+    /// <summary>🔁 이번에 실제로 선택(= 실측 검증)된 구성 라벨(<c>hook:…</c> · <c>look:…</c> · <c>pair:…</c>) — 일치하는 후회 회복 사전을 소거한다.</summary>
+    public IReadOnlyList<string>? ChosenLabels { get; init; }
+    /// <summary>🔁 대안 점수가 예측이 아니라 실측(A/B 상대 변형) — 이미 검증된 대안이므로 회복 사전을 적립하지 않는다(후회 귀속 집계는 유지).</summary>
+    public bool AlternativeMeasured { get; init; }
 
     public bool HasPrediction => double.IsFinite(PredictedExpectedScore) && double.IsFinite(RealizedScore);
     public bool HasAlternative => double.IsFinite(BestAlternativeExpectedScore) && double.IsFinite(RealizedScore);
@@ -37,6 +41,20 @@ public sealed record PlutoExpectancyForecast(bool HasBaseline, double Baseline, 
 
 /// <summary>💸 후회 귀속 — 선택되지 않은 대안별 누적 반사실 후회.</summary>
 public sealed record PlutoRegretAttribution(string Label, double CumulativeRegret, int Count);
+
+/// <summary>
+/// 🔁 후회 회복 사전 — 거듭 지나친 대안(<see cref="Label"/>)을 챌린저 B 로 재검증하도록 주는 유계 · 시간 감쇠 부스트.
+/// <see cref="OutstandingRegret"/> = 아직 검증으로 해소되지 않은 후회 잔액(14일 반감기).
+/// </summary>
+public sealed record PlutoRegretRecoveryBoost(string Label, double Boost, double OutstandingRegret, int Count)
+{
+    /// <summary>🔁 1줄(결정론 한국어).</summary>
+    public string ToLabel()
+    {
+        var inv = CultureInfo.InvariantCulture;
+        return Label + " · 회복 사전 +" + Boost.ToString("0.00", inv) + " · 미해소 후회 " + OutstandingRegret.ToString("0.00", inv) + " · " + Count.ToString(inv) + "회 지나침";
+    }
+}
 
 /// <summary>🎯 메타 보정 현황 스냅샷(두뇌 리포트 · 랭커 공용).</summary>
 public sealed record PlutoCalibrationStatus(int CalibrationSamples, double BrierScore, double Rmse, double Bias, int RegretSamples, double MeanRegret,
@@ -79,6 +97,12 @@ public interface IPlutoMetaCalibrationService
     /// </summary>
     double GetCalibratedExplorationScale();
 
+    /// <summary>
+    /// 🔁 능동 후회 리허설 — 미해소 후회 잔액이 <see cref="PlutoMetaCalibrationService.RecoveryThreshold"/> 이상인 미선택 대안의 회복 사전
+    /// (부스트 내림차순 · 동률 → 라벨 사전순). <paramref name="blockedTokens"/>(오답 노트 차단 토큰/조합 키)에 걸린 대안은 제외.
+    /// </summary>
+    IReadOnlyList<PlutoRegretRecoveryBoost> GetRegretRecoveryBoosts(IReadOnlySet<string>? blockedTokens = null) => Array.Empty<PlutoRegretRecoveryBoost>();
+
     /// <summary>기록 통지(백그라운드 스레드 가능).</summary>
     event Action? Changed;
 }
@@ -90,7 +114,9 @@ public interface IPlutoMetaCalibrationService
 ///   ▸ 압력 = max(과신 압력, 후회 압력) — 각각 허용 폭(dead band) 초과분을 선형 정규화 → 배수 = 1 + (Max − 1) × 압력.
 ///   ▸ 압력 0 + RMSE ≤ <see cref="WellCalibratedRmse"/> → 표본 수에 비례해 <see cref="MinScale"/> 쪽으로 수축(고신뢰 활용).
 ///   ▸ 표본 &lt; <see cref="MinSamples"/> → 1.0(기존 동작과 완전 동일).
-/// 적재 불가(잠금·권한) 세션은 디스크 덮어쓰기 금지.
+///   ▸ 🔁 후회 회복 사전: 대안별 '미해소 후회 잔액'(예측 반사실만 적립 · <see cref="RecoveryHalfLifeDays"/>일 반감기 · 그 대안이 실제 선택되면 0).
+///   ▸ 🛡️ 내구성: 기록마다 <c>.bak</c> 마지막 정상본 동반 기록 → 본 파일 손상(Drive 0 B 자리표시자 · 잘린 동기화) 시 자동 복구.
+///     적재 불가(잠금·권한) 세션은 디스크 덮어쓰기 금지 — 다음 기록 때 재적재를 시도해 잠금이 풀렸으면 세션 중 관측을 디스크 상태 위에 재생(자가 치유).
 /// </summary>
 public sealed class PlutoMetaCalibrationService : IPlutoMetaCalibrationService, IDisposable
 {
@@ -107,6 +133,10 @@ public sealed class PlutoMetaCalibrationService : IPlutoMetaCalibrationService, 
     public const double WellCalibratedRmse = 0.08;
     public const int MaxAttributions = 32;
     public const int MaxLabelLength = 120;
+    /// <summary>🔁 회복 사전 발동 잔액 · 최대 부스트 도달 잔액 · 부스트 상한(UCB1 점수 척도) · 잔액 반감기(일).</summary>
+    public const double RecoveryThreshold = 0.10, RecoveryFullRegret = 0.50, MaxRecoveryBoost = 0.50, RecoveryHalfLifeDays = 14.0;
+    /// <summary>🛡️ 마지막 정상본 확장자.</summary>
+    public const string BackupSuffix = ".bak";
 
     private static readonly CultureInfo Inv = CultureInfo.InvariantCulture;
     private static readonly JsonSerializerOptions JsonOpts = new() { WriteIndented = false };
@@ -121,6 +151,9 @@ public sealed class PlutoMetaCalibrationService : IPlutoMetaCalibrationService, 
     private int _totalRecords;
     private volatile bool _loaded;
     private volatile bool _readOnly;
+    private volatile bool _recoveredFromBackup;
+    private int _healedSessions;
+    private readonly List<(PlutoCalibrationObservation Obs, DateTime Utc)> _readOnlyPending = new();
     private int _disposed;
 
     /// <summary>☁️ <see cref="IPlutoStorageManager"/> 경유 — Drive 우선 · 로컬 폴백.</summary>
@@ -144,6 +177,16 @@ public sealed class PlutoMetaCalibrationService : IPlutoMetaCalibrationService, 
     /// <summary>🛡️ 적재 불가 세션(디스크 보존 · 메모리만 갱신).</summary>
     public bool IsReadOnlySession => _readOnly;
 
+    /// <summary>🛡️ 본 파일 손상으로 <c>.bak</c> 마지막 정상본에서 복구한 세션.</summary>
+    public bool RecoveredFromBackup => _recoveredFromBackup;
+
+    /// <summary>🛡️ 읽기 전용 세션이 잠금 해제 후 자가 치유된 횟수.</summary>
+    public int HealedReadOnlySessions => Volatile.Read(ref _healedSessions);
+
+    public string BackupPath => StoragePath + BackupSuffix;
+
+    private DateTime Now() => UtcNowProvider?.Invoke() ?? DateTime.UtcNow;
+
     public event Action? Changed;
 
     /// <summary>직렬화 DTO — 관측 1건(NaN 은 null 로 영속).</summary>
@@ -160,6 +203,10 @@ public sealed class PlutoMetaCalibrationService : IPlutoMetaCalibrationService, 
     {
         public double Regret { get; set; }
         public int Count { get; set; }
+        /// <summary>🔁 미해소 후회 잔액(<see cref="Utc"/> 기준 · null = Step 14 파일 → <see cref="Regret"/> 로 간주).</summary>
+        public double? Recovery { get; set; }
+        /// <summary>🔁 잔액 기준 시각(default → 감쇠 없음).</summary>
+        public DateTime Utc { get; set; }
     }
 
     /// <summary>영속 스냅샷(버전 필드로 향후 스키마 확장 · 미지 필드는 무시되어 상·하위 호환).</summary>
@@ -207,6 +254,23 @@ public sealed class PlutoMetaCalibrationService : IPlutoMetaCalibrationService, 
         return 1.0;
     }
 
+    /// <summary>🔁 회복 부스트(순수 함수) — 잔액 &lt; 임계 → 0 · 이후 선형 · 상한 <see cref="MaxRecoveryBoost"/>.</summary>
+    public static double ComputeRecoveryBoost(double outstandingRegret)
+    {
+        if (!double.IsFinite(outstandingRegret) || outstandingRegret < RecoveryThreshold) return 0.0;
+        return MaxRecoveryBoost * Math.Clamp(outstandingRegret / RecoveryFullRegret, 0.0, 1.0);
+    }
+
+    /// <summary>🔁 오답 노트 차단 판정 — 라벨 전체 · 접두(<c>hook:</c>/<c>look:</c>) 제외 값 · 조합 키의 훅/룩 어느 하나라도 차단이면 true.</summary>
+    public static bool IsBlockedLabel(string label, IReadOnlySet<string>? blocked)
+    {
+        if (blocked is null || blocked.Count == 0 || string.IsNullOrWhiteSpace(label)) return false;
+        if (blocked.Contains(label)) return true;
+        if (PlutoPairAttribution.TrySplitPair(label, out var hook, out var look)) return blocked.Contains(hook) || blocked.Contains(look);
+        var colon = label.IndexOf(':');
+        return colon > 0 && colon < label.Length - 1 && blocked.Contains(label[(colon + 1)..]);
+    }
+
     private static double Ramp(double v, double deadBand, double full) => Math.Clamp((v - deadBand) / (full - deadBand), 0.0, 1.0);
     private static double Clamp01(double v) => Math.Clamp(v, 0.0, 1.0);
 
@@ -244,9 +308,46 @@ public sealed class PlutoMetaCalibrationService : IPlutoMetaCalibrationService, 
     private async Task EnsureLoadedLockedAsync(CancellationToken ct)
     {
         if (_loaded) return;
-        var (data, status) = await PlutoJsonStore.TryLoadAsync<Snapshot>(StoragePath, "Pluto.MetaCalibration", ct).ConfigureAwait(false);
+        var (data, status) = await LoadSnapshotAsync(ct).ConfigureAwait(false);
         _readOnly = status == PlutoLoadStatus.Unreadable;
+        lock (_sync) ReplaceStateLocked(data);
+        _loaded = true;
+    }
+
+    /// <summary>🛡️ 본 파일 적재 — 손상/빈 본문이면 <c>.bak</c> 마지막 정상본으로 복구(본 파일은 <c>.corrupt</c> 격리 유지).</summary>
+    private async Task<(Snapshot? Data, PlutoLoadStatus Status)> LoadSnapshotAsync(CancellationToken ct)
+    {
+        var (data, status) = await PlutoJsonStore.TryLoadAsync<Snapshot>(StoragePath, "Pluto.MetaCalibration", ct).ConfigureAwait(false);
+        if (status == PlutoLoadStatus.Corrupt || (status == PlutoLoadStatus.Ok && data is null))
+        {
+            var (backup, backupStatus) = await PlutoJsonStore.TryLoadAsync<Snapshot>(BackupPath, "Pluto.MetaCalibration.Backup", ct).ConfigureAwait(false);
+            if (backupStatus == PlutoLoadStatus.Ok && backup is not null)
+            {
+                _recoveredFromBackup = true;
+                return (backup, PlutoLoadStatus.Ok);
+            }
+        }
+        return (data, status);
+    }
+
+    /// <summary>🛡️ 읽기 전용 세션 자가 치유 — 잠금이 풀렸으면 디스크 상태를 적재하고 세션 중 관측을 그 위에 재생(호출자가 <c>_gate</c> 보유).</summary>
+    private async Task TryHealReadOnlyLockedAsync(CancellationToken ct)
+    {
+        var (data, status) = await LoadSnapshotAsync(ct).ConfigureAwait(false);
+        if (status == PlutoLoadStatus.Unreadable) return;   // 아직 잠김 → 메모리 전용 유지
         lock (_sync)
+        {
+            ReplaceStateLocked(data);
+            for (var i = 0; i < _readOnlyPending.Count; i++) ApplyLocked(_readOnlyPending[i].Obs, _readOnlyPending[i].Utc);
+            _readOnlyPending.Clear();
+        }
+        _readOnly = false;
+        Interlocked.Increment(ref _healedSessions);
+    }
+
+    /// <summary>상태 교체(호출자가 <c>_sync</c> 보유).</summary>
+    private void ReplaceStateLocked(Snapshot? data)
+    {
         {
             _window.Clear();
             _attributions.Clear();
@@ -269,13 +370,13 @@ public sealed class PlutoMetaCalibrationService : IPlutoMetaCalibrationService, 
                     {
                         if (_attributions.Count >= MaxAttributions) break;
                         if (string.IsNullOrWhiteSpace(kv.Key) || kv.Value is null || !double.IsFinite(kv.Value.Regret) || kv.Value.Regret < 0) continue;
-                        _attributions[Clip(kv.Key)!] = new AttributionDto { Regret = kv.Value.Regret, Count = Math.Max(0, kv.Value.Count) };
+                        var bal = kv.Value.Recovery is { } rv && double.IsFinite(rv) && rv >= 0 ? rv : kv.Value.Regret;   // Step 14 파일 → 누적 후회를 잔액으로
+                        _attributions[Clip(kv.Key)!] = new AttributionDto { Regret = kv.Value.Regret, Count = Math.Max(0, kv.Value.Count), Recovery = bal, Utc = kv.Value.Utc };
                     }
                 _cumulativeRegret = double.IsFinite(data.CumulativeRegret) && data.CumulativeRegret > 0 ? data.CumulativeRegret : 0.0;
                 _totalRecords = Math.Max(Math.Max(0, data.TotalRecords), _window.Count);
             }
         }
-        _loaded = true;
     }
 
     private static double? Finite(double? v) => v is { } x && double.IsFinite(x) ? Clamp01(x) : null;
@@ -291,42 +392,43 @@ public sealed class PlutoMetaCalibrationService : IPlutoMetaCalibrationService, 
     {
         ArgumentNullException.ThrowIfNull(observation);
         ct.ThrowIfCancellationRequested();
-        if (!observation.HasPrediction && !observation.HasAlternative) return GetStatus();   // 감사할 근거 없음
+        var auditable = observation.HasPrediction || observation.HasAlternative;
+        if (!auditable && observation.ChosenLabels is not { Count: > 0 }) return GetStatus();   // 감사할 근거 없음
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
             await EnsureLoadedLockedAsync(ct).ConfigureAwait(false);
-            string json;
+            if (_readOnly) await TryHealReadOnlyLockedAsync(ct).ConfigureAwait(false);
+            string? json = null;
             lock (_sync)
             {
-                var rec = new RecordDto
+                var now = Now();
+                if (ApplyLocked(observation, now))
                 {
-                    P = observation.HasPrediction ? Clamp01(observation.PredictedExpectedScore) : null,
-                    R = Clamp01(observation.RealizedScore),
-                    A = observation.HasAlternative ? Clamp01(observation.BestAlternativeExpectedScore) : null,
-                    Utc = UtcNowProvider?.Invoke() ?? DateTime.UtcNow,
-                    Src = Clip(observation.Source),
-                };
-                _window.Add(rec);
-                if (_window.Count > WindowCapacity) _window.RemoveRange(0, _window.Count - WindowCapacity);
-                _totalRecords = _totalRecords == int.MaxValue ? int.MaxValue : _totalRecords + 1;
-                if (rec.A is { } alt)
-                {
-                    var regret = Math.Max(0.0, alt - rec.R);
-                    _cumulativeRegret += regret;
-                    if (regret > 0 && Clip(observation.BestAlternativeLabel) is { } label) Attribute(label, regret);
-                }
-                json = JsonSerializer.Serialize(new Snapshot
+                    if (_readOnly)
+                    {
+                        _readOnlyPending.Add((observation, now));
+                        if (_readOnlyPending.Count > WindowCapacity) _readOnlyPending.RemoveAt(0);
+                    }
+                    json = JsonSerializer.Serialize(new Snapshot
                 {
                     CumulativeRegret = _cumulativeRegret, TotalRecords = _totalRecords, Window = new List<RecordDto>(_window),
                     Attributions = new Dictionary<string, AttributionDto>(_attributions, StringComparer.Ordinal),
                 }, JsonOpts);
+                }
             }
+            if (json is null) return GetStatus();   // 보정 근거도 · 소거할 회복 사전도 없음 → 무변경
             if (!_readOnly)
             {
                 // 호출자 취소가 기록 도중 끼어들어도 상태는 이미 메모리에 반영됨 → 영속은 끝까지 수행
-                if (_storage is not null) await _storage.WriteAllTextAtomicAsync(FileName, json, CancellationToken.None).ConfigureAwait(false);
-                else await PlutoJsonStore.WriteAtomicAsync(_path, json, "Pluto.MetaCalibration", CancellationToken.None).ConfigureAwait(false);
+                // 🛡️ 본 파일 기록 성공 뒤에만 마지막 정상본(.bak) 갱신 — 본 파일이 깨져도 직전 정상 상태가 남는다
+                if (_storage is not null)
+                {
+                    if (await _storage.WriteAllTextAtomicAsync(FileName, json, CancellationToken.None).ConfigureAwait(false))
+                        await _storage.WriteAllTextAtomicAsync(FileName + BackupSuffix, json, CancellationToken.None).ConfigureAwait(false);
+                }
+                else if (await PlutoJsonStore.WriteAtomicAsync(_path, json, "Pluto.MetaCalibration", CancellationToken.None).ConfigureAwait(false))
+                    await PlutoJsonStore.WriteAtomicAsync(_path + BackupSuffix, json, "Pluto.MetaCalibration.Backup", CancellationToken.None).ConfigureAwait(false);
             }
         }
         finally { _gate.Release(); }
@@ -334,8 +436,68 @@ public sealed class PlutoMetaCalibrationService : IPlutoMetaCalibrationService, 
         return GetStatus();
     }
 
-    /// <summary>대안별 후회 누적 — 용량 초과 시 누적 후회 최소(동률 → 키 사전순) 항목 축출(결정론).</summary>
-    private void Attribute(string label, double regret)
+    /// <summary>
+    /// 관측 1건을 메모리 상태에 반영(호출자가 <c>_sync</c> 보유) — ① 선택된 라벨의 회복 사전 소거 ② 보정/후회 창 기록 ③ 후회 귀속 · 잔액 적립.
+    /// 반환 false = 아무것도 바뀌지 않음.
+    /// </summary>
+    private bool ApplyLocked(PlutoCalibrationObservation observation, DateTime now)
+    {
+        var changed = false;
+        if (observation.ChosenLabels is { } chosen)
+            for (var i = 0; i < chosen.Count; i++)
+                if (Clip(chosen[i]) is { } tested && _attributions.TryGetValue(tested, out var ta) && (ta.Recovery ?? ta.Regret) > 0)
+                {
+                    ta.Recovery = 0.0;   // 🔁 실측 검증 완료 → 리허설 종료(누적 귀속은 리포트용으로 보존)
+                    ta.Utc = now;
+                    changed = true;
+                }
+        if (!observation.HasPrediction && !observation.HasAlternative) return changed;
+        var rec = new RecordDto
+        {
+            P = observation.HasPrediction ? Clamp01(observation.PredictedExpectedScore) : null,
+            R = Clamp01(observation.RealizedScore),
+            A = observation.HasAlternative ? Clamp01(observation.BestAlternativeExpectedScore) : null,
+            Utc = now,
+            Src = Clip(observation.Source),
+        };
+        _window.Add(rec);
+        if (_window.Count > WindowCapacity) _window.RemoveRange(0, _window.Count - WindowCapacity);
+        _totalRecords = _totalRecords == int.MaxValue ? int.MaxValue : _totalRecords + 1;
+        if (rec.A is { } alt)
+        {
+            var regret = Math.Max(0.0, alt - rec.R);
+            _cumulativeRegret += regret;
+            if (regret > 0 && Clip(observation.BestAlternativeLabel) is { } label) Attribute(label, regret, !observation.AlternativeMeasured, now);
+        }
+        return true;
+    }
+
+    private static double Outstanding(AttributionDto a, DateTime now)
+        => Math.Max(0.0, a.Recovery ?? a.Regret) * PlutoLearningService.HalfLifeFactor(a.Utc, now, RecoveryHalfLifeDays);
+
+    public IReadOnlyList<PlutoRegretRecoveryBoost> GetRegretRecoveryBoosts(IReadOnlySet<string>? blockedTokens = null)
+    {
+        var list = new List<PlutoRegretRecoveryBoost>();
+        var now = Now();
+        lock (_sync)
+            foreach (var kv in _attributions)
+            {
+                var outstanding = Outstanding(kv.Value, now);
+                var boost = ComputeRecoveryBoost(outstanding);
+                if (boost <= 0 || IsBlockedLabel(kv.Key, blockedTokens)) continue;
+                list.Add(new PlutoRegretRecoveryBoost(kv.Key, boost, outstanding, kv.Value.Count));
+            }
+        list.Sort(static (a, b) =>
+        {
+            var c = b.Boost.CompareTo(a.Boost);
+            if (c == 0) c = b.OutstandingRegret.CompareTo(a.OutstandingRegret);
+            return c != 0 ? c : string.CompareOrdinal(a.Label, b.Label);
+        });
+        return list;
+    }
+
+    /// <summary>대안별 후회 누적 — 용량 초과 시 누적 후회 최소(동률 → 키 사전순) 항목 축출(결정론). <paramref name="credit"/> = 회복 잔액 적립 여부.</summary>
+    private void Attribute(string label, double regret, bool credit, DateTime now)
     {
         if (!_attributions.TryGetValue(label, out var a))
         {
@@ -346,9 +508,15 @@ public sealed class PlutoMetaCalibrationService : IPlutoMetaCalibrationService, 
                     if (kv.Value.Regret < min || (kv.Value.Regret == min && string.CompareOrdinal(kv.Key, victim) < 0)) { min = kv.Value.Regret; victim = kv.Key; }
                 if (victim is not null) _attributions.Remove(victim);
             }
-            a = new AttributionDto();
+            a = new AttributionDto { Recovery = 0.0 };
             _attributions[label] = a;
         }
+        if (credit)
+        {
+            a.Recovery = Outstanding(a, now) + regret;   // 감쇠 후 재기준 + 이번 후회
+            a.Utc = now;
+        }
+        else a.Recovery ??= a.Regret;                   // Step 14 항목의 잔액 기준 고정(이후 Regret 증가분이 잔액으로 새지 않게)
         a.Regret += regret;
         a.Count = a.Count == int.MaxValue ? int.MaxValue : a.Count + 1;
     }

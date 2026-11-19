@@ -34,6 +34,12 @@ public sealed record PlutoVariantABPlan(string ExperimentId, string ThemeHint, P
     public bool IsExplorationSurge { get; init; }
     /// <summary>🌊 생성 시점 탐색 온도 배수(서지 없음 → 1.0).</summary>
     public double ExplorationTemperature { get; init; } = 1.0;
+    /// <summary>🔁 챌린저에 배정된 후회 리허설 대상(<c>hook:…</c> · <c>look:…</c> · <c>pair:…</c>) — 없음 → null.</summary>
+    public string? RegretRehearsalLabel { get; init; }
+    /// <summary>🔁 리허설 대상의 회복 사전 부스트(없음 → 0).</summary>
+    public double RegretRehearsalBoost { get; init; }
+    /// <summary>🔁 챌린저 B 가 '거듭 지나친 고후회 대안'의 실측 재검증에 쓰임.</summary>
+    public bool IsRegretRehearsal => RegretRehearsalLabel is not null;
 }
 
 /// <summary>⚖️ Pluto 4.3 통제 A/B 변형 생성기.</summary>
@@ -121,6 +127,8 @@ public sealed class PlutoVariantABGenerator : IPlutoVariantABGenerator
         var challHook = PickChallenger(PreferThemed(WithoutDomainAntiSynergy(ranker, exploreHooks, domain), themeHooks), champHook, null, suppressed) ?? AlternateTemplateHook(themeHooks, champHook);
         var challLook = PickChallengerLook(ranker, exploreLooks, champLook, challHook, suppressed) ?? AlternateLook(champLook);
         var challBgm = PickChallenger(bgms, champBgm, ExcludedBgmMoods, suppressed) ?? champBgm;
+        // 🔁 능동 후회 리허설 — 거듭 지나쳐 반사실 후회가 쌓인 대안을 챌린저로 실측 검증(검증되면 폐루프가 회복 사전을 소거)
+        var rehearsal = ApplyRegretRehearsal(ranker, hooks, exploreLooks, domain, champHook, champLook, suppressed, ref challHook, ref challLook);
         if (string.Equals(champHook, challHook, StringComparison.Ordinal) && string.Equals(champLook, challLook, StringComparison.Ordinal))
             challLook = AlternateLook(champLook);   // 불변식 최종 가드
         var challBonus = Math.Max(BonusOf(exploreHooks, challHook), BonusOf(exploreLooks, challLook));
@@ -141,6 +149,9 @@ public sealed class PlutoVariantABGenerator : IPlutoVariantABGenerator
         var challConf = ConfidenceOf(exploreHooks, challHook);
         if (promotedByConfidence) hypothesis += " · 🎯 챔피언 = 신뢰 하한 최대(" + champConf.LowerConfidenceBound.ToString("0.00", CultureInfo.InvariantCulture) + ") — 소표본 급등 1위는 챌린저 검증 대상으로";
         else if (champConf.IsProvenWinner) hypothesis += " · 🎯 챔피언 검증됨(90% 하한 ×" + champConf.LowerConfidenceBound.ToString("0.00", CultureInfo.InvariantCulture) + ")";
+        if (rehearsal is not null)
+            hypothesis += " · 🔁 후회 리허설: " + rehearsal.Label + "(미해소 후회 " + rehearsal.OutstandingRegret.ToString("0.00", CultureInfo.InvariantCulture)
+                + " · 회복 사전 +" + rehearsal.Boost.ToString("0.00", CultureInfo.InvariantCulture) + ") — 지나친 대안을 실측으로 재검증";
         if (drift.IsSurgeActive) hypothesis += " · 🌊 레짐 변화 감지 — 탐색 온도 ×" + drift.ExplorationTemperature.ToString("0.00", CultureInfo.InvariantCulture) + "(낡은 승자 대신 새 후보 공격 검증)";
         return new PlutoVariantABPlan(_idFactory(), themeHint, a, b, hypothesis)
         {
@@ -152,7 +163,76 @@ public sealed class PlutoVariantABGenerator : IPlutoVariantABGenerator
             ChampionPromotedByConfidence = promotedByConfidence,
             IsExplorationSurge = drift.IsSurgeActive,
             ExplorationTemperature = drift.ExplorationTemperature,
+            RegretRehearsalLabel = rehearsal?.Label,
+            RegretRehearsalBoost = rehearsal?.Boost ?? 0.0,
         };
+    }
+
+    // ── 🔁 능동 후회 리허설 ──
+
+    private static IReadOnlyList<PlutoRegretRecoveryBoost> SafeRecoveryBoosts(IPlutoAdaptivePatternRanker ranker)
+    {
+        try { return ranker.GetRegretRecoveryBoosts() ?? Array.Empty<PlutoRegretRecoveryBoost>(); }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.AB] regret recovery: " + ex.Message); return Array.Empty<PlutoRegretRecoveryBoost>(); }
+    }
+
+    /// <summary>
+    /// 🔁 회복 사전(부스트 내림차순) 중 첫 '적용 가능' 대안을 챌린저에 배정 — 실험 1회 = 리허설 대상 1개(변수 통제).
+    ///   ▸ <c>hook:X</c> → 챌린저 훅 = X(룩은 X 와 역시너지가 아닌 탐색 최상위로 재선정) · <c>look:Y</c> → 챌린저 룩 = Y · <c>pair:X+Y</c> → 둘 다.
+    ///   ▸ 제외: 이미 챔피언(곧 실측됨) · 오답 감점/차단 · 도메인 역시너지 훅 · 챌린저 훅과 역시너지인 룩 · 챔피언과 완전히 같은 조합.
+    /// 적용 대상 없음 → null(기존 UCB1 챌린저 그대로).
+    /// </summary>
+    private static PlutoRegretRecoveryBoost? ApplyRegretRehearsal(IPlutoAdaptivePatternRanker ranker, IReadOnlyList<PlutoRankedOption> hooks, IReadOnlyList<PlutoRankedOption> looks,
+        string domain, string champHook, string champLook, IReadOnlySet<string>? suppressed, ref string challHook, ref string challLook)
+    {
+        var boosts = SafeRecoveryBoosts(ranker);
+        for (var i = 0; i < boosts.Count; i++)
+        {
+            var b = boosts[i];
+            if (b is null || string.IsNullOrWhiteSpace(b.Label) || !(b.Boost > 0)) continue;
+            if (PlutoPairAttribution.TrySplitPair(b.Label, out var pairHook, out var pairLook))
+            {
+                if (string.Equals(pairHook, champHook, StringComparison.Ordinal) && string.Equals(pairLook, champLook, StringComparison.Ordinal)) continue;
+                if (!HookEligible(ranker, hooks, domain, pairHook, suppressed) || !Usable(looks, pairLook, suppressed)) continue;
+                if (SafeSynergy(ranker, pairHook, pairLook).IsAntiSynergy) continue;
+                challHook = pairHook; challLook = pairLook;
+                return b;
+            }
+            if (b.Label.StartsWith(PlutoAdaptivePatternRanker.HookPrefix, StringComparison.Ordinal))
+            {
+                var hook = b.Label[PlutoAdaptivePatternRanker.HookPrefix.Length..];
+                if (hook.Length == 0 || string.Equals(hook, champHook, StringComparison.Ordinal) || !HookEligible(ranker, hooks, domain, hook, suppressed)) continue;
+                if (!string.Equals(hook, challHook, StringComparison.Ordinal))
+                {
+                    challHook = hook;
+                    // 새 훅과 역시너지인 룩은 피한다(변경은 그때만 — 리허설 변수는 훅 하나)
+                    if (SafeSynergy(ranker, hook, challLook).IsAntiSynergy)
+                        challLook = PickChallengerLook(ranker, looks, champLook, hook, suppressed) ?? challLook;
+                }
+                return b;
+            }
+            if (b.Label.StartsWith(PlutoAdaptivePatternRanker.LookPrefix, StringComparison.Ordinal))
+            {
+                var look = b.Label[PlutoAdaptivePatternRanker.LookPrefix.Length..];
+                if (look.Length == 0 || string.Equals(look, champLook, StringComparison.Ordinal) || !Usable(looks, look, suppressed)) continue;
+                if (SafeSynergy(ranker, challHook, look).IsAntiSynergy) continue;
+                challLook = look;
+                return b;
+            }
+        }
+        return null;
+    }
+
+    private static bool HookEligible(IPlutoAdaptivePatternRanker ranker, IReadOnlyList<PlutoRankedOption> hooks, string domain, string hook, IReadOnlySet<string>? suppressed)
+        => Usable(hooks, hook, suppressed) && !SafeDomainSynergy(ranker, domain, hook).IsAntiSynergy;
+
+    /// <summary>감점 · 차단이 아닌 후보(랭킹 목록에 없는 라벨은 차단 목록만 확인).</summary>
+    private static bool Usable(IReadOnlyList<PlutoRankedOption> ranked, string label, IReadOnlySet<string>? suppressed)
+    {
+        if (suppressed is { Count: > 0 } && suppressed.Contains(label)) return false;
+        for (var i = 0; i < ranked.Count; i++)
+            if (string.Equals(ranked[i].DisplayLabel, label, StringComparison.Ordinal)) return !ranked[i].IsPenalized;
+        return true;
     }
 
     // ── 🎯 사후 신뢰 · 🌊 레짐 드리프트 ──

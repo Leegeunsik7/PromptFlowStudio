@@ -146,11 +146,16 @@ public sealed class PlutoClosedLoopReinforcementService : IPlutoClosedLoopReinfo
     }
 
     /// <summary>🎯 메타 보정 기록 — 실패 격리([부분 구제] 강화 결과 유지 · 취소만 전파). 근거 없음 → null.</summary>
-    private async Task<PlutoCalibrationObservation?> RecordCalibrationSafeAsync(double predicted, double realized, double alternative, string? alternativeLabel, string source, CancellationToken ct)
+    private async Task<PlutoCalibrationObservation?> RecordCalibrationSafeAsync(double predicted, double realized, double alternative, string? alternativeLabel, string source, CancellationToken ct,
+        PlutoVideoPerformanceTelemetry? chosen = null, bool alternativeMeasured = false)
     {
         if (MetaCalibration is null) return null;
-        var obs = new PlutoCalibrationObservation(predicted, realized, alternative) { BestAlternativeLabel = alternativeLabel, Source = source };
-        if (!obs.HasPrediction && !obs.HasAlternative) return null;
+        var obs = new PlutoCalibrationObservation(predicted, realized, alternative)
+        {
+            BestAlternativeLabel = alternativeLabel, Source = source, AlternativeMeasured = alternativeMeasured,
+            ChosenLabels = chosen is null ? null : RehearsalLabels(chosen),
+        };
+        if (!obs.HasPrediction && !obs.HasAlternative && obs.ChosenLabels is not { Count: > 0 }) return null;
         try { await MetaCalibration.RecordOutcomeAsync(obs, ct).ConfigureAwait(false); return obs; }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.ClosedLoop] calibration: " + ex.Message); return null; }
@@ -252,6 +257,35 @@ public sealed class PlutoClosedLoopReinforcementService : IPlutoClosedLoopReinfo
         return list;
     }
 
+    /// <summary>🔁 후회 리허설 소거 라벨 — 이번 영상이 실제로 검증한 <c>hook:</c> · <c>look:</c> · <c>pair:</c> 구성.</summary>
+    public static IReadOnlyList<string> RehearsalLabels(PlutoVideoPerformanceTelemetry t)
+    {
+        ArgumentNullException.ThrowIfNull(t);
+        var list = new List<string>(3);
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        Add(list, seen, "hook:", t.HookStyle);
+        Add(list, seen, "look:", t.ColorLookId);
+        if (PlutoPairAttribution.PairKey(t.HookStyle, t.ColorLookId) is { } pair && seen.Add(pair)) list.Add(pair);
+        return list;
+    }
+
+    /// <summary>⚖️ 다목적 성과(A/B 변형) 기록 — 실패 격리([부분 구제] 판정 결과 유지 · 취소만 전파).</summary>
+    private async Task RecordObjectivesSafeAsync(PlutoVideoPerformanceTelemetry t, CancellationToken ct)
+    {
+        if (_learning is null) return;
+        try
+        {
+            var tokens = new List<string>(2);
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            Add(tokens, seen, "hook:", t.HookStyle);
+            Add(tokens, seen, "look:", t.ColorLookId);
+            if (tokens.Count > 0)
+                await _learning.RecordPatternObjectivesAsync(tokens, PlutoObjectiveVector.FromPercent(t.ThreeSecondHookRetentionPct, t.AverageCompletionPct, t.ClickThroughRatePct), ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.ClosedLoop] objectives: " + ex.Message); }
+    }
+
     /// <summary>오답 노트 기록 토큰 — 훅 스타일 + 스타일 태그(원문 · 중복 제외).</summary>
     public static IReadOnlyList<string> MistakeTokens(PlutoVideoPerformanceTelemetry t)
     {
@@ -345,7 +379,8 @@ public sealed class PlutoClosedLoopReinforcementService : IPlutoClosedLoopReinfo
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             Add(tokens, seen, "hook:", t.HookStyle);
             Add(tokens, seen, "look:", t.ColorLookId);
-            return await _learning.RecordContextualObservationAsync(t.Domain, t.RenderMode, PlutoContextualBaseline.CompositeScore(t), tokens, ct).ConfigureAwait(false);
+            return await _learning.RecordContextualObservationAsync(t.Domain, t.RenderMode, PlutoContextualBaseline.CompositeScore(t), tokens, ct,
+                PlutoObjectiveVector.FromPercent(t.ThreeSecondHookRetentionPct, t.AverageCompletionPct, t.ClickThroughRatePct)).ConfigureAwait(false);
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.ClosedLoop] context: " + ex.Message); return null; }
@@ -465,8 +500,11 @@ public sealed class PlutoClosedLoopReinforcementService : IPlutoClosedLoopReinfo
             if (ctx is { DriftDetected: true }) summary += " · 🌊 레짐 변화 감지 — 탐색 서지 발동";
             // 🎯 예측 vs 실현 · 💸 반사실 후회 감사(예측 근거가 있을 때만)
             var calibration = forecast.HasBaseline
-                ? await RecordCalibrationSafeAsync(forecast.PredictedScore, PlutoContextualBaseline.CompositeScore(telemetry), forecast.BestAlternativeScore, forecast.BestAlternativeLabel, "closed-loop", ct).ConfigureAwait(false)
+                ? await RecordCalibrationSafeAsync(forecast.PredictedScore, PlutoContextualBaseline.CompositeScore(telemetry), forecast.BestAlternativeScore, forecast.BestAlternativeLabel, "closed-loop", ct, telemetry).ConfigureAwait(false)
                 : null;
+            // 🔁 예측 근거(기준선)가 아직 없어도 '실측 검증된' 후회 리허설 대상은 소거(보정 창에는 기록되지 않음)
+            if (!forecast.HasBaseline)
+                await RecordCalibrationSafeAsync(double.NaN, PlutoContextualBaseline.CompositeScore(telemetry), double.NaN, null, "closed-loop", ct, telemetry).ConfigureAwait(false);
             if (calibration is { Regret: > PlutoMetaCalibrationService.RegretDeadBand })
                 summary += " · 💸 반사실 후회 " + calibration.Regret.ToString("0.00", Inv) + (calibration.BestAlternativeLabel is { } alt ? "(대안 " + alt + ")" : "");
             var outcome = new PlutoReinforcementOutcome(breakout, penalty > 0, xp, mult, summary + warn)
@@ -586,6 +624,9 @@ public sealed class PlutoClosedLoopReinforcementService : IPlutoClosedLoopReinfo
             if (penalty > 0 && isolatedKey is not null) sb.Append(" · 🎯 조합 격리(").Append(isolatedKey).Append(')');
 
             // 🎯💸 A/B 는 반사실이 실측된다 — 각 변형의 최선 대안 = 상대 변형의 실현 점수(패자 후회 = 승자 − 패자 · 승자 후회 = 0)
+            // ⚖️ 변형별 다목적 성과(훅 · 완주 · CTR) — 파레토 프런티어 근거
+            await RecordObjectivesSafeAsync(request.Winner, ct).ConfigureAwait(false);
+            await RecordObjectivesSafeAsync(request.Loser, ct).ConfigureAwait(false);
             PlutoCalibrationObservation? loserCalibration = null;
             if (MetaCalibration is not null)
             {
@@ -593,8 +634,8 @@ public sealed class PlutoClosedLoopReinforcementService : IPlutoClosedLoopReinfo
                 var loseScore = PlutoContextualBaseline.CompositeScore(request.Loser);
                 var winTokens = PatternTokens(request.Winner);
                 var loseTokens = PatternTokens(request.Loser);
-                await RecordCalibrationSafeAsync(winForecast.PredictedScore, winScore, loseScore, loseTokens.Count > 0 ? loseTokens[0] : null, "ab", ct).ConfigureAwait(false);
-                loserCalibration = await RecordCalibrationSafeAsync(loseForecast.PredictedScore, loseScore, winScore, winTokens.Count > 0 ? winTokens[0] : null, "ab", ct).ConfigureAwait(false);
+                await RecordCalibrationSafeAsync(winForecast.PredictedScore, winScore, loseScore, loseTokens.Count > 0 ? loseTokens[0] : null, "ab", ct, request.Winner, alternativeMeasured: true).ConfigureAwait(false);
+                loserCalibration = await RecordCalibrationSafeAsync(loseForecast.PredictedScore, loseScore, winScore, winTokens.Count > 0 ? winTokens[0] : null, "ab", ct, request.Loser, alternativeMeasured: true).ConfigureAwait(false);
             }
 
             var outcome = new PlutoReinforcementOutcome(boosted, penalty > 0, xp, mult, sb.ToString() + warn)

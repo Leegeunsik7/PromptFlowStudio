@@ -40,6 +40,8 @@ public sealed record ProviderCircuitSnapshot(string Provider, ProviderCircuitSta
 /// 냉각 시간 동안 호출 자체를 생략하고, 냉각 후 탐침 1건으로 복구를 확인한다(실패 시 냉각 2배 · 상한 <see cref="MaxCooldown"/>).
 ///   ▸ 인증/검증 등 영구 오류는 프로바이더가 '살아 있다'는 증거 → 회로를 열지 않고 연속 실패를 초기화.
 ///   ▸ 취소는 판정 보류 — 반개방 탐침 슬롯만 반납.
+///   ▸ 🖐️ 운영자 개입: <see cref="RequestProbe"/>(냉각을 건너뛰고 다음 호출을 탐침으로) · <see cref="Reset"/>(즉시 닫기) ·
+///     <see cref="StateChanged"/>(상태 전이 통지 → UI 배지).
 /// </summary>
 public sealed class ProviderCircuitBreaker
 {
@@ -64,6 +66,61 @@ public sealed class ProviderCircuitBreaker
     /// <summary>현재 시각(테스트 주입용).</summary>
     public Func<DateTimeOffset> Clock { get; init; } = static () => DateTimeOffset.UtcNow;
 
+    /// <summary>⚡ 회로 상태 전이(Closed ↔ Open ↔ HalfOpen) 통지 — 잠금 밖에서 발생 · 백그라운드 스레드 가능 · 핸들러 예외 격리.</summary>
+    public event Action? StateChanged;
+
+    private void RaiseStateChanged()
+    {
+        var h = StateChanged;
+        if (h is null) return;
+        foreach (Action a in h.GetInvocationList())
+        {
+            try { a(); } catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Render.CircuitBreaker] StateChanged handler: " + ex.Message); }
+        }
+    }
+
+    /// <summary>
+    /// 🖐️ 수동 탐침 요청 — Open 회로의 남은 냉각을 건너뛰어 다음 <see cref="TryAcquire"/> 1건이 반개방 탐침이 되게 한다
+    /// (냉각 단계는 유지 → 탐침 실패 시 냉각 2배로 다시 차단). 반환 true = Open 이었고 탐침이 예약됨.
+    /// </summary>
+    public bool RequestProbe(string? provider)
+    {
+        lock (_sync)
+        {
+            if (!_circuits.TryGetValue(Key(provider), out var c) || c.State != ProviderCircuitState.Open) return false;
+            c.Cooldown = TimeSpan.Zero;
+        }
+        RaiseStateChanged();
+        return true;
+    }
+
+    /// <summary>
+    /// 🖐️ 수동 해제 — 회로를 즉시 닫고 연속 실패 · 냉각 단계를 초기화(누적 통계는 보존). 프로바이더 복구를 운영자가 직접 확인했을 때 사용.
+    /// 반환 true = 닫힌 상태가 아니었거나 연속 실패가 남아 있었음.
+    /// </summary>
+    public bool Reset(string? provider)
+    {
+        bool changed;
+        lock (_sync)
+        {
+            if (!_circuits.TryGetValue(Key(provider), out var c)) return false;
+            changed = c.State != ProviderCircuitState.Closed || c.ConsecutiveFailures > 0;
+            Close(c);
+        }
+        if (changed) RaiseStateChanged();
+        return changed;
+    }
+
+    /// <summary>⚡ 닫히지 않은(Open · HalfOpen) 회로 스냅샷(키 사전순) — UI 배지용.</summary>
+    public IReadOnlyList<ProviderCircuitSnapshot> GetTrippedSnapshots()
+    {
+        var all = GetSnapshots();
+        List<ProviderCircuitSnapshot>? tripped = null;
+        for (var i = 0; i < all.Count; i++)
+            if (all[i].State != ProviderCircuitState.Closed) (tripped ??= new List<ProviderCircuitSnapshot>()).Add(all[i]);
+        return tripped is null ? Array.Empty<ProviderCircuitSnapshot>() : tripped;
+    }
+
     /// <summary>
     /// 호출 허가 — Closed → true · Open + 냉각 경과 → 반개방 탐침 1건 true · 그 외 false(<paramref name="retryAfter"/> = 남은 냉각 · 탐침 중이면 0).
     /// true 를 받은 호출자는 반드시 <see cref="RecordSuccess"/> · <see cref="RecordTransientFailure"/> · <see cref="RecordReachable"/> ·
@@ -79,40 +136,53 @@ public sealed class ProviderCircuitBreaker
             if (c.State == ProviderCircuitState.Open)
             {
                 var elapsed = Clock() - c.OpenedAt;
-                if (elapsed >= c.Cooldown || elapsed < TimeSpan.Zero)   // 시계 역행 → 영구 차단 방지
+                if (elapsed < c.Cooldown && elapsed >= TimeSpan.Zero)   // 시계 역행 → 영구 차단 방지(탐침 허용)
                 {
-                    c.State = ProviderCircuitState.HalfOpen;
-                    c.ProbeInFlight = true;
-                    return true;
+                    retryAfter = c.Cooldown - elapsed;
+                    c.ShortCircuited++;
+                    return false;
                 }
-                retryAfter = c.Cooldown - elapsed;
-                c.ShortCircuited++;
-                return false;
+                c.State = ProviderCircuitState.HalfOpen;
+                c.ProbeInFlight = true;
             }
-            if (c.ProbeInFlight) { c.ShortCircuited++; return false; }
-            c.ProbeInFlight = true;
-            return true;
+            else
+            {
+                if (c.ProbeInFlight) { c.ShortCircuited++; return false; }
+                c.ProbeInFlight = true;
+                return true;
+            }
         }
+        RaiseStateChanged();   // Open → HalfOpen
+        return true;
     }
 
     /// <summary>성공 → Closed · 연속 실패/냉각 단계 초기화.</summary>
     public void RecordSuccess(string? provider)
     {
+        bool changed;
         lock (_sync)
         {
             var c = Get(Key(provider));
             c.TotalSuccesses++;
+            changed = c.State != ProviderCircuitState.Closed;
             Close(c);
         }
+        if (changed) RaiseStateChanged();
     }
 
     /// <summary>영구 오류(인증 · 검증) — 프로바이더는 응답 중 → 회로 닫음(성공 계수는 올리지 않음).</summary>
     public void RecordReachable(string? provider)
     {
+        var changed = false;
         lock (_sync)
         {
-            if (_circuits.TryGetValue(Key(provider), out var c)) Close(c);
+            if (_circuits.TryGetValue(Key(provider), out var c))
+            {
+                changed = c.State != ProviderCircuitState.Closed;
+                Close(c);
+            }
         }
+        if (changed) RaiseStateChanged();
     }
 
     /// <summary>판정 보류(취소) — 반개방 탐침 슬롯 반납(다음 호출이 다시 탐침).</summary>
@@ -126,6 +196,13 @@ public sealed class ProviderCircuitBreaker
 
     /// <summary>작업 단위 일시 실패(재시도 소진 후) — 임계 도달 또는 탐침 실패 → Open. 반환 true = 이번 실패로 회로가 열림.</summary>
     public bool RecordTransientFailure(string? provider, string? error)
+    {
+        var tripped = RecordTransientFailureCore(provider, error);
+        if (tripped) RaiseStateChanged();
+        return tripped;
+    }
+
+    private bool RecordTransientFailureCore(string? provider, string? error)
     {
         lock (_sync)
         {

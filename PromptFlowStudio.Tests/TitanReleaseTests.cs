@@ -27130,14 +27130,14 @@ public sealed class CinematicLensOpticsIsolatedTests
         Assert.Equal(0, AllocationProbe.MinAllocated(() => { for (var i = 0; i < 2; i++) run.Step(); }));
         // 120 프레임 창 중앙값 — 병렬 부하 경합 배제를 위해 최대 3 창 중 최소(예산 초과 시 가드가 단계를 낮춘 상태로 재측정)
         var pm = new float[120]; var tk = new float[120]; float bestPm = float.MaxValue, bestTk = float.MaxValue;
-        for (var w = 0; w < 3 && (bestPm >= Lo.HdrBloomSaturationLatencyGuard.DefaultBudgetMs || bestTk >= CiFrameBudget.MsF); w++)
+        for (var w = 0; w < 3 && (bestPm >= CiFrameBudget.Scaled(Lo.HdrBloomSaturationLatencyGuard.DefaultBudgetMs) || bestTk >= CiFrameBudget.MsF); w++)
         {
             for (var i = 0; i < 120; i++) run.Step();
             for (var i = 0; i < 120; i++) { pm[i] = run.PostMsSeries(i); tk[i] = run.TickMsSeries(i); }
             Array.Sort(pm); Array.Sort(tk);
             bestPm = MathF.Min(bestPm, pm[60]); bestTk = MathF.Min(bestTk, tk[60]);
         }
-        Assert.True(bestPm < Lo.HdrBloomSaturationLatencyGuard.DefaultBudgetMs, "중앙 포스트 " + bestPm + " · 블룸 단계 " + run.Guard.Levels);
+        Assert.True(bestPm < CiFrameBudget.Scaled(Lo.HdrBloomSaturationLatencyGuard.DefaultBudgetMs), "중앙 포스트 " + bestPm + " · 블룸 단계 " + run.Guard.Levels);
         Assert.True(bestTk < CiFrameBudget.MsF, "중앙 프레임 " + bestTk);
         run.Dispose(); on.Dispose(); off.Dispose(); stage.Dispose(); pyro.Dispose();
     }
@@ -28628,7 +28628,7 @@ public sealed class GaussianSplatEnvironmentIsolatedTests
 #if DEBUG
         const double FrameGateMs = 150;
 #else
-        const double FrameGateMs = CiFrameBudget.Ms;
+        var FrameGateMs = CiFrameBudget.Ms;   // 부하 인지 예산(유휴 → 33.3 ms 그대로)
 #endif
         var rep = " 프레임 중앙(최선) " + best + " ms · 워커 " + run.Engine.Workers + " · 가시 " + run.Engine.Visible + " 엔트리 " + run.Engine.TileEntries + " · 컬링 " + run.Engine.LastCullUs + " 정렬 " + run.Engine.LastSortUs + " 투영 " + run.Engine.LastProjectUs + " SH " + run.Engine.LastShUs + " 비닝 " + run.Engine.LastBinUs + " 블렌딩 " + run.Engine.LastBlendUs + " µs · 픽셀 연산 " + run.Engine.PixelOps;
         Assert.True(best < FrameGateMs, "60fps" + rep);
@@ -28767,7 +28767,7 @@ public sealed class GaussianSplatRelightingIsolatedTests
         const double FrameGate = 150, ShadowGate = 30;
 #else
         var splatLoad = CiFrameBudget.ContentionFactor();   // 외부 프로세스 선점 정규화(유휴 ≈ 1)
-        double FrameGate = CiFrameBudget.Ms * splatLoad, ShadowGate = 3.5 * CiFrameBudget.SubBudgetHeadroom * splatLoad;
+        double FrameGate = CiFrameBudget.BaseMs * splatLoad, ShadowGate = 3.5 * CiFrameBudget.SubBudgetHeadroom * splatLoad;
 #endif
         Assert.True(best < FrameGate && bestSh < ShadowGate, "프레임 " + best + " ms · 그림자 " + bestSh + " ms · 게이트 " + FrameGate + "/" + ShadowGate + " (빌드 " + sh.LastBuildUs + " PCF " + sh.LastPcfUs + " µs · 반경 " + run.ShadowGuard.RadiusCap + ")");
         // 가드 100 % 작동: 예산을 극소로 → 초과 프레임마다 축소, 바닥 도달
@@ -28922,7 +28922,7 @@ public sealed class DualQuaternionGaussianAvatarIsolatedTests
 #if DEBUG
         const double Gate = 150;
 #else
-        const double Gate = CiFrameBudget.Ms;
+        var Gate = CiFrameBudget.Ms;   // 부하 인지 예산(유휴 → 33.3 ms 그대로)
 #endif
         Assert.True(best < Gate, "프레임 " + best + " ms · 스키닝 " + run.Skinning!.LastSkinUs + " µs · 셀프 섀도우 " + run.SelfShadow!.LastComputeUs + " µs");
         Assert.True(run.ProjectJoint(4, out var jx, out var jy) && jx is > 0 and < 320 && jy is > 0 and < 192);
@@ -29102,7 +29102,7 @@ public sealed class GaussianFacialHandIsolatedTests
 #if DEBUG
         const double Gate = 150;
 #else
-        const double Gate = CiFrameBudget.Ms;
+        var Gate = CiFrameBudget.Ms;   // 부하 인지 예산(유휴 → 33.3 ms 그대로)
 #endif
         Assert.True(best < Gate, "프레임 " + best + " ms · 블렌드 " + run.Face!.LastBlendUs + " µs · 손 " + run.Hands.LastStepUs + " µs");
         Assert.True(run.Project(new V3(run.Scene!.X[run.FaceStart], run.Scene.Y[run.FaceStart], run.Scene.Z[run.FaceStart]), out var px, out var py) && px is > 0 and < 320 && py is > 0 and < 192, "투영 " + px + "," + py);
@@ -29233,7 +29233,7 @@ public sealed class GaussianClothHairIsolatedTests
 #if DEBUG
         const double Gate = 150;
 #else
-        const double Gate = CiFrameBudget.Ms;
+        var Gate = CiFrameBudget.Ms;   // 부하 인지 예산(유휴 → 33.3 ms 그대로)
 #endif
         Assert.True(best < Gate, "프레임 " + best + " ms · PBD " + run.Physics.LastStepUs + " µs · 정렬 " + run.Physics.LastSplatUs + " µs · 가드 " + run.Guard.LastGuardUs + " µs");
         var cp = run.Physics.Position(Gch.RealtimeGaussianClothHairPhysicsEngine.Cloth(0, 10));
@@ -29377,7 +29377,7 @@ public sealed class AvatarActingIsolatedTests
 #if DEBUG
         const double Gate = 150;
 #else
-        const double Gate = CiFrameBudget.Ms;
+        var Gate = CiFrameBudget.Ms;   // 부하 인지 예산(유휴 → 33.3 ms 그대로)
 #endif
         Assert.True(best < Gate, "프레임 " + best + " ms · IK " + run.Ik.LastIkUs + " µs · 가드 " + run.Guard.LastGuardUs + " µs");
         Assert.True(run.Project(run.Ik.Target(1), out var px, out var py) && px is > 0 and < 320 && py is > 0 and < 192, "투영 " + px + "," + py);
@@ -29581,7 +29581,7 @@ public sealed class AvatarActingIsolatedTests
 #if DEBUG
         const double RemuxGate = 80, TickGate = 50;
 #else
-        const double RemuxGate = 10, TickGate = CiFrameBudget.Ms;
+        const double RemuxGate = 10; var TickGate = CiFrameBudget.Ms;   // 부하 인지 예산
 #endif
         // ── CLIP-3: 배압 가드 — 1·2·4·8·16 s 지터 백오프 · 500 msg/s 셰딩 · 우선 레인 · 테일 드롭 · 지연 폐기 · µs 예산 · 무할당 ──
         var g = new SG.SocketBackpressureDropoutGuard();
@@ -30688,7 +30688,7 @@ public sealed class LiveCommerceIsolatedTests
             Array.Sort(tk); med = Math.Min(med, tk[30]); over = Math.Min(over, run.LayerOverBudget - ob0);
         }
         var commerceLoad = CiFrameBudget.ContentionFactor();   // 외부 프로세스 선점 정규화(유휴 ≈ 1)
-        Assert.True(med < CiFrameBudget.Ms * commerceLoad && over <= (long)(CiFrameBudget.WindowOverrunTolerance * commerceLoad), "부하 계수 " + commerceLoad + " · 중앙 틱 " + med + " ms · 창 레이어 초과 " + over + " · 레이어 최대 " + run.MaxLayerMs + " · 상품 " + run.Inspection.LastUs + " µs · " + run.Summary());
+        Assert.True(med < CiFrameBudget.BaseMs * commerceLoad && over <= (long)(CiFrameBudget.WindowOverrunTolerance * commerceLoad), "부하 계수 " + commerceLoad + " · 중앙 틱 " + med + " ms · 창 레이어 초과 " + over + " · 레이어 최대 " + run.MaxLayerMs + " · 상품 " + run.Inspection.LastUs + " µs · " + run.Summary());
         run.Dispose(); shw.Dispose(); mcr.Dispose(); talk.Dispose();
         GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
     }
@@ -31193,13 +31193,13 @@ public sealed class MasterStationIsolatedTests
         // ── 60 fps 예산(편성 레이어 결선) ──
         fo.Enabled = false;
         var tk = new double[60]; var lu = new double[60]; var med = double.MaxValue; var lmed = double.MaxValue;
-        for (var attempt = 0; attempt < 5 && (med >= CiFrameBudget.Ms || lmed >= 1_000); attempt++)
+        for (var attempt = 0; attempt < 5 && (med >= CiFrameBudget.Ms || lmed >= CiFrameBudget.Scaled(1_000)); attempt++)
         {
             if (attempt > 0) Thread.Sleep(150);
             for (var i = 0; i < 60; i++) { mcr.Step(); tk[i] = mcr.LastTickMs; lu[i] = st.LastLayerUs; }
             Array.Sort(tk); med = Math.Min(med, tk[30]); Array.Sort(lu); lmed = Math.Min(lmed, lu[30]);
         }
-        Assert.True(med < CiFrameBudget.Ms && lmed < 1_000, "중앙 틱 " + med + " ms · 레이어 중앙 " + lmed + " µs (최대 " + st.MaxLayerUs + ")");
+        Assert.True(med < CiFrameBudget.Ms && lmed < CiFrameBudget.Scaled(1_000), "중앙 틱 " + med + " ms · 레이어 중앙 " + lmed + " µs (최대 " + st.MaxLayerUs + ")");
         st.Dispose(); mcr.Dispose(); talk.Dispose();
 
         // ── STAT-4: 카탈로그 · HUD · 레이아웃 · 모달 렌더 · 구독 해제 ──
@@ -31688,13 +31688,13 @@ public sealed class SemanticChatWeatherIsolatedTests
         }
         Assert.True(layerAlloc == 0, "MCR 날씨 틱 할당 " + layerAlloc);
         var tk = new double[60]; var ov = new double[60]; var ly = new double[60]; var med = double.MaxValue; var ovMed = double.MaxValue; var lyMed = double.MaxValue;
-        for (var attempt = 0; attempt < 5 && (med >= CiFrameBudget.Ms || ovMed >= 3_000 || lyMed >= 3_000); attempt++)
+        for (var attempt = 0; attempt < 5 && (med >= CiFrameBudget.Ms || ovMed >= CiFrameBudget.Scaled(3_000) || lyMed >= CiFrameBudget.Scaled(3_000)); attempt++)
         {
             if (attempt > 0) Thread.Sleep(150);
             for (var i = 0; i < 60; i++) { if ((i & 1) == 0) for (var k = 0; k < 17; k++) run.Simulator.Emit((SG.ChatPlatform)(k % 3), ref rng, ub); mcr.Step(); tk[i] = mcr.LastTickMs; ov[i] = run.Weather.LastOverlayUs; ly[i] = run.LastLayerUs; }
             Array.Sort(tk); med = Math.Min(med, tk[30]); Array.Sort(ov); ovMed = Math.Min(ovMed, ov[30]); Array.Sort(ly); lyMed = Math.Min(lyMed, ly[30]);
         }
-        Assert.True(med < CiFrameBudget.Ms && ovMed < 3_000 && lyMed < 3_000, "중앙 틱 " + med + " ms · 오버레이 중앙 " + ovMed + " µs · 레이어 중앙 " + lyMed + " (최대 " + run.Weather.MaxOverlayUs + "/" + run.MaxLayerUs + ")");
+        Assert.True(med < CiFrameBudget.Ms && ovMed < CiFrameBudget.Scaled(3_000) && lyMed < CiFrameBudget.Scaled(3_000), "중앙 틱 " + med + " ms · 오버레이 중앙 " + ovMed + " µs · 레이어 중앙 " + lyMed + " (최대 " + run.Weather.MaxOverlayUs + "/" + run.MaxLayerUs + ")");
         Assert.True(run.Vector.Hype > run.Vector.Sadness, "슬픔 → 열광 전환 " + run.Vector.Hype);
         run.Dispose();
         Assert.True(ReferenceEquals(mcr.Mcr.Overlay, banner) && ReferenceEquals(mcr.Compositor.Raster.Modulator, shadows), "해제 시 체인 원복");

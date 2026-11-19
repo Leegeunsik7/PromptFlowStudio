@@ -44,6 +44,14 @@ public sealed record PlutoBrainSummarySnapshot(int TotalEvaluatedExperiments, in
     public string CalibrationLabel { get; init; } = PlutoAutonomousBrainSummaryService.NoneLabel;
     /// <summary>💸 반사실 후회 1줄(결정론 한국어).</summary>
     public string CounterfactualRegretLabel { get; init; } = PlutoAutonomousBrainSummaryService.NoneLabel;
+    /// <summary>⚖️ 파레토 프런티어 선두 훅(다목적 근거 없음 → null).</summary>
+    public PlutoParetoLeader? ParetoLeader { get; init; }
+    /// <summary>⚖️ 파레토 프런티어 1줄(결정론 한국어).</summary>
+    public string ParetoFrontierLabel { get; init; } = PlutoAutonomousBrainSummaryService.NoneLabel;
+    /// <summary>🔁 능동 후회 리허설 대상(없음 → null).</summary>
+    public PlutoRegretRecoveryBoost? RegretRehearsalTarget { get; init; }
+    /// <summary>🔁 후회 리허설 1줄(결정론 한국어).</summary>
+    public string RegretRehearsalLabel { get; init; } = PlutoAutonomousBrainSummaryService.NoneLabel;
 }
 
 /// <summary>🧠 Pluto 4.6 자율 두뇌 텔레메트리 요약 — 실험 장부 × 적응형 랭커 × 오답 노트 집계.</summary>
@@ -87,6 +95,8 @@ public sealed class PlutoAutonomousBrainSummaryService : IPlutoAutonomousBrainSu
         IReadOnlyList<PlutoContextBaselineStat> baselines = Array.Empty<PlutoContextBaselineStat>();
         PlutoPosteriorConfidence hookConf = PlutoPosteriorConfidence.Prior, lookConf = PlutoPosteriorConfidence.Prior;
         var calibration = PlutoCalibrationStatus.Empty;
+        PlutoParetoLeader? pareto = null;
+        PlutoRegretRecoveryBoost? rehearsal = null;
 
         if (_ledger is not null)
         {
@@ -131,6 +141,8 @@ public sealed class PlutoAutonomousBrainSummaryService : IPlutoAutonomousBrainSu
                 drift = _ranker.GetRegimeDriftStatus() ?? PlutoRegimeDriftStatus.Stable;
                 baselines = _ranker.GetContextBaselines() ?? Array.Empty<PlutoContextBaselineStat>();
                 calibration = _ranker.GetCalibrationStatus() ?? PlutoCalibrationStatus.Empty;
+                pareto = _ranker.GetParetoFrontierLeader();
+                rehearsal = _ranker.GetRegretRecoveryBoosts() is { Count: > 0 } boosts ? boosts[0] : null;
             }
             catch (OperationCanceledException) { throw; }
             catch (Exception ex) { Program.Log("Pluto.BrainSummary.Ranker", ex); }
@@ -156,8 +168,24 @@ public sealed class PlutoAutonomousBrainSummaryService : IPlutoAutonomousBrainSu
             Calibration = calibration,
             CalibrationLabel = PlutoMetaCalibrationService.BuildCalibrationLabel(calibration),
             CounterfactualRegretLabel = PlutoMetaCalibrationService.BuildRegretLabel(calibration),
+            ParetoLeader = pareto,
+            ParetoFrontierLabel = BuildParetoLabel(pareto),
+            RegretRehearsalTarget = rehearsal,
+            RegretRehearsalLabel = BuildRehearsalLabel(rehearsal),
         };
     }
+
+    /// <summary>⚖️ 파레토 프런티어 1줄(결정론) — 근거 없음 → 수집 안내.</summary>
+    public static string BuildParetoLabel(PlutoParetoLeader? leader)
+        => leader is null
+            ? "근거 없음 · 훅별 성과 " + PlutoParetoFrontier.MinObjectiveSamples.ToString("0", Inv) + "건부터 (3초 · 완주 · CTR) 균형 평가"
+            : leader.ToLabel();
+
+    /// <summary>🔁 후회 리허설 1줄(결정론) — 대상 없음 → 대기.</summary>
+    public static string BuildRehearsalLabel(PlutoRegretRecoveryBoost? target)
+        => target is null
+            ? "대상 없음 · 미해소 후회 " + PlutoMetaCalibrationService.RecoveryThreshold.ToString("0.00", Inv) + " 이상부터 챌린저 B 로 재검증"
+            : target.ToLabel() + " → 다음 A/B 챌린저 B 배정";
 
     /// <summary>📐 컨텍스트 기준선 1줄(결정론) — <c>도메인·포맷 기준 62.5(±4.1 · n=7)</c> 상위 <see cref="MaxContextLabels"/>개 · 없음 → "기록 없음".</summary>
     public static string BuildContextLabel(IReadOnlyList<PlutoContextBaselineStat>? baselines)

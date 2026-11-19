@@ -137,6 +137,9 @@
                     @* 🎯 메타 보정(예측 vs 실현 Brier/RMSE) · 💸 반사실 후회 → UCB1 탐색 배수 *@
                     <span class="@(bs.Calibration.IsAmplifying ? "ws-pcore on" : "ws-retry")" data-brain-calibration="@(bs.Calibration.AccuracyPct.ToString("0.#", CultureInfo.InvariantCulture))" style="white-space:normal" title="예측 기대 점수(기준선 + 패턴 알파) vs 실현 합성 점수 — 최근 64건 Brier/RMSE · 예측이 실현보다 계속 높으면(과신) UCB1 탐색 상수를 최대 ×2 로 증폭, 잘 맞으면 ×0.6 까지 활용 집중">🎯 보정 정확도: @(bs.CalibrationLabel)</span>
                     <span class="@(bs.Calibration.MeanRegret > PromptFlowStudio.Services.Pluto.PlutoMetaCalibrationService.RegretDeadBand ? "ws-pcore on" : "ws-retry")" data-brain-regret="@(bs.Calibration.CumulativeRegret.ToString("0.00", CultureInfo.InvariantCulture))" style="white-space:normal" title="반사실 후회 = max(0, 선택하지 않은 최선 대안 점수 − 실현 점수) · A/B 는 상대 변형의 실측 점수 사용 — 후회가 커지면 탐색을 늘려 놓친 대안을 다시 검증">💸 반사실 후회: @(bs.CounterfactualRegretLabel)</span>
+                    @* ⚖️ 다목적 파레토 프런티어 선두 · 🔁 능동 후회 리허설 대상 *@
+                    <span class="@(bs.ParetoLeader is not null ? "ws-pcore on" : "ws-retry")" data-brain-pareto="@(bs.ParetoLeader?.FrontierSize.ToString(CultureInfo.InvariantCulture) ?? "0")" style="white-space:normal" title="훅별 (3초 유지율 · 완주율 · CTR) EWMA 를 비지배 정렬 — 어느 축에서도 지배당하지 않는 프런티어 · 최약 축이 높을수록 가산 · 3초 65%+ 인데 완주 20% 미만인 클릭베이트는 학습 부스트 무효 + 강등">⚖️ 파레토 선두: @(bs.ParetoFrontierLabel)</span>
+                    <span class="@(bs.RegretRehearsalTarget is not null ? "ws-pcore on" : "ws-retry")" data-brain-rehearsal="@((bs.RegretRehearsalTarget?.Boost ?? 0.0).ToString("0.00", CultureInfo.InvariantCulture))" style="white-space:normal" title="거듭 지나친 대안의 미해소 후회 잔액(14일 반감기)이 임계를 넘으면 다음 A/B 챌린저 B 로 배정해 실측 검증 — 검증되면 잔액 소거 · 오답 노트 차단 대안은 제외">🔁 후회 리허설: @(bs.RegretRehearsalLabel)</span>
                     @* 🛡️ 오답 노트 활성 가드 인스펙터 — 패턴 · 유효 벌점 · 진단 사유 · [해제](오탐 용서) *@
                     <div class="ws-brain-guards" data-mistake-inspector="@(_mistakeRules.Count.ToString(CultureInfo.InvariantCulture))" style="flex-basis:100%;display:flex;flex-wrap:wrap;gap:4px;align-items:center;font-size:12px">
                         <span class="ws-retry">🛡️ 오답 노트 활성 가드</span>
@@ -588,6 +591,19 @@
                 <div class="ws-dur-hint" role="status" data-duration-need-input="1">⚠ 프롬프트를 입력하거나(T2V) 참조 사진 1장을 올려 주세요(I2V) — 입력 후 [✨ 생성 시작]</div>
             }
             @if (_durationMsg is not null) { <div class="ws-dur-hint">@_durationMsg</div> }
+            @* ⚡ 프로바이더 회로 차단 상태 — 닫히지 않은 회로만 노출 · [지금 탐침](냉각 건너뛰기) · [차단 해제](수동 복구) *@
+            @if (_circuitRows.Count > 0)
+            {
+                <div class="ws-dur-hint" role="status" data-circuit-strip="@(_circuitRows.Count.ToString(CultureInfo.InvariantCulture))" style="white-space:normal;display:flex;flex-wrap:wrap;gap:6px;align-items:center">
+                    @foreach (var circuit in _circuitRows)
+                    {
+                        var circuitProvider = circuit.Provider;
+                        <span data-circuit-state="@(circuit.State.ToString())" title="@(circuit.LastError ?? "최근 오류 없음")">⚡ @(circuit.ToLabel())</span>
+                        <button class="ws-back" data-circuit-probe="1" disabled="@(circuit.State != PromptFlowStudio.Services.Render.ProviderCircuitState.Open)" @onclick="() => ProbeCircuit(circuitProvider)" title="남은 냉각을 건너뛰고 다음 렌더 1건을 복구 탐침으로 보냅니다 — 실패하면 냉각 2배로 다시 차단">[🔎 지금 탐침]</button>
+                        <button class="ws-back" data-circuit-reset="1" @onclick="() => ResetCircuit(circuitProvider)" title="프로바이더 복구를 직접 확인했을 때 — 회로를 즉시 닫고 연속 실패를 초기화">[♻️ 차단 해제]</button>
+                    }
+                </div>
+            }
             @if (_coherenceBadge is { } cohBadge) { <div class="ws-dur-hint" role="status" data-coherence-badge="@(_coherenceScore.ToString(CultureInfo.InvariantCulture))" title="@(_coherenceDetail)" style="white-space:normal">@(cohBadge)</div> }
             @if (_mini.Phase != PromptFlowStudio.Services.Render.MiniQueuePhase.Idle)
             {
@@ -3064,6 +3080,45 @@
         await InvokeAsync(StateHasChanged);
     }
 
+    // ── ⚡ 프로바이더 회로 차단 상태(Step 15) — 엔진 싱글턴의 차단기 구독 · 수동 탐침/해제 ──
+    private IReadOnlyList<PromptFlowStudio.Services.Render.ProviderCircuitSnapshot> _circuitRows = Array.Empty<PromptFlowStudio.Services.Render.ProviderCircuitSnapshot>();
+    private PromptFlowStudio.Services.Render.ProviderCircuitBreaker? _circuitBreaker;
+
+    private void AttachCircuitBreaker()
+    {
+        try
+        {
+            _circuitBreaker = (EcoSp.GetService(typeof(PromptFlowStudio.Services.Render.IRenderExecutionEngine)) as PromptFlowStudio.Services.Render.VideoEngineRenderExecutionEngine)?.CircuitBreaker;
+            if (_circuitBreaker is null) return;
+            _circuitBreaker.StateChanged += OnCircuitStateChanged;
+            _circuitRows = _circuitBreaker.GetTrippedSnapshots();
+        }
+        catch (Exception ex) { Program.Log("Workspace.CircuitAttach", ex); }
+    }
+
+    private void OnCircuitStateChanged()
+    {
+        if (_disposed || _circuitBreaker is not { } breaker) return;
+        try
+        {
+            _circuitRows = breaker.GetTrippedSnapshots();
+            _ = InvokeAsync(StateHasChanged);
+        }
+        catch (Exception ex) { Program.Log("Workspace.CircuitChanged", ex); }
+    }
+
+    private void ProbeCircuit(string provider)
+    {
+        try { _circuitBreaker?.RequestProbe(provider); if (_circuitBreaker is { } b) _circuitRows = b.GetTrippedSnapshots(); }
+        catch (Exception ex) { Program.Log("Workspace.CircuitProbe", ex); }
+    }
+
+    private void ResetCircuit(string provider)
+    {
+        try { _circuitBreaker?.Reset(provider); if (_circuitBreaker is { } b) _circuitRows = b.GetTrippedSnapshots(); }
+        catch (Exception ex) { Program.Log("Workspace.CircuitReset", ex); }
+    }
+
     // ── 🧠 Pluto 4.6 — 두뇌 리포트(판정 · 승률 · 오답 가드 · 다음 가설) ──
     private PromptFlowStudio.Services.Pluto.PlutoBrainSummarySnapshot? _brainSummary;
     private bool _brainOpen, _brainBusy;
@@ -5130,6 +5185,7 @@
         StockMon.OnChanged += OnStockMonChanged;
         PlutoCoreMgr.OnChanged += OnPlutoCoreChanged;
         PlutoStorage.Changed += OnPlutoCoreChanged;     // ☁️ Drive ↔ 로컬 폴백 배지
+        AttachCircuitBreaker();                         // ⚡ 회로 차단 상태 배지
         PlutoHarvester.Changed += OnPlutoCoreChanged;   // 🔄 자율 수확 배지
         PlutoCoreMgr.StartMonitoring();   // 🪐 5초 헬스 폴링(싱글톤 · 멱등)
         StockMon.Start();   // 🟢 2초 주기 StockSuite 프로세스 폴링(싱글톤 · 멱등)
@@ -5298,6 +5354,7 @@
     public void Dispose()
     {
         _disposed = true;   // 🎵 진행 중 BGM 동기화의 늦은 set(true) 차단
+        if (_circuitBreaker is not null) _circuitBreaker.StateChanged -= OnCircuitStateChanged;
         TryDeleteCustomBgmFile(_customBgmPath);   // 🎵 커스텀 하이라이트 임시 WAV
         IdentityVault.Changed -= OnIdentityChanged;
         PlutoDirector.Changed -= OnDirectorRankChanged;

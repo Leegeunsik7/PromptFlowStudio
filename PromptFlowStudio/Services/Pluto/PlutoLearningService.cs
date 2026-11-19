@@ -174,6 +174,13 @@ public sealed class PlutoLearningService : IDisposable
         [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] public int Drifts { get; set; }
         /// <summary>🌊 마지막 드리프트 감지 시각(<c>drift:</c> 전용).</summary>
         [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] public DateTime DriftUtc { get; set; }
+
+        // ── Step 15(선택 필드 · 기본값 직렬화 생략) — ⚖️ 다목적 성과 EWMA(<c>pattern:</c> 전용 · 각 축 0~1) ──
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] public double ObjH { get; set; }
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] public double ObjC { get; set; }
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] public double ObjT { get; set; }
+        /// <summary>⚖️ 다목적 EWMA 표본 수.</summary>
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] public double ObjN { get; set; }
     }
 
     private static double Finite(double v, double min = double.NegativeInfinity) => double.IsFinite(v) && v >= min ? v : 0.0;
@@ -186,7 +193,10 @@ public sealed class PlutoLearningService : IDisposable
         e.Surge = double.IsFinite(e.Surge) ? Math.Clamp(e.Surge, 0.0, 1.0) : 0.0;
         if (e.Drifts < 0) e.Drifts = 0;
         if (!double.IsFinite(e.Trials) || e.Trials < 0) e.Trials = 0.0;
+        e.ObjH = Unit(e.ObjH); e.ObjC = Unit(e.ObjC); e.ObjT = Unit(e.ObjT); e.ObjN = Finite(e.ObjN, 0.0);
     }
+
+    private static double Unit(double v) => double.IsFinite(v) ? Math.Clamp(v, 0.0, 1.0) : 0.0;
 
     /// <summary>🧠 누적 XP = 채택×1 + 내보내기×3 + 👍×1.</summary>
     public static int ComputeXp(int adopted, int exports, int thumbsUp)
@@ -503,7 +513,7 @@ public sealed class PlutoLearningService : IDisposable
     /// <paramref name="expectancyTokens"/> = <c>hook:…</c> · <c>look:…</c> 패턴 토큰. 비유한 점수 → 무변경.
     /// </summary>
     public async Task<PlutoContextualObservation> RecordContextualObservationAsync(string? domain, string? renderMode, double score, IReadOnlyList<string>? expectancyTokens,
-        CancellationToken ct = default)
+        CancellationToken ct = default, PlutoObjectiveVector? objectives = null)
     {
         if (!double.IsFinite(score)) return PlutoContextualObservation.None;
         await EnsureLoadedAsync(ct).ConfigureAwait(false);
@@ -570,6 +580,7 @@ public sealed class PlutoLearningService : IDisposable
                         pe.LastUtc = now;
                     }
                     UpdateEwma(pe, alpha, PlutoContextualBaseline.PatternAlpha);
+                    if (objectives is { IsFinite: true } ov) UpdateObjectives(pe, ov);   // ⚖️ 다목적(훅 · 완주 · CTR) EWMA
                 }
 
             if (ctx is null) { ctx = new Entry(); _entries[key] = ctx; }
@@ -596,6 +607,52 @@ public sealed class PlutoLearningService : IDisposable
         e.Mean += step * d;
         e.Var = Math.Max(0.0, (1.0 - step) * (e.Var + step * d * d));
         e.Samples = n;
+    }
+
+    /// <summary>⚖️ 다목적 EWMA 증분 갱신(초기 구간 = 단순 평균 · 이후 스텝 <see cref="PlutoContextualBaseline.PatternAlpha"/>).</summary>
+    private static void UpdateObjectives(Entry e, PlutoObjectiveVector v)
+    {
+        var n = Math.Min(MaxExpectancySamples, e.ObjN + 1.0);
+        var step = PlutoContextualBaseline.StepFor(n, PlutoContextualBaseline.PatternAlpha);
+        e.ObjH += step * (Unit(v.Hook) - e.ObjH);
+        e.ObjC += step * (Unit(v.Completion) - e.ObjC);
+        e.ObjT += step * (Unit(v.Ctr) - e.ObjT);
+        e.ObjN = n;
+    }
+
+    /// <summary>⚖️ 패턴 다목적 성과(훅 · 완주 · CTR EWMA · 미추적 → 표본 0).</summary>
+    public (PlutoObjectiveVector Objectives, double Samples) GetPatternObjectives(string patternToken)
+    {
+        if (string.IsNullOrWhiteSpace(patternToken)) return (default, 0.0);
+        lock (_sync)
+            return _entries.TryGetValue(PatternKeyPrefix + patternToken, out var e) && e.ObjN > 0
+                ? (new PlutoObjectiveVector(e.ObjH, e.ObjC, e.ObjT), e.ObjN)
+                : (default, 0.0);
+    }
+
+    /// <summary>
+    /// ⚖️ 다목적 성과만 기록(A/B 변형처럼 컨텍스트 관측을 거치지 않는 경로) — 가중치 · 시행 · 기대치 불변 · 유효 토큰 0건/비유한 → 무변경.
+    /// </summary>
+    public async Task RecordPatternObjectivesAsync(IReadOnlyList<string> patternTokens, PlutoObjectiveVector objectives, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(patternTokens);
+        if (!objectives.IsFinite) return;
+        await EnsureLoadedAsync(ct).ConfigureAwait(false);
+        var touched = 0;
+        lock (_sync)
+        {
+            for (var i = 0; i < patternTokens.Count; i++)
+            {
+                var t = patternTokens[i];
+                if (string.IsNullOrWhiteSpace(t)) continue;
+                var key = PatternKeyPrefix + t.Trim();
+                if (!_entries.TryGetValue(key, out var e)) { e = new Entry { Weight = PatternBaseWeight }; _entries[key] = e; }
+                UpdateObjectives(e, objectives);
+                touched++;
+            }
+        }
+        if (touched == 0) return;
+        await PersistAsync(ct).ConfigureAwait(false);
     }
 
     /// <summary>📐 컨텍스트 기준선 스냅샷(전역 <c>ctx:*</c> 제외) — 표본 내림차순 · 키 사전순.</summary>
