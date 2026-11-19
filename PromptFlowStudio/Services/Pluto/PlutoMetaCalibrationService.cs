@@ -40,7 +40,13 @@ public sealed record PlutoExpectancyForecast(bool HasBaseline, double Baseline, 
 }
 
 /// <summary>💸 후회 귀속 — 선택되지 않은 대안별 누적 반사실 후회.</summary>
-public sealed record PlutoRegretAttribution(string Label, double CumulativeRegret, int Count);
+public sealed record PlutoRegretAttribution(string Label, double CumulativeRegret, int Count)
+{
+    /// <summary>🔁 미해소 후회 잔액(반감기 감쇠 반영 · 실측 검증되면 0) — 리포트의 '가장 아쉬운 대안' 선정 기준.</summary>
+    public double OutstandingRegret { get; init; }
+    /// <summary>✅ 이미 실측 검증됐거나 감쇠로 소멸 — 더 이상 '놓친 대안'이 아니다(누적 값은 이력).</summary>
+    public bool IsResolved => !(OutstandingRegret > 0);
+}
 
 /// <summary>
 /// 🔁 후회 회복 사전 — 거듭 지나친 대안(<see cref="Label"/>)을 챌린저 B 로 재검증하도록 주는 유계 · 시간 감쇠 부스트.
@@ -291,7 +297,9 @@ public sealed class PlutoMetaCalibrationService : IPlutoMetaCalibrationService, 
         var label = "평균 " + s.MeanRegret.ToString("0.000", Inv) + " · 누적 " + s.CumulativeRegret.ToString("0.00", Inv) + " · n=" + s.RegretSamples.ToString(Inv)
             + (s.MeanRegret > RegretDeadBand && s.RegretSamples >= MinSamples ? " · 상승(탐색 증폭)" : " · 낮음");
         if (s.TopRegretAlternative is { } top && top.CumulativeRegret > 0)
-            label += " · 가장 아쉬운 대안: " + top.Label + "(" + top.CumulativeRegret.ToString("0.00", Inv) + " · " + top.Count.ToString(Inv) + "회)";
+            label += top.IsResolved
+                ? " · 미해소 대안 없음(최근 최대: " + top.Label + " · 누적 " + top.CumulativeRegret.ToString("0.00", Inv) + " · 검증/감쇠 완료)"
+                : " · 가장 아쉬운 대안: " + top.Label + "(" + top.CumulativeRegret.ToString("0.00", Inv) + " · " + top.Count.ToString(Inv) + "회)";
         return label;
     }
 
@@ -537,10 +545,23 @@ public sealed class PlutoMetaCalibrationService : IPlutoMetaCalibrationService, 
             var rmse = Math.Sqrt(brier);
             var meanBias = n > 0 ? bias / n : 0.0;
             var meanRegret = rn > 0 ? regretSum / rn : 0.0;
+            // 💸 '가장 아쉬운 대안' = 미해소 잔액 최대(실측 검증 · 감쇠로 잔액이 사라진 대안이 리포트에 영구 고착되지 않게) →
+            //    동률/전부 해소 시 누적 후회 최대 → 키 사전순. 잔액 비교는 표기 정밀도(0.01) — 분 단위 감쇠 차이로 순위가 뒤집히지 않게.
             PlutoRegretAttribution? top = null;
+            var now = Now();
+            var topRank = 0.0;
             foreach (var kv in _attributions)
-                if (top is null || kv.Value.Regret > top.CumulativeRegret || (kv.Value.Regret == top.CumulativeRegret && string.CompareOrdinal(kv.Key, top.Label) < 0))
-                    top = new PlutoRegretAttribution(kv.Key, kv.Value.Regret, kv.Value.Count);
+            {
+                var outstanding = Outstanding(kv.Value, now);
+                var rank = Math.Round(outstanding, 2, MidpointRounding.AwayFromZero);
+                if (top is null || rank > topRank
+                    || (rank == topRank && (kv.Value.Regret > top.CumulativeRegret
+                        || (kv.Value.Regret == top.CumulativeRegret && string.CompareOrdinal(kv.Key, top.Label) < 0))))
+                {
+                    top = new PlutoRegretAttribution(kv.Key, kv.Value.Regret, kv.Value.Count) { OutstandingRegret = outstanding };
+                    topRank = rank;
+                }
+            }
             return new PlutoCalibrationStatus(n, brier, rmse, meanBias, rn, meanRegret, _cumulativeRegret, _totalRecords,
                 ComputeExplorationScale(n, rmse, meanBias, rn, meanRegret)) { TopRegretAlternative = top };
         }

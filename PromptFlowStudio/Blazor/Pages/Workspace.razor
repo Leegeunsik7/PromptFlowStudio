@@ -3088,7 +3088,9 @@
     {
         try
         {
-            _circuitBreaker = (EcoSp.GetService(typeof(PromptFlowStudio.Services.Render.IRenderExecutionEngine)) as PromptFlowStudio.Services.Render.VideoEngineRenderExecutionEngine)?.CircuitBreaker;
+            // DI 공유 싱글턴 우선(엔진과 동일 인스턴스) · 미등록 구성은 엔진 보유분으로 폴백
+            _circuitBreaker = EcoSp.GetService(typeof(PromptFlowStudio.Services.Render.ProviderCircuitBreaker)) as PromptFlowStudio.Services.Render.ProviderCircuitBreaker
+                ?? (EcoSp.GetService(typeof(PromptFlowStudio.Services.Render.IRenderExecutionEngine)) as PromptFlowStudio.Services.Render.VideoEngineRenderExecutionEngine)?.CircuitBreaker;
             if (_circuitBreaker is null) return;
             _circuitBreaker.StateChanged += OnCircuitStateChanged;
             _circuitRows = _circuitBreaker.GetTrippedSnapshots();

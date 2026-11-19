@@ -28766,8 +28766,8 @@ public sealed class GaussianSplatRelightingIsolatedTests
 #if DEBUG
         const double FrameGate = 150, ShadowGate = 30;
 #else
-        var splatLoad = CiFrameBudget.ContentionFactor();   // 외부 프로세스 선점 정규화(유휴 ≈ 1)
-        double FrameGate = CiFrameBudget.BaseMs * splatLoad, ShadowGate = 3.5 * CiFrameBudget.SubBudgetHeadroom * splatLoad;
+        // 부하 인지 예산 — 기준 미만이면 계측 없이 통과 · 기준 초과일 때만 외부 선점 계측(전 코어 40 ms 스핀을 정상 경로에서 돌리지 않음)
+        FrameBudget FrameGate = CiFrameBudget.Ms, ShadowGate = CiFrameBudget.Scaled(3.5 * CiFrameBudget.SubBudgetHeadroom);
 #endif
         Assert.True(best < FrameGate && bestSh < ShadowGate, "프레임 " + best + " ms · 그림자 " + bestSh + " ms · 게이트 " + FrameGate + "/" + ShadowGate + " (빌드 " + sh.LastBuildUs + " PCF " + sh.LastPcfUs + " µs · 반경 " + run.ShadowGuard.RadiusCap + ")");
         // 가드 100 % 작동: 예산을 극소로 → 초과 프레임마다 축소, 바닥 도달
@@ -30687,8 +30687,8 @@ public sealed class LiveCommerceIsolatedTests
             for (var i = 0; i < 60; i++) { run.Step(); tk[i] = mcr.LastTickMs; }
             Array.Sort(tk); med = Math.Min(med, tk[30]); over = Math.Min(over, run.LayerOverBudget - ob0);
         }
-        var commerceLoad = CiFrameBudget.ContentionFactor();   // 외부 프로세스 선점 정규화(유휴 ≈ 1)
-        Assert.True(med < CiFrameBudget.BaseMs * commerceLoad && over <= (long)(CiFrameBudget.WindowOverrunTolerance * commerceLoad), "부하 계수 " + commerceLoad + " · 중앙 틱 " + med + " ms · 창 레이어 초과 " + over + " · 레이어 최대 " + run.MaxLayerMs + " · 상품 " + run.Inspection.LastUs + " µs · " + run.Summary());
+        // 부하 인지 예산 — 기준 초과일 때만 외부 선점 계측(정상 경로 탐침 0회)
+        Assert.True(med < CiFrameBudget.Ms && over <= CiFrameBudget.Scaled(CiFrameBudget.WindowOverrunTolerance), "중앙 틱 " + med + " ms · 창 레이어 초과 " + over + " · 레이어 최대 " + run.MaxLayerMs + " · 상품 " + run.Inspection.LastUs + " µs · " + run.Summary());
         run.Dispose(); shw.Dispose(); mcr.Dispose(); talk.Dispose();
         GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
     }

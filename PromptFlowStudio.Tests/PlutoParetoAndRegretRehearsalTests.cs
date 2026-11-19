@@ -413,6 +413,30 @@ public sealed class PlutoParetoAndRegretRehearsalTests : IDisposable
         var helper = File.ReadAllText(Path.Combine(RepoRoot(), "PromptFlowStudio.Tests", "CiFrameBudget.cs"));
         Assert.Contains("public static FrameBudget Ms =>", helper, StringComparison.Ordinal);
         Assert.DoesNotContain("public const double Ms", helper, StringComparison.Ordinal);
+
+        // 조건부 탐침 — 전 코어 40 ms 스핀(ContentionFactor)은 헬퍼 내부에서만, 그것도 기준 상한이 실패했을 때만 호출된다.
+        // 테스트 본문이 직접 부르면 통과하는 정상 경로에서도 병렬 테스트를 교란한다.
+        foreach (var file in Directory.GetFiles(Path.Combine(RepoRoot(), "PromptFlowStudio.Tests"), "*.cs"))
+        {
+            var name = Path.GetFileName(file);
+            if (name is "CiFrameBudget.cs" or "PlutoParetoAndRegretRehearsalTests.cs") continue;
+            Assert.False(File.ReadAllText(file).Contains("CiFrameBudget.ContentionFactor(", StringComparison.Ordinal), name + " 가 ContentionFactor() 를 무조건 호출");
+        }
+        Assert.Equal(1, CountOf(helper, "ContentionFactor())"));                                      // 유일한 호출부 = CurrentFactor(캐시)
+        // 통과하는 값은 몇 번을 비교해도(재시도 루프 · 하위 예산 · 창 초과 수) 탐침 0회 · 실패하는 값만 탐침
+        var probes = 0;
+        Func<double> counting = () => { probes++; return 1.0; };
+        var frame = CiFrameBudget.Custom(CiFrameBudget.BaseMs, counting);
+        var layer = CiFrameBudget.Custom(1_000, counting);
+        var overrun = CiFrameBudget.Custom(CiFrameBudget.WindowOverrunTolerance, counting);
+        for (var i = 0; i < 50; i++)
+            Assert.True(12.5 < frame && !(12.5 >= frame) && 640.0 < layer && 6L <= overrun && !(6L > overrun));
+        Assert.Equal(0, probes);
+        Assert.False(40.0 < frame);
+        Assert.Equal(1, probes);
+        Assert.False(7L <= overrun);
+        Assert.Equal(2, probes);
+        Assert.True(7L <= CiFrameBudget.Custom(CiFrameBudget.WindowOverrunTolerance, () => 1.2));     // 경합 ×1.2 → 창 초과 허용 7.2
     }
 
     // ── ⑤ ⚡ 자율 추가 — 회로 차단 수동 탐침/해제 + 상태 통지 + Workspace 표면화 ──
@@ -489,6 +513,27 @@ public sealed class PlutoParetoAndRegretRehearsalTests : IDisposable
         Assert.Equal(1, CountOf(ws, "_circuitBreaker.StateChanged -= OnCircuitStateChanged"));
         Assert.Contains("_ = InvokeAsync(StateHasChanged);", ws.Substring(ws.IndexOf("private void OnCircuitStateChanged()", StringComparison.Ordinal), 600), StringComparison.Ordinal);
         Assert.Equal(1, CountOf(ws, "AttachCircuitBreaker();"));
+
+        // DI — 데스크톱 + 모바일 양쪽에 공유 싱글턴 1회 등록 · 렌더 엔진이 그 인스턴스를 주입받고 Workspace 도 DI 에서 먼저 해석
+        foreach (var file in new[] { Path.Combine("PromptFlowStudio", "MainForm.cs"), Path.Combine("PromptFlowStudio.Mobile", "MauiProgram.cs") })
+        {
+            var di = File.ReadAllText(Path.Combine(RepoRoot(), file));
+            Assert.Equal(1, CountOf(di, "AddSingleton<PromptFlowStudio.Services.Render.ProviderCircuitBreaker>()"));
+            Assert.Equal(1, CountOf(di, "{ CircuitBreaker = sp.GetRequiredService<PromptFlowStudio.Services.Render.ProviderCircuitBreaker>(), Journal ="));
+            Assert.True(di.IndexOf("AddSingleton<PromptFlowStudio.Services.Render.ProviderCircuitBreaker>()", StringComparison.Ordinal)
+                < di.IndexOf("AddSingleton<PromptFlowStudio.Services.Render.IRenderExecutionEngine>", StringComparison.Ordinal));
+            Assert.DoesNotContain("Drive 7대", di, StringComparison.Ordinal);                         // 허브는 8대(+ 계정·설정 2종)
+            Assert.Equal(1, CountOf(di, "Drive 8대 Pluto 핵심 허브"));
+        }
+        Assert.Contains("EcoSp.GetService(typeof(PromptFlowStudio.Services.Render.ProviderCircuitBreaker)) as PromptFlowStudio.Services.Render.ProviderCircuitBreaker", ws, StringComparison.Ordinal);
+        // 주입된 차단기 = 엔진이 쓰는 차단기(같은 참조) → UI 의 탐침/해제가 실제 렌더 경로에 작용
+        var shared = new ProviderCircuitBreaker { Clock = () => now };
+        var engine = new VideoEngineRenderExecutionEngine(null, null, (_, _) => Task.CompletedTask) { Ambient = null, CircuitBreaker = shared };
+        Assert.Same(shared, engine.CircuitBreaker);
+        for (var i = 0; i < ProviderCircuitBreaker.FailureThreshold; i++) shared.RecordTransientFailure("Wan", "503");
+        Assert.Equal(ProviderCircuitState.Open, engine.CircuitBreaker!.GetSnapshot("Wan").State);
+        Assert.True(shared.Reset("Wan"));
+        Assert.Empty(engine.CircuitBreaker.GetTrippedSnapshots());
     }
 
     // ── ⑥ 🛡️ 자율 추가 — 보정 상태 내구성(마지막 정상본 복구 · 읽기 전용 세션 자가 치유) ──
@@ -590,6 +635,78 @@ public sealed class PlutoParetoAndRegretRehearsalTests : IDisposable
         Assert.Equal(4, reloaded.GetStatus().TotalRecords);
         Assert.Equal(2, reloaded.GetRegretRecoveryBoosts().Count);
         Assert.False(reloaded.IsReadOnlySession || reloaded.RecoveredFromBackup);
+    }
+
+    // ── ⑦ 🔍 Step 15 감사 보완 — 검증 끝난 대안의 후회 고착 방지 · 비테마 리허설 챌린저 오버라이드 ──
+
+    [Fact]
+    public async Task RegretReport_DoesNotPinTestedOrDecayedAlternativeAsMostRegretted_AndNonThemedRehearsalOverridesThemedChallenger()
+    {
+        const string big = "hook:큰 후회", small = "hook:작은 후회";
+        using var calibration = Calibration("sticky.json");
+        for (var i = 0; i < 3; i++) await calibration.RecordOutcomeAsync(Missed(big));                // 누적 0.90
+        await calibration.RecordOutcomeAsync(Missed(small));                                           // 누적 0.30
+        var top = calibration.GetStatus().TopRegretAlternative!;
+        Assert.Equal((big, 3, false), (top.Label, top.Count, top.IsResolved));
+        Assert.Equal(0.90, top.OutstandingRegret, 9);
+        Assert.Contains("가장 아쉬운 대안: " + big + "(0.90 · 3회)", PlutoMetaCalibrationService.BuildRegretLabel(calibration.GetStatus()), StringComparison.Ordinal);
+
+        // ✅ 큰 후회 대안을 실제로 게시·측정 → 리포트 1위에서 내려오고 아직 검증 안 된 대안이 올라온다(누적 이력은 보존)
+        await calibration.RecordOutcomeAsync(new PlutoCalibrationObservation(double.NaN, 0.55, double.NaN) { ChosenLabels = new[] { big }, Source = "test" });
+        var status = calibration.GetStatus();
+        Assert.Equal(small, status.TopRegretAlternative!.Label);
+        Assert.Equal(0.30, status.TopRegretAlternative.OutstandingRegret, 9);
+        var label = PlutoMetaCalibrationService.BuildRegretLabel(status);
+        Assert.Contains("가장 아쉬운 대안: " + small + "(0.30 · 1회)", label, StringComparison.Ordinal);
+        Assert.DoesNotContain(big, label, StringComparison.Ordinal);
+        Assert.Equal(1.20, status.CumulativeRegret, 9);                                                // 감사 누계는 불변
+
+        // 전부 검증되면 '가장 아쉬운 대안'을 더는 주장하지 않는다 — 이력(누적 최대)만 참고로 표기
+        await calibration.RecordOutcomeAsync(new PlutoCalibrationObservation(double.NaN, 0.55, double.NaN) { ChosenLabels = new[] { small }, Source = "test" });
+        var resolved = calibration.GetStatus().TopRegretAlternative!;
+        Assert.True(resolved.IsResolved);
+        Assert.Equal((big, 0.0), (resolved.Label, resolved.OutstandingRegret));
+        Assert.Equal(0.90, resolved.CumulativeRegret, 9);
+        var done = PlutoMetaCalibrationService.BuildRegretLabel(calibration.GetStatus());
+        Assert.Contains("미해소 대안 없음", done, StringComparison.Ordinal);
+        Assert.DoesNotContain("가장 아쉬운 대안", done, StringComparison.Ordinal);
+        Assert.Empty(calibration.GetRegretRecoveryBoosts());
+
+        // 재시작 후에도 고착이 되살아나지 않음
+        using (var reloaded = Calibration("sticky.json"))
+        {
+            await reloaded.EnsureLoadedAsync();
+            Assert.True(reloaded.GetStatus().TopRegretAlternative!.IsResolved);
+        }
+
+        // ⏳ 시간 감쇠 — 오래된 큰 후회(0.90 → 56일 뒤 1/16)는 최근의 작은 후회(0.30)에 1위를 내준다
+        using var aging = Calibration("aging.json");
+        for (var i = 0; i < 3; i++) await aging.RecordOutcomeAsync(Missed(big));
+        _now = T0.AddDays(56);
+        await aging.RecordOutcomeAsync(Missed(small));
+        var aged = aging.GetStatus().TopRegretAlternative!;
+        Assert.Equal(small, aged.Label);
+        Assert.Equal(0.30, aged.OutstandingRegret, 9);
+        _now = T0;
+
+        // 🎭 비테마 오버라이드 — 테마 훅 우선 배치(PreferThemed) 뒤에도, 테마·템플릿 어디에도 없는 고후회 훅이 챌린저 B 로 올라간다
+        const string offTheme = "테마 밖 실험 훅 — 반전 엔딩 먼저";
+        var themed = PlutoMontageStoryGenerator.TemplateHookLines("일상");
+        Assert.DoesNotContain(offTheme, themed);
+        Assert.DoesNotContain(offTheme, PlutoMontageStoryGenerator.AllTemplateHookLines);
+        var learning = Learning("offtheme_trend.json");
+        var notebook = Notebook("offtheme_nb.json");
+        using var missed = Calibration("offtheme.json");
+        var plain = await new PlutoVariantABGenerator(new PlutoAdaptivePatternRanker(learning, notebook), null, notebook, () => "exp-themed").BuildVariantPairAsync("일상");
+        Assert.Contains(plain.ChallengerB.HookStyle, themed);                                          // 기준 — 리허설 없으면 테마 훅이 챌린저
+        for (var i = 0; i < 2; i++) await missed.RecordOutcomeAsync(Missed("hook:" + offTheme));
+        var ranker = new PlutoAdaptivePatternRanker(learning, notebook) { MetaCalibration = missed };
+        var plan = await new PlutoVariantABGenerator(ranker, null, notebook, () => "exp-offtheme").BuildVariantPairAsync("일상");
+        Assert.Equal(offTheme, plan.ChallengerB.HookStyle);
+        Assert.Equal(plain.ChampionA.HookStyle, plan.ChampionA.HookStyle);
+        Assert.True(plan.IsRegretRehearsal && plan.IsValidExperiment);
+        Assert.Equal("hook:" + offTheme, plan.RegretRehearsalLabel);
+        Assert.Equal(offTheme, plan.ChallengerB.Subtitles[0].Text);
     }
 
     private static string RepoRoot()
