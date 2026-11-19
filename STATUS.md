@@ -1,24 +1,23 @@
 # Current Project Status
-- Active Milestone: 【Step 15 — Drive 허브 8종 · 능동 후회 리허설 · 파레토 다목적 랭킹 · 스위트 전역 부하 인지 예산 · 자율 하드닝】 ✅ 완료
-- Build: ✅ Desktop Release `-warnaserror` 0W/0E · ✅ Tests Release 0W/0E · ⏳ Mobile net8.0-ios — `ios` 워크로드 미설치(NETSDK1147 · 이번에도 미검증)
-- Tests: ✅ 1219/1219 — 전체 단일 실행 통과(12분 10초 · `dotnet test` 종료 코드 0 · 기존 1210 + Step 15 8 + 감사 보완 1)
-- Updated: 2026-11-20 (KST) · 기준 `476edb7`
+- Active Milestone: 【Step 16 — 전 모달리티 파레토 귀속 · 시리즈 아크/편 간 유지율 연속성 · 자가 종료 회로 카운트다운 · 자율 하드닝】 ✅ 완료
+- Build: ✅ Desktop Release `-warnaserror` 0W/0E · ✅ Tests Release 0W/0E · ⏳ Mobile net8.0-ios — `ios` 워크로드 미설치(이번에도 미검증 · DI 결선은 소스 단언으로만 확인)
+- Tests: ✅ 1227/1227 — 전체 단일 실행 통과(21분 19초 · `dotnet test` 종료 코드 0 · 기존 1219 + Step 16 8)
+- Updated: 2026-11-20 (KST) · 기준 `98f08e2`
 
-## Completed — Step 15
-- ☁️ Drive 핵심 허브 8종(`pluto_calibration_state.json` 포함 · `CorePlutoFileCount`) — 검증·미러·새 PC 복원(로컬 덮어쓰기 없음) · `PROMPTFLOW_PLUTO_DRIVE=off` 격리 테스트 고정
-- 🔁 능동 후회 리허설: `GetRegretRecoveryBoosts()`(미해소 잔액 ≥ 0.10 · 부스트 ≤ 0.50 · 14일 반감기 · 오답 노트 차단 제외) → `PlutoVariantABGenerator` 챌린저 B 배정(`hook:`/`look:`/`pair:`) → 실측되면 폐루프가 소거 · A/B 실측 반사실은 미적립
-- ⚖️ `PlutoParetoFrontier.cs`: 패턴별 (3초 · 완주 · CTR) EWMA → 비지배 티어 + 최약 축 보너스(≤ +15%) · 클릭베이트(3초 ≥ 65% ∧ 완주 < 20%) 학습 부스트 무효 + ×0.70 · 근거 없는 후보 점수 불변
-- 🧠 두뇌 리포트 본문: ⚖️ 파레토 선두 · 🔁 후회 리허설(상단 3행 헤더 불변)
-- ⏱️ `CiFrameBudget.Ms/MsF` → 부하 인지 `FrameBudget`(기준 미만 즉시 통과 · 초과 시에만 계측 · 유휴 폭 1.15 이하 = 배수 1.0 · 상한 ×3 · 500 ms 캐시) — 프레임 단언 전부 + µs/포스트 하위 예산 `Scaled()`
-- ⚡ 자율 ①: `ProviderCircuitBreaker.RequestProbe/Reset/StateChanged` + Workspace 차단 배지 · [🔎 지금 탐침] · [♻️ 차단 해제]
-- 🛡️ 자율 ②: 보정 상태 `.bak` 마지막 정상본 복구(0 B · 잘린 JSON) + 읽기 전용 세션 자가 치유(잠금 해제 후 디스크 상태 위에 세션 관측 재생)
-- 🔍 감사 보완(`d5ab93f` 이후): `ProviderCircuitBreaker` DI 공유 싱글턴(MainForm + MauiProgram → 엔진 주입 · Workspace DI 우선 해석) · '가장 아쉬운 대안' = 미해소 잔액 기준(검증/감쇠된 대안 고착 해소) · 잔여 무조건 `ContentionFactor()` 2곳 조건부화 · "7대" → "8대" 주석 · 비테마 리허설 챌린저 테스트
+## Completed — Step 16
+- ⚖️ 전 모달리티 파레토: BGM 무드 · 스타일 태그도 (3초 · 완주 · CTR) EWMA 귀속(`objectiveOnlyTokens` — 기대치/드리프트 통계 불변 · A/B 변형 포함) → 훅 · 룩과 같은 비지배 티어 · 최약 축 보너스 · 클릭베이트 강등 · 태그 '#' 변형 병합 · 구버전 `pluto_trend_memory.json` 완전 호환
+- 📺 `PlutoSeriesArcMemoryService`(`pluto_series_arc.json` · MainForm + MauiProgram 싱글턴): 카탈로그 `시리즈 n/N편` + 제목 테마에서 시리즈 키 유도(스키마 변경 없음) · 유지 지수 = (3초 + 완주)/2 · 편 간 변화/기울기 · −5p 이하 이탈 → 궁금증 훅 + 클리프행어 아웃트로 Lv1~3 · 앵커 룩/BGM 유지 · 폐루프가 편 성과 자동 귀속
+- 🎬 Workspace 편 불러오기: 앵커 룩 고정 · 앵커 BGM 선택(내 BGM/수동 선택 보존) · 이탈 시 1막 훅/마지막 자막 반영 · 📺 연속성 배지
+- 🧠 두뇌 리포트 본문: ⚖️ 전 모달리티 균형 · 📺 시리즈 아크(상단 3행 헤더 불변)
+- ⏱️ `ProviderCircuitCountdown` + `ProviderCircuitBreaker.PromoteExpired()`: Open/HalfOpen 이 있을 때만 1초 `PeriodicTimer` · 냉각 만료 시 호출 없이 HalfOpen 전이 · 전부 Closed 면 즉시 정지·폐기 · HalfOpen 대기 틱은 UI 통지 생략
+- ⏳ 자율 ①: 다목적 근거 신선도(유예 14일 + 반감기 28일 · `ObjUtc`) — 클릭베이트 판정이 영구 낙인(흡수 상태)이 되지 않음 · 공백 뒤 새 관측은 재기준
+- 🧯 자율 ②: 반개방 탐침 임대(`ProbeLeaseTimeout` 10분) 회수 + 엔진 `BuildRequest` 를 회로 허가 이전으로 이동 — 보고 누락으로 회로가 영구 반개방에 갇히는 경로 차단
 
 ## Notes
-- ⚠️ Step 14 테스트 1건(`MetaCalibration_PersistsRollingWindow_…`)의 손상/잠금 구간을 신규 동작(.bak 복구 · 자가 치유)에 맞게 조정
-- ⚠️ 부하 계수는 '프로세스 밖' 선점만 잰다 — 같은 프로세스 내 병렬 테스트 경합은 흡수하지 않음(현재 컬렉션 병렬 off)
-- ⚠️ 파레토는 훅·룩만(BGM·태그는 다목적 귀속 없음) · 회로 배지의 남은 냉각 초는 재렌더 때만 갱신
+- ⚠️ 3편 시리즈에서 에스컬레이션이 걸리는 편은 사실상 3편(완결)뿐 → 클리프행어 아웃트로는 4편 이상 시리즈에서만 실제로 붙음(완결편은 궁금증 훅만)
+- ⚠️ 같은 테마 · 같은 편수로 시리즈를 다시 만들면 같은 아크로 합쳐짐 · 연속 렌더 중 직전 편 카탈로그 기록이 늦으면 앵커가 한 편 늦게 잡힐 수 있음
+- ⚠️ `pluto_series_arc.json` 은 Drive 저장소 관리자 경유이나 핵심 허브 8종(검증·새 PC 복원 목록)에는 미포함
 - ⚠️ `.git`은 `D:\Program` — git 명령에 `--git-dir=D:\Program\.git --work-tree=D:\Program\PromptFlowStudio` 필요
 
 ## Next
-- `ios` 워크로드 설치 후 Mobile 빌드 재검증 · 회로 차단 HUD(`gth-v`) 카드 · A/B 후회 라벨을 조합(`pair:`) 단위로 발행
+- `ios` 워크로드 설치 후 Mobile 빌드 재검증 · 시리즈 아크 Drive 허브 편입(9종) · 완결편 전용 아웃트로(정주행 유도) · 회로 차단 HUD(`gth-v`) 카드

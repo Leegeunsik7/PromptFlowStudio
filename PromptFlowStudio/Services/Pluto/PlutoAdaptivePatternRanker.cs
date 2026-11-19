@@ -106,6 +106,9 @@ public interface IPlutoAdaptivePatternRanker
 
     /// <summary>⚖️ 파레토 프런티어 선두 훅(다목적 근거 없음 → null).</summary>
     PlutoParetoLeader? GetParetoFrontierLeader() => null;
+
+    /// <summary>⚖️ 전 모달리티(훅 · 룩 · BGM · 태그 순) 파레토 현황(기본 구현 → 없음).</summary>
+    IReadOnlyList<PlutoParetoModalityStatus> GetParetoModalityStatus() => Array.Empty<PlutoParetoModalityStatus>();
 }
 
 /// <summary>
@@ -118,7 +121,7 @@ public interface IPlutoAdaptivePatternRanker
 ///   ▸ 🔗 조합 시너지 = <c>pair:</c>/<c>domain_hook:</c> 학습 배수 × (1 − clamp(조합 감점, 0, 0.85)).
 ///   ▸ 🌊 레짐 드리프트 감지 시 탐색 상수 C × 탐색 온도(1~3) — 활용 순위(FinalScore)는 불변 · 탐색 순위만 공격적으로.
 ///   ▸ 🎯 후보마다 Normal–Normal 사후 신뢰 구간(<see cref="PlutoPosteriorConfidence"/>) 동봉 — '검증된 승자'와 '1회 급등' 구분.
-///   ▸ ⚖️ 다목적 근거(표본 ≥ <see cref="PlutoParetoFrontier.MinObjectiveSamples"/>)가 있는 후보는 FinalScore × 파레토 배수(티어 · 최약 축 보너스) —
+///   ▸ ⚖️ 전 모달리티(훅 · 룩 · BGM 무드 · 스타일 태그): 다목적 근거(신선도 반영 표본 ≥ <see cref="PlutoParetoFrontier.MinObjectiveSamples"/>)가 있는 후보는 FinalScore × 파레토 배수(티어 · 최약 축 보너스) —
 ///     클릭베이트 급등은 학습 부스트(배수 &gt; 1)를 무효화하고 ×<see cref="PlutoParetoFrontier.ClickbaitFactor"/> 강등. 근거 없는 후보는 완전 불변.
 /// </summary>
 public sealed class PlutoAdaptivePatternRanker : IPlutoAdaptivePatternRanker
@@ -306,28 +309,60 @@ public sealed class PlutoAdaptivePatternRanker : IPlutoAdaptivePatternRanker
         catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Ranker] regret recovery: " + ex.Message); return Array.Empty<PlutoRegretRecoveryBoost>(); }
     }
 
-    public PlutoParetoLeader? GetParetoFrontierLeader()
+    public PlutoParetoLeader? GetParetoFrontierLeader() => ParetoStatus(PlutoPatternKind.Hook, SafeSuppressed()).Leader;
+
+    public IReadOnlyList<PlutoParetoModalityStatus> GetParetoModalityStatus()
     {
-        var hooks = Rank(PlutoPatternKind.Hook, null, SafeSuppressed());
+        var suppressed = SafeSuppressed();
+        return new[]
+        {
+            ParetoStatus(PlutoPatternKind.Hook, suppressed), ParetoStatus(PlutoPatternKind.Look, suppressed),
+            ParetoStatus(PlutoPatternKind.BgmMood, suppressed), ParetoStatus(PlutoPatternKind.StyleTag, suppressed),
+        };
+    }
+
+    /// <summary>⚖️ 모달리티 1종의 프런티어 집계 — 후보 = 기본 후보 + 학습된 토큰(태그는 학습된 토큰만).</summary>
+    private PlutoParetoModalityStatus ParetoStatus(PlutoPatternKind kind, IReadOnlySet<string>? suppressed)
+    {
+        var hooks = Rank(kind, null, suppressed);
         PlutoRankedOption? leader = null;
         int frontier = 0, evidenced = 0, clickbait = 0;
+        HashSet<string>? bare = null;   // 태그 '#x' · 'x' 변형은 같은 근거를 공유 → 1개로 집계
+        if (kind == PlutoPatternKind.StyleTag)
+        {
+            bare = new HashSet<string>(StringComparer.Ordinal);
+            for (var i = 0; i < hooks.Count; i++) if (hooks[i].DisplayLabel is { Length: > 0 } l && l[0] != '#') bare.Add(l);
+        }
         for (var i = 0; i < hooks.Count; i++)
         {
             var o = hooks[i];
             if (!o.Pareto.HasEvidence) continue;
+            if (bare is not null && o.DisplayLabel.Length > 1 && o.DisplayLabel[0] == '#' && bare.Contains(o.DisplayLabel[1..])) continue;
             evidenced++;
             if (o.IsClickbaitSpike) { clickbait++; continue; }
             if (!o.Pareto.IsFrontier) continue;
             frontier++;
             if (!o.IsPenalized && leader is null) leader = o;   // 목록은 FinalScore 내림차순 → 첫 프런티어 = 선두
         }
-        return leader is null ? null : new PlutoParetoLeader(leader.DisplayLabel, leader.Objectives, leader.ObjectiveSamples, frontier, evidenced, clickbait);
+        return new PlutoParetoModalityStatus(kind,
+            leader is null ? null : new PlutoParetoLeader(leader.DisplayLabel, leader.Objectives, leader.ObjectiveSamples, frontier, evidenced, clickbait),
+            evidenced, frontier, clickbait);
     }
 
-    private (PlutoObjectiveVector Objectives, double Samples) SafeObjectives(string prefix, string label)
+    /// <summary>⚖️ 다목적 성과 조회 — 태그는 '#' 유무 변형을 표본 가중 평균으로 병합(가중치 · 시행 수와 같은 변형 규칙).</summary>
+    private (PlutoObjectiveVector Objectives, double Samples) SafeObjectives(string prefix, string label, bool tagVariants = false)
     {
         if (_learning is null) return (default, 0.0);
-        try { return _learning.GetPatternObjectives(prefix + label); }
+        try
+        {
+            var (v, n) = _learning.GetPatternObjectives(prefix + label);
+            if (!tagVariants || TagVariant(label) is not { } alt) return (v, n);
+            var (v2, n2) = _learning.GetPatternObjectives(prefix + alt);
+            if (!(n2 > 0)) return (v, n);
+            if (!(n > 0)) return (v2, n2);
+            var total = n + n2;
+            return (new PlutoObjectiveVector((v.Hook * n + v2.Hook * n2) / total, (v.Completion * n + v2.Completion * n2) / total, (v.Ctr * n + v2.Ctr * n2) / total), total);
+        }
         catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Ranker] objectives: " + ex.Message); return (default, 0.0); }
     }
 
@@ -539,9 +574,9 @@ public sealed class PlutoAdaptivePatternRanker : IPlutoAdaptivePatternRanker
         }
         var list = new List<PlutoRankedOption>(labels.Count);
         var explorationC = EffectiveExplorationC();   // 🌊 레짐 드리프트 → 탐색 서지
-        // ⚖️ 다목적 파레토 티어 — 훅 · 룩만(텔레메트리가 귀속되는 종류) · 근거 있는 후보끼리 비지배 정렬
+        // ⚖️ 다목적 파레토 티어 — 전 모달리티(훅 · 룩 · BGM 무드 · 스타일 태그) · 같은 종류의 근거 있는 후보끼리 비지배 정렬
         PlutoObjectiveVector[]? objectives = null; double[]? objectiveN = null; int[]? tiers = null;
-        if (_learning is not null && (kind == PlutoPatternKind.Hook || kind == PlutoPatternKind.Look) && labels.Count > 0)
+        if (_learning is not null && labels.Count > 0)
         {
             objectives = new PlutoObjectiveVector[labels.Count];
             objectiveN = new double[labels.Count];
@@ -549,7 +584,7 @@ public sealed class PlutoAdaptivePatternRanker : IPlutoAdaptivePatternRanker
             var any = false;
             for (var i = 0; i < labels.Count; i++)
             {
-                (objectives[i], objectiveN[i]) = SafeObjectives(prefix, labels[i]);
+                (objectives[i], objectiveN[i]) = SafeObjectives(prefix, labels[i], isTag);
                 evidence[i] = objectiveN[i] >= PlutoParetoFrontier.MinObjectiveSamples;
                 any |= evidence[i];
             }

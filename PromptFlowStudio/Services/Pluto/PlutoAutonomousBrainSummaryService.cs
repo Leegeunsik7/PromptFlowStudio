@@ -52,6 +52,24 @@ public sealed record PlutoBrainSummarySnapshot(int TotalEvaluatedExperiments, in
     public PlutoRegretRecoveryBoost? RegretRehearsalTarget { get; init; }
     /// <summary>🔁 후회 리허설 1줄(결정론 한국어).</summary>
     public string RegretRehearsalLabel { get; init; } = PlutoAutonomousBrainSummaryService.NoneLabel;
+    /// <summary>⚖️ 전 모달리티(훅 · 룩 · BGM · 태그) 파레토 현황.</summary>
+    public IReadOnlyList<PlutoParetoModalityStatus> ParetoModalities { get; init; } = Array.Empty<PlutoParetoModalityStatus>();
+    /// <summary>⚖️ 다목적 근거가 있는 모달리티 수(0~4).</summary>
+    public int ParetoEvidencedModalityCount
+    {
+        get
+        {
+            var n = 0;
+            for (var i = 0; i < ParetoModalities.Count; i++) if (ParetoModalities[i].HasEvidence) n++;
+            return n;
+        }
+    }
+    /// <summary>⚖️ 전 모달리티 파레토 1줄(결정론 한국어).</summary>
+    public string ParetoModalityLabel { get; init; } = PlutoAutonomousBrainSummaryService.NoneLabel;
+    /// <summary>📺 시리즈 아크 · 편 간 유지율 현황.</summary>
+    public PlutoSeriesArcStatus SeriesArc { get; init; } = PlutoSeriesArcStatus.Empty;
+    /// <summary>📺 시리즈 아크 1줄(결정론 한국어).</summary>
+    public string SeriesArcLabel { get; init; } = PlutoAutonomousBrainSummaryService.NoneLabel;
 }
 
 /// <summary>🧠 Pluto 4.6 자율 두뇌 텔레메트리 요약 — 실험 장부 × 적응형 랭커 × 오답 노트 집계.</summary>
@@ -76,6 +94,9 @@ public sealed class PlutoAutonomousBrainSummaryService : IPlutoAutonomousBrainSu
     private readonly IPlutoAdaptivePatternRanker? _ranker;
     private readonly IPlutoMistakeNotebookService? _notebook;
 
+    /// <summary>📺 시리즈 아크 메모리(미연결 → '기록 없음').</summary>
+    public IPlutoSeriesArcMemoryService? SeriesArc { get; init; }
+
     public PlutoAutonomousBrainSummaryService(IPlutoExperimentLedgerService? ledger, IPlutoAdaptivePatternRanker? ranker, IPlutoMistakeNotebookService? notebook)
     {
         _ledger = ledger;
@@ -97,6 +118,8 @@ public sealed class PlutoAutonomousBrainSummaryService : IPlutoAutonomousBrainSu
         var calibration = PlutoCalibrationStatus.Empty;
         PlutoParetoLeader? pareto = null;
         PlutoRegretRecoveryBoost? rehearsal = null;
+        IReadOnlyList<PlutoParetoModalityStatus> modalities = Array.Empty<PlutoParetoModalityStatus>();
+        var seriesArc = PlutoSeriesArcStatus.Empty;
 
         if (_ledger is not null)
         {
@@ -143,9 +166,22 @@ public sealed class PlutoAutonomousBrainSummaryService : IPlutoAutonomousBrainSu
                 calibration = _ranker.GetCalibrationStatus() ?? PlutoCalibrationStatus.Empty;
                 pareto = _ranker.GetParetoFrontierLeader();
                 rehearsal = _ranker.GetRegretRecoveryBoosts() is { Count: > 0 } boosts ? boosts[0] : null;
+                modalities = _ranker.GetParetoModalityStatus() ?? Array.Empty<PlutoParetoModalityStatus>();
             }
             catch (OperationCanceledException) { throw; }
             catch (Exception ex) { Program.Log("Pluto.BrainSummary.Ranker", ex); }
+        }
+
+        if (SeriesArc is not null)
+        {
+            try
+            {
+                await SeriesArc.EnsureLoadedAsync(ct).ConfigureAwait(false);
+                await SeriesArc.SyncFromCatalogAsync(ct).ConfigureAwait(false);
+                seriesArc = SeriesArc.GetStatus() ?? PlutoSeriesArcStatus.Empty;
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) { Program.Log("Pluto.BrainSummary.SeriesArc", ex); }   // [부분 구제]
         }
 
         var winRate = evaluated > 0 ? Math.Round(challengerWins * 100.0 / evaluated, 1, MidpointRounding.AwayFromZero) : 0.0;
@@ -172,6 +208,10 @@ public sealed class PlutoAutonomousBrainSummaryService : IPlutoAutonomousBrainSu
             ParetoFrontierLabel = BuildParetoLabel(pareto),
             RegretRehearsalTarget = rehearsal,
             RegretRehearsalLabel = BuildRehearsalLabel(rehearsal),
+            ParetoModalities = modalities,
+            ParetoModalityLabel = PlutoParetoFrontier.BuildModalityLabel(modalities),
+            SeriesArc = seriesArc,
+            SeriesArcLabel = PlutoSeriesArcMemoryService.BuildArcLabel(seriesArc),
         };
     }
 

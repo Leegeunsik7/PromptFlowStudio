@@ -320,12 +320,13 @@ public sealed class VideoEngineRenderExecutionEngine : IRenderExecutionEngine, I
         }
 
         // ⚡ 프로바이더 회로 차단 — 연속 일시 장애 중이면 호출 자체를 생략(체크포인트 적중은 위에서 이미 반환)
+        // 🧯 요청 구성은 회로 허가 '이전'에 — 허가 뒤에 던지면 반개방 탐침 슬롯이 결과 보고 없이 새어 회로가 반개방에 갇힌다
+        var request = BuildRequest(job);
         var breaker = CircuitBreaker;
         var provider = string.IsNullOrWhiteSpace(engine.Key) ? kind : engine.Key;
         if (breaker is not null && !breaker.TryAcquire(provider, out var retryAfter))
             return new RenderExecutionResult(false, kind, null, ProviderCircuitBreaker.BuildOpenMessage(provider, retryAfter));
 
-        var request = BuildRequest(job);
         // ☁️ 클라우드 발번 즉시 저널링(task_id 첫 보고 1회) — 단절·재시작 복구용
         var journal = string.Equals(kind, RenderEngineKind.Cloud, StringComparison.Ordinal) ? Journal : null;
         JournalingRelay? jrelay = null;

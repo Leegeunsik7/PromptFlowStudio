@@ -19,6 +19,11 @@ public enum ProviderCircuitState
 public sealed record ProviderCircuitSnapshot(string Provider, ProviderCircuitState State, int ConsecutiveFailures, int TripCount, int TotalFailures, int TotalSuccesses,
     int ShortCircuitedCalls, TimeSpan RetryAfter, string? LastError)
 {
+    /// <summary>반개방 탐침이 실제로 진행 중(false = 냉각 만료로 자동 승격되어 다음 호출을 탐침으로 기다리는 중).</summary>
+    public bool ProbeInFlight { get; init; } = true;
+    /// <summary>🧯 회수된 탐침 임대 수(결과 보고 없이 사라진 탐침 — 누적).</summary>
+    public int ReclaimedProbeLeases { get; init; }
+
     /// <summary>⚡ 상태 1줄(결정론 한국어).</summary>
     public string ToLabel()
     {
@@ -26,7 +31,7 @@ public sealed record ProviderCircuitSnapshot(string Provider, ProviderCircuitSta
         var state = State switch
         {
             ProviderCircuitState.Open => "차단(약 " + Math.Ceiling(RetryAfter.TotalSeconds).ToString("0", inv) + "초 후 탐침)",
-            ProviderCircuitState.HalfOpen => "반개방(탐침 중)",
+            ProviderCircuitState.HalfOpen => ProbeInFlight ? "반개방(탐침 중)" : "반개방(다음 렌더가 복구 탐침)",
             _ => "정상",
         };
         return Provider + " " + state + " · 연속 실패 " + ConsecutiveFailures.ToString(inv) + " · 차단 " + TripCount.ToString(inv) + "회 · 생략 " + ShortCircuitedCalls.ToString(inv) + "건";
@@ -42,6 +47,9 @@ public sealed record ProviderCircuitSnapshot(string Provider, ProviderCircuitSta
 ///   ▸ 취소는 판정 보류 — 반개방 탐침 슬롯만 반납.
 ///   ▸ 🖐️ 운영자 개입: <see cref="RequestProbe"/>(냉각을 건너뛰고 다음 호출을 탐침으로) · <see cref="Reset"/>(즉시 닫기) ·
 ///     <see cref="StateChanged"/>(상태 전이 통지 → UI 배지).
+///   ▸ ⏱️ <see cref="PromoteExpired"/>: 호출이 없어도 냉각이 끝난 Open 회로를 HalfOpen 으로 승격(탐침 슬롯은 비워 둠) — 실시간 카운트다운 구동용.
+///   ▸ 🧯 탐침 임대: 반개방 탐침이 <see cref="ProbeLeaseTimeout"/> 안에 결과를 보고하지 않으면 슬롯을 회수 —
+///     보고 누락(호출자 예외 경로) 한 번으로 회로가 영구 반개방(모든 호출 즉시 실패)에 갇히는 것을 막는다.
 /// </summary>
 public sealed class ProviderCircuitBreaker
 {
@@ -54,7 +62,8 @@ public sealed class ProviderCircuitBreaker
     {
         public ProviderCircuitState State;
         public int ConsecutiveFailures, TripCount, TotalFailures, TotalSuccesses, ShortCircuited, CooldownLevel;
-        public DateTimeOffset OpenedAt;
+        public DateTimeOffset OpenedAt, ProbeStartedAt;
+        public int ReclaimedLeases;
         public TimeSpan Cooldown;
         public bool ProbeInFlight;
         public string? LastError;
@@ -65,6 +74,48 @@ public sealed class ProviderCircuitBreaker
 
     /// <summary>현재 시각(테스트 주입용).</summary>
     public Func<DateTimeOffset> Clock { get; init; } = static () => DateTimeOffset.UtcNow;
+
+    /// <summary>🧯 반개방 탐침 임대 시간 — 초과 시 다음 <see cref="TryAcquire"/> 가 슬롯을 회수해 새 탐침을 보낸다(기본 10분 = 최대 냉각의 2배).</summary>
+    public TimeSpan ProbeLeaseTimeout { get; init; } = TimeSpan.FromMinutes(10);
+
+    /// <summary>
+    /// ⏱️ 냉각이 끝난 Open 회로를 HalfOpen 으로 승격(탐침 슬롯은 비움 → 다음 <see cref="TryAcquire"/> 1건이 탐침) · 승격 수 반환 · 1건 이상이면 통지.
+    /// <see cref="TryAcquire"/> 만으로는 '렌더 호출이 올 때'에만 전이한다 — 호출이 없으면 UI 는 '0초 후 탐침'에 멈춘다.
+    /// </summary>
+    public int PromoteExpired()
+    {
+        var promoted = 0;
+        lock (_sync)
+        {
+            if (_circuits.Count == 0) return 0;
+            var now = Clock();
+            foreach (var kv in _circuits)
+            {
+                var c = kv.Value;
+                if (c.State != ProviderCircuitState.Open) continue;
+                var elapsed = now - c.OpenedAt;
+                if (elapsed < c.Cooldown && elapsed >= TimeSpan.Zero) continue;
+                c.State = ProviderCircuitState.HalfOpen;
+                c.ProbeInFlight = false;
+                promoted++;
+            }
+        }
+        if (promoted > 0) RaiseStateChanged();
+        return promoted;
+    }
+
+    /// <summary>닫히지 않은(Open · HalfOpen) 회로가 하나라도 있는가(할당 없음 — 카운트다운 구동 판정용).</summary>
+    public bool HasTrippedCircuits
+    {
+        get
+        {
+            lock (_sync)
+            {
+                foreach (var kv in _circuits) if (kv.Value.State != ProviderCircuitState.Closed) return true;
+                return false;
+            }
+        }
+    }
 
     /// <summary>⚡ 회로 상태 전이(Closed ↔ Open ↔ HalfOpen) 통지 — 잠금 밖에서 발생 · 백그라운드 스레드 가능 · 핸들러 예외 격리.</summary>
     public event Action? StateChanged;
@@ -144,11 +195,18 @@ public sealed class ProviderCircuitBreaker
                 }
                 c.State = ProviderCircuitState.HalfOpen;
                 c.ProbeInFlight = true;
+                c.ProbeStartedAt = Clock();
             }
             else
             {
-                if (c.ProbeInFlight) { c.ShortCircuited++; return false; }
+                if (c.ProbeInFlight)
+                {
+                    var held = Clock() - c.ProbeStartedAt;
+                    if (held < ProbeLeaseTimeout && held >= TimeSpan.Zero) { c.ShortCircuited++; return false; }
+                    c.ReclaimedLeases++;   // 🧯 결과 보고 없이 사라진 탐침 → 슬롯 회수 후 이 호출을 새 탐침으로
+                }
                 c.ProbeInFlight = true;
+                c.ProbeStartedAt = Clock();
                 return true;
             }
         }
@@ -266,7 +324,10 @@ public sealed class ProviderCircuitBreaker
             var left = c.Cooldown - (Clock() - c.OpenedAt);
             retry = left > TimeSpan.Zero ? (left > c.Cooldown ? c.Cooldown : left) : TimeSpan.Zero;
         }
-        return new ProviderCircuitSnapshot(key, c.State, c.ConsecutiveFailures, c.TripCount, c.TotalFailures, c.TotalSuccesses, c.ShortCircuited, retry, c.LastError);
+        return new ProviderCircuitSnapshot(key, c.State, c.ConsecutiveFailures, c.TripCount, c.TotalFailures, c.TotalSuccesses, c.ShortCircuited, retry, c.LastError)
+        {
+            ProbeInFlight = c.State != ProviderCircuitState.HalfOpen || c.ProbeInFlight, ReclaimedProbeLeases = c.ReclaimedLeases,
+        };
     }
 
     private static void Close(Circuit c)

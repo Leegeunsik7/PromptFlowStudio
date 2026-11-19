@@ -140,6 +140,9 @@
                     @* ⚖️ 다목적 파레토 프런티어 선두 · 🔁 능동 후회 리허설 대상 *@
                     <span class="@(bs.ParetoLeader is not null ? "ws-pcore on" : "ws-retry")" data-brain-pareto="@(bs.ParetoLeader?.FrontierSize.ToString(CultureInfo.InvariantCulture) ?? "0")" style="white-space:normal" title="훅별 (3초 유지율 · 완주율 · CTR) EWMA 를 비지배 정렬 — 어느 축에서도 지배당하지 않는 프런티어 · 최약 축이 높을수록 가산 · 3초 65%+ 인데 완주 20% 미만인 클릭베이트는 학습 부스트 무효 + 강등">⚖️ 파레토 선두: @(bs.ParetoFrontierLabel)</span>
                     <span class="@(bs.RegretRehearsalTarget is not null ? "ws-pcore on" : "ws-retry")" data-brain-rehearsal="@((bs.RegretRehearsalTarget?.Boost ?? 0.0).ToString("0.00", CultureInfo.InvariantCulture))" style="white-space:normal" title="거듭 지나친 대안의 미해소 후회 잔액(14일 반감기)이 임계를 넘으면 다음 A/B 챌린저 B 로 배정해 실측 검증 — 검증되면 잔액 소거 · 오답 노트 차단 대안은 제외">🔁 후회 리허설: @(bs.RegretRehearsalLabel)</span>
+                    @* ⚖️ 전 모달리티(훅 · 룩 · BGM · 태그) 균형 · 📺 시리즈 아크(편 간 유지율 연속성) *@
+                    <span class="@(bs.ParetoEvidencedModalityCount > 0 ? "ws-pcore on" : "ws-retry")" data-brain-pareto-modality="@(bs.ParetoEvidencedModalityCount.ToString(CultureInfo.InvariantCulture))" style="white-space:normal" title="훅 · 룩 · BGM 무드 · 스타일 태그 각각을 (3초 유지율 · 완주율 · CTR) 로 비지배 정렬 — 프런티어/근거 후보 수 · 🎣 = 클릭베이트 강등 수 · 오래된 근거는 14일 유예 뒤 28일 반감기로 소멸">⚖️ 전 모달리티 균형: @(bs.ParetoModalityLabel)</span>
+                    <span class="@(bs.SeriesArc.DropOffSeriesCount > 0 ? "ws-pcore on" : "ws-retry")" data-brain-series-arc="@(bs.SeriesArc.TrackedSeriesCount.ToString(CultureInfo.InvariantCulture))" style="white-space:normal" title="시리즈 편별 유지 지수 = (3초 유지율 + 완주율) / 2 — 연속 편 사이 변화가 −5p 이하면 이탈로 보고 다음 편에 궁금증 훅 · 클리프행어 아웃트로를 권고 · 앞선 편의 룩/BGM 앵커는 그대로 유지">📺 시리즈 아크: @(bs.SeriesArcLabel)</span>
                     @* 🛡️ 오답 노트 활성 가드 인스펙터 — 패턴 · 유효 벌점 · 진단 사유 · [해제](오탐 용서) *@
                     <div class="ws-brain-guards" data-mistake-inspector="@(_mistakeRules.Count.ToString(CultureInfo.InvariantCulture))" style="flex-basis:100%;display:flex;flex-wrap:wrap;gap:4px;align-items:center;font-size:12px">
                         <span class="ws-retry">🛡️ 오답 노트 활성 가드</span>
@@ -192,6 +195,7 @@
             else if (_series is { } ser)
             {
                 <div class="ws-retry" data-series-panel="@(ser.Episodes.Count.ToString(CultureInfo.InvariantCulture))" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;width:100%">
+                    @if (_seriesDirective is { } sdir) { <span class="@(sdir.EscalateHook ? "ws-pcore on" : "ws-retry")" data-series-continuity="@(sdir.EscalationLevel.ToString(CultureInfo.InvariantCulture))" style="white-space:normal" title="앞선 편의 실측 유지율과 구성에서 유도 — 앵커 룩/BGM 은 자동 유지 · 이탈 감지 시 1막 훅과 마지막 자막에 반영">📺 @(sdir.NextEpisodeNumber.ToString(CultureInfo.InvariantCulture))편 연속성: @(sdir.ReasonKorean)@(sdir.HasAnchor ? " · 앵커 " + (sdir.AnchorColorLookId.Length > 0 ? sdir.AnchorColorLookId : "—") + " / " + (sdir.AnchorBgmMood.Length > 0 ? sdir.AnchorBgmMood : "—") : "")</span> }
                     <span class="ws-pcore on" data-series-summary="1">📚 '@(ser.SeriesTheme)' @(ser.Episodes.Count.ToString(CultureInfo.InvariantCulture))편 · @(ser.TotalInputPhotos.ToString(CultureInfo.InvariantCulture))장 중 고유 @(ser.TotalUsedUniquePhotos.ToString(CultureInfo.InvariantCulture))컷</span>
                     @foreach (var ep in ser.Episodes)
                     {
@@ -2776,6 +2780,8 @@
     private string? _seriesToast;
     private int _seriesActiveEpisode;
     private string? _seriesEpisodeKey;   // 불러온 편의 사진 목록 — 일치 시 3막 자막에 "n/N편" 장식
+    private PromptFlowStudio.Services.Pluto.PlutoSeriesContinuityDirective? _seriesDirective;   // 📺 불러온 편의 연속성 지시(앵커 · 훅 에스컬레이션)
+    private string? _seriesAnchorLookPinned;   // 📺 시리즈 앵커로 고정한 룩(학습 최적 룩 고정과 구분해 해제)
 
     /// <summary>📚 [시리즈 자동 분할] — 후보 풀 → 서로소 2~3편 → 1편 즉시 불러오기(예외 전파 금지).</summary>
     private async Task BuildSeriesAsync()
@@ -2795,6 +2801,7 @@
             _seriesEpisodeOutputs.Clear();
             _seriesActiveEpisode = 0;
             _seriesEpisodeKey = null;
+            _seriesDirective = null;
         }
         catch (OperationCanceledException) { return; }   // 페이지 이탈
         catch (InvalidOperationException ex) { _series = null; _seriesToast = "⚠ " + ex.Message; }
@@ -2825,11 +2832,49 @@
         _abPlanSource = null;
         _snsKit = ep.PublishingKit;
         _seriesToast = "📚 " + ep.EpisodeTitle + " 불러옴 · " + ep.Cuts.Count.ToString(CultureInfo.InvariantCulture) + "컷";
+        // 📺 앞선 편의 앵커 룩/BGM 유지 + 편 간 이탈 시 훅 에스컬레이션(1편 · 미추적 시리즈 → 무동작)
+        var directive = await ResolveSeriesContinuityAsync(ep);
+        if (_disposed || _seriesActiveEpisode != ep.EpisodeNumber || !string.Equals(_seriesEpisodeKey, _stagedFocalKey, StringComparison.Ordinal)) return;
+        var anchorBgmChanged = ApplySeriesContinuityAnchors(directive);
+        if (directive.HasGuidance) _seriesToast += " · 📺 " + directive.ReasonKorean;
+        if (anchorBgmChanged && _bgmOn) await SyncBgmPreviewAsync();
         RefreshMontageLook();
         StateHasChanged();
         await RefreshMontagePreviewAsync();
         if (_disposed) return;
         await InvokeAsync(StateHasChanged);
+    }
+
+    /// <summary>📺 다음 편 연속성 지시 조회(예외 전파 금지 · 서비스 미등록/1편 → None).</summary>
+    private async Task<PromptFlowStudio.Services.Pluto.PlutoSeriesContinuityDirective> ResolveSeriesContinuityAsync(PromptFlowStudio.Services.Pluto.PlutoSeriesEpisodePlan ep)
+    {
+        var none = PromptFlowStudio.Services.Pluto.PlutoSeriesContinuityDirective.None;
+        if (_series is not { } s || ep.EpisodeNumber <= 1) return none;
+        if (EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoSeriesArcMemoryService)) is not PromptFlowStudio.Services.Pluto.IPlutoSeriesArcMemoryService arc) return none;
+        try { return await arc.GetContinuityDirectiveAsync(s.SeriesTheme, s.Episodes.Count, ep.EpisodeNumber, _mediaCts.Token); }
+        catch (OperationCanceledException) { return none; }   // 페이지 이탈
+        catch (Exception ex) { Program.Log("Workspace.SeriesContinuity", ex); return none; }
+    }
+
+    /// <summary>📺 앵커 룩 고정 · 앵커 BGM 트랙 선택(내 BGM 업로드 · 사용자가 직접 고른 트랙은 보존) — 반환 = BGM 변경 여부.</summary>
+    private bool ApplySeriesContinuityAnchors(PromptFlowStudio.Services.Pluto.PlutoSeriesContinuityDirective directive)
+    {
+        _seriesDirective = directive.HasGuidance ? directive : null;
+        // 이전 편/시리즈에서 건 앵커 고정은 이번 지시로 교체(학습 최적 룩 고정은 건드리지 않음)
+        if (_seriesAnchorLookPinned is { } prev && string.Equals(_learnedLookPinned, prev, StringComparison.Ordinal)) _learnedLookPinned = null;
+        _seriesAnchorLookPinned = null;
+        if (directive.AnchorColorLookId.Length > 0 && _learnedLookPinned is null
+            && PromptFlowStudio.Services.Pluto.PlutoColorGradingCompiler.TryGetPreset(directive.AnchorColorLookId) is not null)
+        {
+            _learnedLookPinned = directive.AnchorColorLookId;
+            _seriesAnchorLookPinned = directive.AnchorColorLookId;
+        }
+        if (_customBgm is not null || _bgmTrackUserPicked || directive.AnchorBgmMood.Length == 0) return false;
+        if (!Enum.TryParse<PromptFlowStudio.Services.Export.BabyBgmTrack>(directive.AnchorBgmMood, true, out var track) || !Enum.IsDefined(track)) return false;
+        if (track == _bgmTrack && _bgmOn) return false;
+        _bgmTrack = track;
+        _bgmOn = true;
+        return true;
     }
 
     /// <summary>💬 불러온 시리즈 편과 사진 목록이 같으면 3막 자막에 "n/N편" 접두 · 계속/완결 접미(중복 장식 방지).</summary>
@@ -2839,6 +2884,9 @@
         if (!string.Equals(_seriesEpisodeKey, string.Join("|", _montagePhotos), StringComparison.Ordinal)) return;
         var tag = PromptFlowStudio.Services.Pluto.PlutoSeriesBatchPlanner.PartTag(_seriesActiveEpisode, s.Episodes.Count);
         if (cues[0].Text.StartsWith(tag, StringComparison.Ordinal)) return;
+        // 📺 편 간 이탈 감지 → 1막 = 궁금증 훅 · 마지막 자막 뒤 = 클리프행어 아웃트로("n/N편" 장식 이전에 반영)
+        if (_seriesDirective is { EscalateHook: true } sdir && sdir.NextEpisodeNumber == _seriesActiveEpisode)
+            cues = PromptFlowStudio.Services.Pluto.PlutoSeriesArcMemoryService.ApplyDirective(cues, sdir);
         _montageCues = PromptFlowStudio.Services.Pluto.PlutoSeriesBatchPlanner.DecorateSubtitles(cues, _seriesActiveEpisode, s.Episodes.Count);
     }
 
@@ -3083,6 +3131,7 @@
     // ── ⚡ 프로바이더 회로 차단 상태(Step 15) — 엔진 싱글턴의 차단기 구독 · 수동 탐침/해제 ──
     private IReadOnlyList<PromptFlowStudio.Services.Render.ProviderCircuitSnapshot> _circuitRows = Array.Empty<PromptFlowStudio.Services.Render.ProviderCircuitSnapshot>();
     private PromptFlowStudio.Services.Render.ProviderCircuitBreaker? _circuitBreaker;
+    private PromptFlowStudio.Services.Render.ProviderCircuitCountdown? _circuitCountdown;   // ⏱️ 차단 중에만 도는 1초 카운트다운(전부 닫히면 자가 종료)
 
     private void AttachCircuitBreaker()
     {
@@ -3094,6 +3143,7 @@
             if (_circuitBreaker is null) return;
             _circuitBreaker.StateChanged += OnCircuitStateChanged;
             _circuitRows = _circuitBreaker.GetTrippedSnapshots();
+            _circuitCountdown = new PromptFlowStudio.Services.Render.ProviderCircuitCountdown(_circuitBreaker, OnCircuitCountdownTick);
         }
         catch (Exception ex) { Program.Log("Workspace.CircuitAttach", ex); }
     }
@@ -3107,6 +3157,18 @@
             _ = InvokeAsync(StateHasChanged);
         }
         catch (Exception ex) { Program.Log("Workspace.CircuitChanged", ex); }
+    }
+
+    /// <summary>⏱️ 카운트다운 틱(스레드 풀) — 남은 냉각 초 갱신 · 만료된 차단은 구동기가 이미 반개방으로 전이.</summary>
+    private void OnCircuitCountdownTick(IReadOnlyList<PromptFlowStudio.Services.Render.ProviderCircuitSnapshot> rows)
+    {
+        if (_disposed) return;
+        try
+        {
+            _circuitRows = rows;
+            _ = InvokeAsync(StateHasChanged);
+        }
+        catch (Exception ex) when (ex is ObjectDisposedException or InvalidOperationException) { }   // 페이지 이탈 경합
     }
 
     private void ProbeCircuit(string provider)
@@ -5356,6 +5418,8 @@
     public void Dispose()
     {
         _disposed = true;   // 🎵 진행 중 BGM 동기화의 늦은 set(true) 차단
+        _circuitCountdown?.Dispose();   // ⏱️ 타이머 정지·폐기 + 구독 해제(결정론)
+        _circuitCountdown = null;
         if (_circuitBreaker is not null) _circuitBreaker.StateChanged -= OnCircuitStateChanged;
         TryDeleteCustomBgmFile(_customBgmPath);   // 🎵 커스텀 하이라이트 임시 WAV
         IdentityVault.Changed -= OnIdentityChanged;

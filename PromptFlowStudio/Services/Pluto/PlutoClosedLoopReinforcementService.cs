@@ -137,6 +137,18 @@ public sealed class PlutoClosedLoopReinforcementService : IPlutoClosedLoopReinfo
     /// <summary>🎯 메타 보정 감사(미연결 → 생략 · 기존 동작과 동일).</summary>
     public IPlutoMetaCalibrationService? MetaCalibration { get; init; }
 
+    /// <summary>📺 시리즈 아크 메모리(미연결 → 생략) — 시리즈 편 성과를 편 간 유지율 추세에 귀속.</summary>
+    public IPlutoSeriesArcMemoryService? SeriesArc { get; init; }
+
+    /// <summary>📺 시리즈 편 성과 귀속 — 실패 격리([부분 구제] 강화 결과 유지 · 취소만 전파).</summary>
+    private async Task ObserveSeriesArcSafeAsync(PlutoVideoPerformanceTelemetry t, CancellationToken ct)
+    {
+        if (SeriesArc is null) return;
+        try { await SeriesArc.RecordEpisodePerformanceAsync(t, ct).ConfigureAwait(false); }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.ClosedLoop] series arc: " + ex.Message); }
+    }
+
     /// <summary>🎯 반사실 예측 스냅샷(관측 반영 이전) — 실패 격리.</summary>
     private PlutoExpectancyForecast ForecastSafe(PlutoVideoPerformanceTelemetry t)
     {
@@ -257,6 +269,17 @@ public sealed class PlutoClosedLoopReinforcementService : IPlutoClosedLoopReinfo
         return list;
     }
 
+    /// <summary>⚖️ 다목적(훅 유지 · 완주 · CTR) 성과만 귀속하는 모달리티 토큰 — <c>bgm:</c> · <c>style:</c>(기대치 · 드리프트 검정에는 불참).</summary>
+    public static IReadOnlyList<string> ModalityObjectiveTokens(PlutoVideoPerformanceTelemetry t)
+    {
+        ArgumentNullException.ThrowIfNull(t);
+        var list = new List<string>(1 + (t.StyleTags?.Count ?? 0));
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        Add(list, seen, "bgm:", t.BgmMood);
+        if (t.StyleTags is not null) for (var i = 0; i < t.StyleTags.Count; i++) Add(list, seen, "style:", t.StyleTags[i]);
+        return list;
+    }
+
     /// <summary>🔁 후회 리허설 소거 라벨 — 이번 영상이 실제로 검증한 <c>hook:</c> · <c>look:</c> · <c>pair:</c> 구성.</summary>
     public static IReadOnlyList<string> RehearsalLabels(PlutoVideoPerformanceTelemetry t)
     {
@@ -275,10 +298,7 @@ public sealed class PlutoClosedLoopReinforcementService : IPlutoClosedLoopReinfo
         if (_learning is null) return;
         try
         {
-            var tokens = new List<string>(2);
-            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            Add(tokens, seen, "hook:", t.HookStyle);
-            Add(tokens, seen, "look:", t.ColorLookId);
+            var tokens = PatternTokens(t);   // ⚖️ 전 모달리티(hook · look · bgm · style) — A/B 변형은 차이 나는 특성만 담겨 있다
             if (tokens.Count > 0)
                 await _learning.RecordPatternObjectivesAsync(tokens, PlutoObjectiveVector.FromPercent(t.ThreeSecondHookRetentionPct, t.AverageCompletionPct, t.ClickThroughRatePct), ct).ConfigureAwait(false);
         }
@@ -380,7 +400,7 @@ public sealed class PlutoClosedLoopReinforcementService : IPlutoClosedLoopReinfo
             Add(tokens, seen, "hook:", t.HookStyle);
             Add(tokens, seen, "look:", t.ColorLookId);
             return await _learning.RecordContextualObservationAsync(t.Domain, t.RenderMode, PlutoContextualBaseline.CompositeScore(t), tokens, ct,
-                PlutoObjectiveVector.FromPercent(t.ThreeSecondHookRetentionPct, t.AverageCompletionPct, t.ClickThroughRatePct)).ConfigureAwait(false);
+                PlutoObjectiveVector.FromPercent(t.ThreeSecondHookRetentionPct, t.AverageCompletionPct, t.ClickThroughRatePct), ModalityObjectiveTokens(t)).ConfigureAwait(false);
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.ClosedLoop] context: " + ex.Message); return null; }
@@ -424,6 +444,7 @@ public sealed class PlutoClosedLoopReinforcementService : IPlutoClosedLoopReinfo
             var forecast = ForecastSafe(telemetry);   // 🎯 관측이 기준선·기대치를 갱신하기 전의 예측(메타 보정 감사용)
             // 📐 관측 이전 기준선 대비 잔차 알파 · 🌊 Page-Hinkley 갱신(강화/벌점 적용 전에 수행)
             var ctx = await ObserveContextSafeAsync(telemetry, ct).ConfigureAwait(false);
+            await ObserveSeriesArcSafeAsync(telemetry, ct).ConfigureAwait(false);   // 📺 시리즈 편 → 편 간 유지율 추세(비시리즈 영상은 무동작)
             var established = ctx is { IsEstablished: true };
             var z = ctx?.ZScore ?? 0.0;
             var formatOutperformer = established && z >= PlutoContextualBaseline.OutperformZ;

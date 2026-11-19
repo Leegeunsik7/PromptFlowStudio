@@ -29,7 +29,21 @@ public sealed record PlutoParetoAssessment(int Tier, double Multiplier, bool IsC
     public bool IsFrontier => Tier == 0;
 }
 
-/// <summary>⚖️ 파레토 프런티어 선두(훅) — 두뇌 리포트 표기용.</summary>
+/// <summary>⚖️ 모달리티(훅 · 룩 · BGM · 태그) 1종의 파레토 현황 — 선두(없음 → null) · 근거 후보 수 · 프런티어 크기 · 클릭베이트 강등 수.</summary>
+public sealed record PlutoParetoModalityStatus(PlutoPatternKind Kind, PlutoParetoLeader? Leader, int EvidencedCount, int FrontierSize, int ClickbaitCount)
+{
+    public bool HasEvidence => EvidencedCount > 0;
+    /// <summary>모달리티 한국어 명칭(결정론).</summary>
+    public static string KindLabel(PlutoPatternKind kind) => kind switch
+    {
+        PlutoPatternKind.Hook => "훅",
+        PlutoPatternKind.Look => "룩",
+        PlutoPatternKind.BgmMood => "BGM",
+        _ => "태그",
+    };
+}
+
+/// <summary>⚖️ 파레토 프런티어 선두(모달리티 1종) — 두뇌 리포트 표기용.</summary>
 public sealed record PlutoParetoLeader(string Label, PlutoObjectiveVector Objectives, double Samples, int FrontierSize, int EvidencedCount, int ClickbaitCount)
 {
     /// <summary>⚖️ 1줄(결정론 한국어).</summary>
@@ -60,6 +74,45 @@ public static class PlutoParetoFrontier
     public const double DownsideBonusMax = 0.15;
     public const double TierStep = 0.05, MinTierFactor = 0.85;
     public const double DominanceEpsilon = 1e-9;
+    /// <summary>⏳ 다목적 근거 유예 기간(일) — 마지막 관측 후 이 기간까지는 표본 수 그대로.</summary>
+    public const double EvidenceGraceDays = 14.0;
+    /// <summary>⏳ 유예 이후 다목적 근거 표본 반감기(일) — 유효 표본이 <see cref="MinObjectiveSamples"/> 미만이 되면 '근거 없음'(배수 1.0)으로 복귀.</summary>
+    public const double EvidenceHalfLifeDays = 28.0;
+
+    /// <summary>
+    /// ⏳ 다목적 근거 신선도(0~1 · 순수 함수) — 유예(<see cref="EvidenceGraceDays"/>) 이내 1.0 · 이후 <see cref="EvidenceHalfLifeDays"/> 반감기.
+    /// 관측 시각 미상(<c>default</c> — Step 15 파일) · 시계 역행 → 1.0(기존 판정 유지).
+    /// 클릭베이트로 강등된 패턴은 다시 선택되지 않아 새 관측이 들어오지 않는다 — 감쇠가 없으면 한 번의 판정이 영구 낙인이 된다.
+    /// </summary>
+    public static double EvidenceFreshness(DateTime lastObservedUtc, DateTime nowUtc)
+    {
+        if (lastObservedUtc == default) return 1.0;
+        var age = (nowUtc - lastObservedUtc).TotalDays;
+        if (!double.IsFinite(age) || age <= EvidenceGraceDays) return 1.0;
+        return Math.Pow(0.5, (age - EvidenceGraceDays) / EvidenceHalfLifeDays);
+    }
+
+    /// <summary>⚖️ 전 모달리티 1줄(결정론 한국어) — <c>훅 2/3 '선두' · 룩 1/1 · BGM 1/2(🎣1) · 태그 —</c>(프런티어/근거 · 클릭베이트 강등 수).</summary>
+    public static string BuildModalityLabel(IReadOnlyList<PlutoParetoModalityStatus>? modalities)
+    {
+        var inv = CultureInfo.InvariantCulture;
+        var none = "근거 없음 · 훅 · 룩 · BGM · 태그별 성과 " + MinObjectiveSamples.ToString("0", inv) + "건부터 균형 평가";
+        if (modalities is null || modalities.Count == 0) return none;
+        var sb = new System.Text.StringBuilder(96);
+        var any = false;
+        for (var i = 0; i < modalities.Count; i++)
+        {
+            var m = modalities[i];
+            if (i > 0) sb.Append(" · ");
+            sb.Append(PlutoParetoModalityStatus.KindLabel(m.Kind)).Append(' ');
+            if (!m.HasEvidence) { sb.Append('—'); continue; }
+            any = true;
+            sb.Append(m.FrontierSize.ToString(inv)).Append('/').Append(m.EvidencedCount.ToString(inv));
+            if (m.ClickbaitCount > 0) sb.Append("(🎣").Append(m.ClickbaitCount.ToString(inv)).Append(')');
+            if (m.Leader is { } l) sb.Append(" '").Append(l.Label).Append("'");
+        }
+        return any ? sb.ToString() : none;
+    }
 
     /// <summary>a 가 b 를 지배(세 축 모두 ≥ · 한 축 이상 &gt;).</summary>
     public static bool Dominates(PlutoObjectiveVector a, PlutoObjectiveVector b)

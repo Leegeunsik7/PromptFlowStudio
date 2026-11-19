@@ -181,6 +181,8 @@ public sealed class PlutoLearningService : IDisposable
         [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] public double ObjT { get; set; }
         /// <summary>⚖️ 다목적 EWMA 표본 수.</summary>
         [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] public double ObjN { get; set; }
+        /// <summary>⏳ Step 16 — 마지막 다목적 관측 시각(미기록 = Step 15 파일 → 신선도 감쇠 없음).</summary>
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] public DateTime ObjUtc { get; set; }
     }
 
     private static double Finite(double v, double min = double.NegativeInfinity) => double.IsFinite(v) && v >= min ? v : 0.0;
@@ -511,9 +513,10 @@ public sealed class PlutoLearningService : IDisposable
     ///   ② 예측 잔차 x = (기준선 + 패턴 알파 기대치 평균) − 관측 → Page-Hinkley 갱신 · 감지 시 탐색 서지 1.0 + 연루 패턴 초과 가중치 표적 망각.
     ///   ③ 그 뒤에 컨텍스트 · 전역 기준선과 패턴 기대치를 갱신(관측이 자기 자신의 기준을 오염시키지 않음).
     /// <paramref name="expectancyTokens"/> = <c>hook:…</c> · <c>look:…</c> 패턴 토큰. 비유한 점수 → 무변경.
+    /// <paramref name="objectiveOnlyTokens"/> = <c>bgm:…</c> · <c>style:…</c> — 다목적 EWMA 만 갱신(기대치 · 드리프트 검정 · 표적 망각에는 불참 → 기존 예측 잔차 통계 불변).
     /// </summary>
     public async Task<PlutoContextualObservation> RecordContextualObservationAsync(string? domain, string? renderMode, double score, IReadOnlyList<string>? expectancyTokens,
-        CancellationToken ct = default, PlutoObjectiveVector? objectives = null)
+        CancellationToken ct = default, PlutoObjectiveVector? objectives = null, IReadOnlyList<string>? objectiveOnlyTokens = null)
     {
         if (!double.IsFinite(score)) return PlutoContextualObservation.None;
         await EnsureLoadedAsync(ct).ConfigureAwait(false);
@@ -580,7 +583,26 @@ public sealed class PlutoLearningService : IDisposable
                         pe.LastUtc = now;
                     }
                     UpdateEwma(pe, alpha, PlutoContextualBaseline.PatternAlpha);
-                    if (objectives is { IsFinite: true } ov) UpdateObjectives(pe, ov);   // ⚖️ 다목적(훅 · 완주 · CTR) EWMA
+                    if (objectives is { IsFinite: true } ov) UpdateObjectives(pe, ov, now);   // ⚖️ 다목적(훅 · 완주 · CTR) EWMA
+                }
+
+            // ⚖️ 전 모달리티 귀속 — BGM 무드 · 스타일 태그는 다목적 EWMA 만(기대치 토큰 · 앞선 항목과 겹치면 1회만 반영)
+            if (objectiveOnlyTokens is not null && objectives is { IsFinite: true } ov2)
+                for (var i = 0; i < objectiveOnlyTokens.Count; i++)
+                {
+                    var t = objectiveOnlyTokens[i];
+                    if (string.IsNullOrWhiteSpace(t)) continue;
+                    var trimmed = t.Trim();
+                    var dup = false;
+                    if (expectancyTokens is not null)
+                        for (var k = 0; k < expectancyTokens.Count && !dup; k++)
+                            dup = expectancyTokens[k] is { } x && string.Equals(x.Trim(), trimmed, StringComparison.Ordinal);
+                    for (var k = 0; k < i && !dup; k++)
+                        dup = objectiveOnlyTokens[k] is { } y && string.Equals(y.Trim(), trimmed, StringComparison.Ordinal);
+                    if (dup) continue;
+                    var ok = PatternKeyPrefix + trimmed;
+                    if (!_entries.TryGetValue(ok, out var oe)) { oe = new Entry { Weight = PatternBaseWeight }; _entries[ok] = oe; }
+                    UpdateObjectives(oe, ov2, now);
                 }
 
             if (ctx is null) { ctx = new Entry(); _entries[key] = ctx; }
@@ -610,9 +632,11 @@ public sealed class PlutoLearningService : IDisposable
     }
 
     /// <summary>⚖️ 다목적 EWMA 증분 갱신(초기 구간 = 단순 평균 · 이후 스텝 <see cref="PlutoContextualBaseline.PatternAlpha"/>).</summary>
-    private static void UpdateObjectives(Entry e, PlutoObjectiveVector v)
+    private static void UpdateObjectives(Entry e, PlutoObjectiveVector v, DateTime now)
     {
-        var n = Math.Min(MaxExpectancySamples, e.ObjN + 1.0);
+        // ⏳ 묵은 근거는 신선도만큼 표본을 줄인 뒤 재기준 → 오랜 공백 뒤의 새 관측이 낡은 평균을 빠르게 대체
+        var n = Math.Min(MaxExpectancySamples, e.ObjN * PlutoParetoFrontier.EvidenceFreshness(e.ObjUtc, now) + 1.0);
+        e.ObjUtc = now;
         var step = PlutoContextualBaseline.StepFor(n, PlutoContextualBaseline.PatternAlpha);
         e.ObjH += step * (Unit(v.Hook) - e.ObjH);
         e.ObjC += step * (Unit(v.Completion) - e.ObjC);
@@ -621,12 +645,14 @@ public sealed class PlutoLearningService : IDisposable
     }
 
     /// <summary>⚖️ 패턴 다목적 성과(훅 · 완주 · CTR EWMA · 미추적 → 표본 0).</summary>
-    public (PlutoObjectiveVector Objectives, double Samples) GetPatternObjectives(string patternToken)
+    /// <remarks>⏳ 표본 수는 <paramref name="asOfUtc"/>(null → 주입 시계) 기준 신선도(<see cref="PlutoParetoFrontier.EvidenceFreshness"/>) 반영 유효 표본.</remarks>
+    public (PlutoObjectiveVector Objectives, double Samples) GetPatternObjectives(string patternToken, DateTime? asOfUtc = null)
     {
         if (string.IsNullOrWhiteSpace(patternToken)) return (default, 0.0);
+        var now = asOfUtc ?? PatternNow();
         lock (_sync)
             return _entries.TryGetValue(PatternKeyPrefix + patternToken, out var e) && e.ObjN > 0
-                ? (new PlutoObjectiveVector(e.ObjH, e.ObjC, e.ObjT), e.ObjN)
+                ? (new PlutoObjectiveVector(e.ObjH, e.ObjC, e.ObjT), e.ObjN * PlutoParetoFrontier.EvidenceFreshness(e.ObjUtc, now))
                 : (default, 0.0);
     }
 
@@ -641,13 +667,14 @@ public sealed class PlutoLearningService : IDisposable
         var touched = 0;
         lock (_sync)
         {
+            var now = PatternNow();
             for (var i = 0; i < patternTokens.Count; i++)
             {
                 var t = patternTokens[i];
                 if (string.IsNullOrWhiteSpace(t)) continue;
                 var key = PatternKeyPrefix + t.Trim();
                 if (!_entries.TryGetValue(key, out var e)) { e = new Entry { Weight = PatternBaseWeight }; _entries[key] = e; }
-                UpdateObjectives(e, objectives);
+                UpdateObjectives(e, objectives, now);
                 touched++;
             }
         }
