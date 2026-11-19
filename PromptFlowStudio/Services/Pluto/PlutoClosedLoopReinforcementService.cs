@@ -14,6 +14,8 @@ public sealed record PlutoVideoPerformanceTelemetry(string VideoId, string Platf
 {
     /// <summary>🧭 콘텐츠 도메인(예: <c>BabyStudio</c> · <c>GeneralCinematic</c>) — 지정 시 <c>domain_hook:{Domain}+{HookStyle}</c> 상호작용 키 추적(미지정 → 생략).</summary>
     public string? Domain { get; init; }
+    /// <summary>🎞️ 렌더 포맷(예: <c>Ambient15s</c> · <c>Montage</c> · <c>Series3</c>) — <see cref="Domain"/>과 함께 컨텍스트 기준선 키 <c>ctx:{Domain}|{RenderMode}</c>(미지정 → <c>Any</c>).</summary>
+    public string? RenderMode { get; init; }
 }
 
 /// <summary>📈 폐루프 강화 결과 — 돌파 성공(패턴 부스트 + XP) · 오답 노트 벌점 기록 여부 · XP 증분 · 패턴 배수 · 요약.</summary>
@@ -29,6 +31,20 @@ public sealed record PlutoReinforcementOutcome(bool IsBreakoutSuccess, bool Reco
     public bool GuardActivated => PenaltySeverity >= PlutoMistakeNotebookService.BlockThreshold;
     /// <summary>🎯 2-way 귀속 — 훅이 다른 조합/도메인에서 성공 이력이 있어 벌점을 이 조합 키(<c>pair:</c> · <c>domain_hook:</c>)로 격리(전역 훅 벌점 면제 · 없음 → null).</summary>
     public string? IsolatedPairKey { get; init; }
+    /// <summary>📐 컨텍스트 관측(기준선 · 잔차 알파 · z · 드리프트) — 학습 메모리 미연결/중복 반영 → null.</summary>
+    public PlutoContextualObservation? Context { get; init; }
+    /// <summary>📐 포맷 기준선 대비 잔차 알파(합성 점수 0~1 · 없음 → 0).</summary>
+    public double ResidualAlpha => Context?.ResidualAlpha ?? 0.0;
+    /// <summary>📐 잔차 알파가 보상/벌점을 실제로 바꿈(돌파 부스트 감쇄 · 알파 부스트 · 벌점 면제).</summary>
+    public bool ContextualAlphaApplied { get; init; }
+    /// <summary>📐 절대 기준 미달이지만 포맷 기준선을 상회해 오답 노트 벌점을 면제함.</summary>
+    public bool ContextualPenaltyWaived { get; init; }
+    /// <summary>🌊 이번 반영에서 레짐 드리프트 감지(탐색 서지 발동).</summary>
+    public bool RegimeDriftDetected => Context?.DriftDetected ?? false;
+    /// <summary>🎯 이번 반영의 메타 보정 관측(예측 · 실현 · 최선 대안) — 메타 보정 미연결/근거 없음 → null.</summary>
+    public PlutoCalibrationObservation? CalibrationObservation { get; init; }
+    /// <summary>💸 이번 반영의 반사실 후회(없음 → 0).</summary>
+    public double CounterfactualRegret => CalibrationObservation?.Regret ?? 0.0;
 }
 
 /// <summary>
@@ -71,6 +87,10 @@ public interface IPlutoClosedLoopReinforcementService
 ///   ▸ 🔗 2-way 귀속: 훅×룩(<c>pair:</c>) · 도메인×훅(<c>domain_hook:</c>) 조합 키를 단일 특성과 함께 강화/시행 기록 ·
 ///     부진 훅이 다른 조합/도메인에서 성공 이력이 있으면 벌점을 조합 키에만 격리(훅 전역 오염 방지).
 ///   ▸ 🎰 모든 반영(돌파 · 부진 · 평균)이 패턴 시행 수를 +1 → 랭커 UCB1 탐색 항의 표본 수.
+///   ▸ 📐 컨텍스트 잔차 알파: 성립한 (Domain, RenderMode) 기준선 대비 z 로 돌파 부스트를 감쇄(포맷 편승 → 보상 ↓) ·
+///     절대 기준 미달/평균이어도 포맷을 z ≥ 1 상회하면 벌점 면제 + 알파 부스트(×1.075~1.15). 미성립 컨텍스트는 기존 동작과 동일.
+///   ▸ 🌊 예측 잔차(기대 − 관측)를 Page-Hinkley 검정에 공급 → 급격한 레짐 전환 시 탐색 서지.
+///   ▸ A/B 차등 강화는 두 변형이 같은 포맷을 공유(설계상 컨텍스트 통제)하므로 잔차 보정 대상이 아니다.
 /// </summary>
 public sealed class PlutoClosedLoopReinforcementService : IPlutoClosedLoopReinforcementService, IDisposable
 {
@@ -112,6 +132,28 @@ public sealed class PlutoClosedLoopReinforcementService : IPlutoClosedLoopReinfo
         _learning = learning;
         _notebook = notebook;
         _storage = storage;
+    }
+
+    /// <summary>🎯 메타 보정 감사(미연결 → 생략 · 기존 동작과 동일).</summary>
+    public IPlutoMetaCalibrationService? MetaCalibration { get; init; }
+
+    /// <summary>🎯 반사실 예측 스냅샷(관측 반영 이전) — 실패 격리.</summary>
+    private PlutoExpectancyForecast ForecastSafe(PlutoVideoPerformanceTelemetry t)
+    {
+        if (MetaCalibration is null || _learning is null) return PlutoExpectancyForecast.None;
+        try { return _learning.ForecastExpectancy(t.Domain, t.RenderMode, t.HookStyle, t.ColorLookId); }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.ClosedLoop] forecast: " + ex.Message); return PlutoExpectancyForecast.None; }
+    }
+
+    /// <summary>🎯 메타 보정 기록 — 실패 격리([부분 구제] 강화 결과 유지 · 취소만 전파). 근거 없음 → null.</summary>
+    private async Task<PlutoCalibrationObservation?> RecordCalibrationSafeAsync(double predicted, double realized, double alternative, string? alternativeLabel, string source, CancellationToken ct)
+    {
+        if (MetaCalibration is null) return null;
+        var obs = new PlutoCalibrationObservation(predicted, realized, alternative) { BestAlternativeLabel = alternativeLabel, Source = source };
+        if (!obs.HasPrediction && !obs.HasAlternative) return null;
+        try { await MetaCalibration.RecordOutcomeAsync(obs, ct).ConfigureAwait(false); return obs; }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.ClosedLoop] calibration: " + ex.Message); return null; }
     }
 
     public event Action? Changed;
@@ -293,6 +335,22 @@ public sealed class PlutoClosedLoopReinforcementService : IPlutoClosedLoopReinfo
         return (isolated, first);
     }
 
+    /// <summary>📐🌊 컨텍스트 관측(기준선 · 잔차 · 드리프트) — 실패 격리([부분 구제] 보정 없이 기존 판정 유지).</summary>
+    private async Task<PlutoContextualObservation?> ObserveContextSafeAsync(PlutoVideoPerformanceTelemetry t, CancellationToken ct)
+    {
+        if (_learning is null) return null;
+        try
+        {
+            var tokens = new List<string>(2);
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            Add(tokens, seen, "hook:", t.HookStyle);
+            Add(tokens, seen, "look:", t.ColorLookId);
+            return await _learning.RecordContextualObservationAsync(t.Domain, t.RenderMode, PlutoContextualBaseline.CompositeScore(t), tokens, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.ClosedLoop] context: " + ex.Message); return null; }
+    }
+
     /// <summary>🎰 시행 기록(가중치 불변) — 실패 격리([부분 구제] 반영 결과 유지).</summary>
     private async Task RecordTrialsSafeAsync(PlutoVideoPerformanceTelemetry t, CancellationToken ct)
     {
@@ -328,9 +386,20 @@ public sealed class PlutoClosedLoopReinforcementService : IPlutoClosedLoopReinfo
             string? isolatedKey = null;
             var warn = "";
 
+            var forecast = ForecastSafe(telemetry);   // 🎯 관측이 기준선·기대치를 갱신하기 전의 예측(메타 보정 감사용)
+            // 📐 관측 이전 기준선 대비 잔차 알파 · 🌊 Page-Hinkley 갱신(강화/벌점 적용 전에 수행)
+            var ctx = await ObserveContextSafeAsync(telemetry, ct).ConfigureAwait(false);
+            var established = ctx is { IsEstablished: true };
+            var z = ctx?.ZScore ?? 0.0;
+            var formatOutperformer = established && z >= PlutoContextualBaseline.OutperformZ;
+            var alphaApplied = false;
+            var penaltyWaived = false;
+
             if (breakout)
             {
-                mult = BoostFor(strength);
+                var gain = PlutoContextualBaseline.BoostGain(z, established);
+                mult = Math.Min(MaxBoost, 1.0 + (BoostFor(strength) - 1.0) * gain);   // 포맷 편승(z ≤ 0) → 부스트 감쇄
+                alphaApplied = established && gain < 1.0 - 1e-9;
                 xp = XpFor(strength);
                 try
                 {
@@ -345,6 +414,10 @@ public sealed class PlutoClosedLoopReinforcementService : IPlutoClosedLoopReinfo
                 }
                 catch (OperationCanceledException) { throw; }
                 catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.ClosedLoop] relief: " + ex.Message); }
+            }
+            else if (poor && formatOutperformer)
+            {
+                penaltyWaived = true;   // 📐 절대 기준 미달이지만 자기 포맷 기준선은 상회 — 포맷 편향을 패턴 탓으로 돌리지 않음
             }
             else if (poor)
             {
@@ -363,15 +436,48 @@ public sealed class PlutoClosedLoopReinforcementService : IPlutoClosedLoopReinfo
                 catch (OperationCanceledException) { throw; }
                 catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.ClosedLoop] penalty: " + ex.Message); penalty = 0; warn = " · ⚠ 오답 노트 기록 실패"; }
             }
-            if (!breakout) await RecordTrialsSafeAsync(telemetry, ct).ConfigureAwait(false);   // 🎰 부진 · 평균도 시행으로 집계(돌파는 강화에서 +1)
+            var alphaBoosted = false;
+            if (!breakout && formatOutperformer && _learning is not null)
+            {
+                // 📐 알파 부스트 — 절대 돌파는 아니지만 포맷 기준선을 z ≥ 1 상회(강화에서 시행 +1)
+                var alphaMult = PlutoContextualBaseline.AlphaBoost(z, true);
+                try
+                {
+                    await _learning.ApplyPatternReinforcementAsync(Concat(PatternTokens(telemetry), InteractionTokens(telemetry)), alphaMult, XpSourceKey, 0, ct).ConfigureAwait(false);
+                    mult = alphaMult;
+                    alphaBoosted = alphaApplied = true;
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.ClosedLoop] alpha boost: " + ex.Message); warn += " · ⚠ 알파 부스트 기록 실패"; }
+            }
+            if (!breakout && !alphaBoosted) await RecordTrialsSafeAsync(telemetry, ct).ConfigureAwait(false);   // 🎰 부진 · 평균도 시행으로 집계(돌파/알파 부스트는 강화에서 +1)
 
-            var summary = Summarize(telemetry, breakout, poor, xp, mult, penalty, dimension);
+            var summary = Summarize(telemetry, breakout, poor && !penaltyWaived, xp, mult, penalty, dimension);
             if (isolatedKey is not null) summary += " · 🎯 조합 격리(" + isolatedKey + ") — 훅 전역 벌점 면제";
+            if (ctx is not null && established)
+            {
+                summary += " · 📐 포맷 기준선 " + (ctx.Baseline * 100).ToString("0.#", Inv) + " 대비 " + (ctx.ResidualAlpha >= 0 ? "+" : "−")
+                    + Math.Abs(ctx.ResidualAlpha * 100).ToString("0.#", Inv) + "p(z " + z.ToString("+0.0;−0.0", Inv) + ")";
+                if (penaltyWaived) summary += " · 🛡️ 포맷 대비 초과 성과 — 벌점 면제";
+                if (alphaBoosted) summary += " · 알파 부스트 ×" + mult.ToString("0.00", Inv);
+                else if (breakout && alphaApplied) summary += " · 포맷 편승 보정 ×" + mult.ToString("0.00", Inv);
+            }
+            if (ctx is { DriftDetected: true }) summary += " · 🌊 레짐 변화 감지 — 탐색 서지 발동";
+            // 🎯 예측 vs 실현 · 💸 반사실 후회 감사(예측 근거가 있을 때만)
+            var calibration = forecast.HasBaseline
+                ? await RecordCalibrationSafeAsync(forecast.PredictedScore, PlutoContextualBaseline.CompositeScore(telemetry), forecast.BestAlternativeScore, forecast.BestAlternativeLabel, "closed-loop", ct).ConfigureAwait(false)
+                : null;
+            if (calibration is { Regret: > PlutoMetaCalibrationService.RegretDeadBand })
+                summary += " · 💸 반사실 후회 " + calibration.Regret.ToString("0.00", Inv) + (calibration.BestAlternativeLabel is { } alt ? "(대안 " + alt + ")" : "");
             var outcome = new PlutoReinforcementOutcome(breakout, penalty > 0, xp, mult, summary + warn)
             {
+                CalibrationObservation = calibration,
                 PenaltySeverity = penalty,
                 FailureDimension = penalty > 0 ? dimension : null,
                 IsolatedPairKey = isolatedKey,
+                Context = ctx,
+                ContextualAlphaApplied = alphaApplied || penaltyWaived,
+                ContextualPenaltyWaived = penaltyWaived,
             };
             await AppendLedgerAsync(key, ct).ConfigureAwait(false);
             return Publish(outcome);
@@ -412,6 +518,8 @@ public sealed class PlutoClosedLoopReinforcementService : IPlutoClosedLoopReinfo
             var boosted = false;
             var warn = "";
             var winHook = Pct(request.Winner.ThreeSecondHookRetentionPct);
+            var winForecast = ForecastSafe(request.Winner);   // 🎯 강화 반영 전 예측
+            var loseForecast = ForecastSafe(request.Loser);
 
             if (!request.IsTie && winHook >= PoorHookPct)
             {
@@ -477,8 +585,21 @@ public sealed class PlutoClosedLoopReinforcementService : IPlutoClosedLoopReinfo
             else if (!request.IsTie) sb.Append(" · 🛡️ 패자 보호(오답 노트 면제)");
             if (penalty > 0 && isolatedKey is not null) sb.Append(" · 🎯 조합 격리(").Append(isolatedKey).Append(')');
 
+            // 🎯💸 A/B 는 반사실이 실측된다 — 각 변형의 최선 대안 = 상대 변형의 실현 점수(패자 후회 = 승자 − 패자 · 승자 후회 = 0)
+            PlutoCalibrationObservation? loserCalibration = null;
+            if (MetaCalibration is not null)
+            {
+                var winScore = PlutoContextualBaseline.CompositeScore(request.Winner);
+                var loseScore = PlutoContextualBaseline.CompositeScore(request.Loser);
+                var winTokens = PatternTokens(request.Winner);
+                var loseTokens = PatternTokens(request.Loser);
+                await RecordCalibrationSafeAsync(winForecast.PredictedScore, winScore, loseScore, loseTokens.Count > 0 ? loseTokens[0] : null, "ab", ct).ConfigureAwait(false);
+                loserCalibration = await RecordCalibrationSafeAsync(loseForecast.PredictedScore, loseScore, winScore, winTokens.Count > 0 ? winTokens[0] : null, "ab", ct).ConfigureAwait(false);
+            }
+
             var outcome = new PlutoReinforcementOutcome(boosted, penalty > 0, xp, mult, sb.ToString() + warn)
             {
+                CalibrationObservation = loserCalibration,
                 PenaltySeverity = penalty,
                 FailureDimension = penalty > 0 ? loserDim : null,
                 IsolatedPairKey = penalty > 0 ? isolatedKey : null,

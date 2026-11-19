@@ -46,6 +46,21 @@ public sealed class VideoEngineRenderExecutionEngine : IRenderExecutionEngine, I
 
     private readonly ICutRenderCheckpointService _checkpoints;
 
+    /// <summary>
+    /// ⚡ 프로바이더 회로 차단기 — 작업 단위 일시 실패 3회 연속 → 냉각 동안 호출 생략(null = 미사용).
+    /// 엔진 인스턴스(= 앱 수명 싱글턴)별 상태.
+    /// </summary>
+    public ProviderCircuitBreaker? CircuitBreaker { get; init; } = new();
+
+    /// <summary>⚡ 예외 필터용 관측 — 일시 예외만 회로에 실패로 기록하고 항상 false(예외 흐름 불변).</summary>
+    private static bool ObserveBreakerFault(ProviderCircuitBreaker? breaker, string provider, Exception ex, CancellationToken ct)
+    {
+        if (breaker is null) return false;
+        if (CutRetryPolicy.IsTransientException(ex, ct)) breaker.RecordTransientFailure(provider, ex.Message);
+        else breaker.RecordReachable(provider);
+        return false;
+    }
+
     /// <summary>컷 재시도 백오프 지연(테스트 주입용 · null = Task.Delay).</summary>
     public Func<TimeSpan, CancellationToken, Task>? RetryDelay { get; init; }
 
@@ -304,6 +319,12 @@ public sealed class VideoEngineRenderExecutionEngine : IRenderExecutionEngine, I
             }
         }
 
+        // ⚡ 프로바이더 회로 차단 — 연속 일시 장애 중이면 호출 자체를 생략(체크포인트 적중은 위에서 이미 반환)
+        var breaker = CircuitBreaker;
+        var provider = string.IsNullOrWhiteSpace(engine.Key) ? kind : engine.Key;
+        if (breaker is not null && !breaker.TryAcquire(provider, out var retryAfter))
+            return new RenderExecutionResult(false, kind, null, ProviderCircuitBreaker.BuildOpenMessage(provider, retryAfter));
+
         var request = BuildRequest(job);
         // ☁️ 클라우드 발번 즉시 저널링(task_id 첫 보고 1회) — 단절·재시작 복구용
         var journal = string.Equals(kind, RenderEngineKind.Cloud, StringComparison.Ordinal) ? Journal : null;
@@ -341,7 +362,16 @@ public sealed class VideoEngineRenderExecutionEngine : IRenderExecutionEngine, I
         {
             // 사용자 [취소] → UserCanceled(자동 회수 제외) · 종료/단절 → Interrupted(재시작 시 복구)
             journal?.MarkStatus(jrelay?.TaskId, job.UserCancelRequested ? TaskJournalService.StatusUserCanceled : TaskJournalService.StatusInterrupted);
+            breaker?.RecordAbandoned(provider);   // ⚡ 취소 = 판정 보류(탐침 슬롯 반납)
             throw;
+        }
+        catch (Exception ex) when (ObserveBreakerFault(breaker, provider, ex, ct)) { throw; }   // 필터는 항상 false — 기록만 하고 기존 전파 유지
+        if (breaker is not null)
+        {
+            if (r.Ok) breaker.RecordSuccess(provider);
+            else if (r.Status == WanTaskStatus.Canceled) breaker.RecordAbandoned(provider);
+            else if (CutRetryPolicy.IsTransientMessage(r.Message)) breaker.RecordTransientFailure(provider, r.Message);
+            else breaker.RecordReachable(provider);
         }
         var journalTaskId = jrelay?.TaskId ?? r.TaskId;
         if (journal is not null && !string.IsNullOrWhiteSpace(r.TaskId) && jrelay?.TaskId is null)
@@ -398,6 +428,13 @@ public sealed class VideoEngineRenderExecutionEngine : IRenderExecutionEngine, I
                 var dir = Path.GetDirectoryName(outputPath);
                 if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
                 File.Copy(cached, outputPath, overwrite: true);
+                // 🩹 복사본 재검증 — 복사 도중 잘린 산출물이 합본에 들어가지 않게(실패 → 미스 처리 · 새로 생성)
+                if (!PromptFlowStudio.Services.Export.ExportMediaIntegrityGuard.TryValidateMp4(outputPath, out var copyError))
+                {
+                    Program.Log("RenderExec.CheckpointReuse", new InvalidOperationException(copyError));
+                    try { File.Delete(outputPath); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+                    return null;
+                }
             }
             return outputPath;
         }

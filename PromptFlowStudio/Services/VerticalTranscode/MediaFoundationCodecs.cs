@@ -9,6 +9,37 @@ public interface IMfSampleSink
     void OnSample(ReadOnlySpan<byte> data, long time100ns);
 }
 
+/// <summary>
+/// Step 13 — Media Foundation 네이티브 수명 불변식 진단(테스트 · HUD 용, 읽기 전용).
+/// 불변식: ① MFStartup 은 프로세스당 정확히 1회(MFShutdown 미호출 — 살아 있는 COM 객체와의 종료 경합 원천 차단)
+/// ② 비동기(하드웨어) MFT 는 Drain → Flush → EndStreaming → IMFShutdown 후에만 해제하고, 최종 Release 는 유예 큐로 지연
+/// ③ 모든 MFT 호출은 인스턴스 게이트로 직렬화되어 Dispose 와 경합하지 않는다.
+/// </summary>
+public static class MediaFoundationLifetime
+{
+    internal static int s_startups, s_live, s_deferredTotal, s_deferredPending, s_unquiesced;
+    /// <summary>MFStartup 성공 호출 수(불변식: 0 또는 1).</summary>
+    public static int StartupCalls => Volatile.Read(ref s_startups);
+    /// <summary>해제되지 않은 MFT 구동기 수.</summary>
+    public static int LiveTransforms => Volatile.Read(ref s_live);
+    /// <summary>유예 해제로 넘겨진 비동기 MFT 누계.</summary>
+    public static int DeferredReleases => Volatile.Read(ref s_deferredTotal);
+    /// <summary>유예 기간이 아직 끝나지 않은 최종 Release 대기 수.</summary>
+    public static int PendingDeferredReleases => Volatile.Read(ref s_deferredPending);
+    /// <summary>Drain 완료 이벤트 없이(무출력 MFT 등) 종료된 비동기 MFT 누계.</summary>
+    public static int UnquiescedShutdowns => Volatile.Read(ref s_unquiesced);
+    /// <summary>최종 Release 유예 기간(ms).</summary>
+    public const int ReleaseGraceMs = 5000;
+    /// <summary>유예 기간이 지난 MFT 를 지금 해제하고 남은 대기 수를 반환.</summary>
+    public static int Reap()
+    {
+#if WINDOWS
+        Mf.ReapDeferred();
+#endif
+        return PendingDeferredReleases;
+    }
+}
+
 #if WINDOWS
 /// <summary>
 /// [PromptFlow Studio v17.49.0] Media Foundation 원시 COM 래퍼(vtable 함수 포인터 · 외부 NuGet 0 · GC 할당 0).
@@ -16,9 +47,9 @@ public interface IMfSampleSink
 /// </summary>
 internal static unsafe class Mf
 {
-    public const int S_OK = 0, MF_E_TRANSFORM_NEED_MORE_INPUT = unchecked((int)0xC00D6D72), MF_E_TRANSFORM_STREAM_CHANGE = unchecked((int)0xC00D6D61), MF_E_NOTACCEPTING = unchecked((int)0xC00D36B5), MF_E_NO_EVENTS_AVAILABLE = unchecked((int)0xC00D3E80);
-    public const uint METransformNeedInput = 601, METransformHaveOutput = 602, MFT_OUTPUT_STREAM_PROVIDES_SAMPLES = 0x100, MFT_OUTPUT_STREAM_CAN_PROVIDE_SAMPLES = 0x200;
-    public const uint MSG_FLUSH = 0, MSG_DRAIN = 1, MSG_BEGIN_STREAMING = 0x10000000, MSG_END_OF_STREAM = 0x10000002, MSG_START_OF_STREAM = 0x10000003;
+    public const int S_OK = 0, MF_E_TRANSFORM_NEED_MORE_INPUT = unchecked((int)0xC00D6D72), MF_E_TRANSFORM_STREAM_CHANGE = unchecked((int)0xC00D6D61), MF_E_NOTACCEPTING = unchecked((int)0xC00D36B5), MF_E_NO_EVENTS_AVAILABLE = unchecked((int)0xC00D3E80), MF_E_SHUTDOWN = unchecked((int)0xC00D3E85);
+    public const uint METransformNeedInput = 601, METransformHaveOutput = 602, METransformDrainComplete = 603, MFT_OUTPUT_STREAM_PROVIDES_SAMPLES = 0x100, MFT_OUTPUT_STREAM_CAN_PROVIDE_SAMPLES = 0x200;
+    public const uint MSG_FLUSH = 0, MSG_DRAIN = 1, MSG_BEGIN_STREAMING = 0x10000000, MSG_END_STREAMING = 0x10000001, MSG_END_OF_STREAM = 0x10000002, MSG_START_OF_STREAM = 0x10000003;
     public static readonly Guid MediaTypeVideo = new("73646976-0000-0010-8000-00AA00389B71"), MediaTypeAudio = new("73647561-0000-0010-8000-00AA00389B71");
     public static readonly Guid H264 = new("34363248-0000-0010-8000-00AA00389B71"), NV12 = new("3231564E-0000-0010-8000-00AA00389B71");
     public static readonly Guid Pcm = new("00000001-0000-0010-8000-00AA00389B71"), Aac = new("00001610-0000-0010-8000-00AA00389B71");
@@ -32,7 +63,7 @@ internal static unsafe class Mf
     public static readonly Guid ASYNC_UNLOCK = new("e5666d6b-3422-4eb6-a421-da7db1f8e207"), LOW_LATENCY = new("9c27891a-ed7a-40e1-88e8-b22727a024ee");
     public static readonly Guid CAT_VIDEO_ENCODER = new("f79eac7d-e545-4387-bdee-d647d7bde42a");
     public static readonly Guid CLSID_H264Enc = new("6ca50344-051a-4ded-9779-a43305165e35"), CLSID_H264Dec = new("62CE7E72-4C71-4d20-B15D-452831A87D9D"), CLSID_AacEnc = new("93AF0C51-2275-45d2-A35B-F2BA21CAED00");
-    public static readonly Guid IID_Transform = new("bf94c121-5b05-4e6f-8000-ba598961414d"), IID_EventGen = new("2CD0BD52-BCD5-4B89-B62C-EADC0C031E7D"), IID_CodecApi = new("901db4c7-31ce-41a2-85dc-8fa0bf41b8da");
+    public static readonly Guid IID_Transform = new("bf94c121-5b05-4e6f-8000-ba598961414d"), IID_EventGen = new("2CD0BD52-BCD5-4B89-B62C-EADC0C031E7D"), IID_CodecApi = new("901db4c7-31ce-41a2-85dc-8fa0bf41b8da"), IID_Shutdown = new("97ec2ea4-0e42-4937-97ac-9d6d328824e1");
     public static readonly Guid API_MeanBitRate = new("f7222374-2144-4815-b550-a37f8e12ee52"), API_RateControl = new("1c0608e9-370c-4710-8a58-cb6181c42423"), API_GopSize = new("95f31b26-95a4-41aa-9303-246a7fc6eef1"), API_BCount = new("8d390aac-dc5c-4200-b57f-814d04babab2");
 
     [StructLayout(LayoutKind.Sequential)] public struct OutputDataBuffer { public uint StreamId; public IntPtr Sample; public uint Status; public IntPtr Events; }
@@ -50,23 +81,70 @@ internal static unsafe class Mf
     [DllImport("ole32.dll", ExactSpelling = true)] public static extern int CoInitializeEx(IntPtr reserved, uint coinit);
     [DllImport("ole32.dll", ExactSpelling = true)] public static extern int CoCreateInstance(in Guid clsid, IntPtr outer, uint ctx, in Guid iid, out IntPtr obj);
     [DllImport("ole32.dll", ExactSpelling = true)] public static extern void CoTaskMemFree(IntPtr p);
+    [DllImport("combase.dll", ExactSpelling = true)] private static extern int CoIncrementMTAUsage(out IntPtr cookie);
 
     private static int _started;
     private static readonly object Gate = new();
 
-    /// <summary>COM(MTA 시도) · MFStartup 1회. 실패 시 false.</summary>
+    private static bool _mtaPinned;
+    private static readonly Queue<(IntPtr Ptr, long Tick)> Deferred = new();
+
+    /// <summary>
+    /// COM MTA 고정 · MFStartup 프로세스당 1회. 실패 시 false.
+    /// Step 13: 스레드별 CoInitializeEx(짝 없는 누적 · 그 스레드가 풀에서 은퇴하면 마지막 MTA 참조가 사라져 in-proc MFT DLL 이
+    /// 언로드될 수 있음) 대신 CoIncrementMTAUsage 로 MTA 를 프로세스 수명 동안 고정. MFShutdown 은 의도적으로 호출하지 않는다
+    /// (살아 있는 MFT/작업 큐와의 종료 경합 제거 — 참조 수는 항상 1 로 균형).
+    /// </summary>
     public static bool Ensure()
     {
-        try
+        lock (Gate)
         {
-            CoInitializeEx(IntPtr.Zero, 0);
-            lock (Gate)
+            try
             {
-                if (_started == 0) _started = MFStartup(0x00020070, 0) >= 0 ? 1 : -1;
-                return _started == 1;
+                if (!_mtaPinned)
+                {
+                    try { _mtaPinned = CoIncrementMTAUsage(out _) >= 0; }
+                    catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException) { _mtaPinned = false; }
+                }
+                if (!_mtaPinned) CoInitializeEx(IntPtr.Zero, 0);   // 구형 OS 폴백(스레드별)
+                if (_started == 0)
+                {
+                    _started = MFStartup(0x00020070, 0) >= 0 ? 1 : -1;
+                    if (_started == 1) Interlocked.Increment(ref MediaFoundationLifetime.s_startups);
+                }
             }
+            catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException or BadImageFormatException) { _started = -1; }
+            ReapDeferredLocked();
+            return _started == 1;
         }
-        catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException or BadImageFormatException) { _started = -1; return false; }
+    }
+
+    /// <summary>
+    /// 비동기 MFT 최종 Release 유예 — 드라이버 작업 큐(RTWorkQ)에 남은 작업 항목이 이미 파괴된 객체의 임계 구역에 진입해
+    /// ntdll 0xc0000005 로 프로세스가 죽던 결함(nvEncMFTH264x) 차단. Shutdown 후 유예 기간이 지난 뒤에만 참조를 놓는다.
+    /// </summary>
+    public static void DeferRelease(IntPtr p)
+    {
+        if (p == IntPtr.Zero) return;
+        lock (Gate)
+        {
+            Deferred.Enqueue((p, Environment.TickCount64));
+            Interlocked.Increment(ref MediaFoundationLifetime.s_deferredTotal);
+            Interlocked.Increment(ref MediaFoundationLifetime.s_deferredPending);
+            ReapDeferredLocked();
+        }
+    }
+
+    public static void ReapDeferred() { lock (Gate) ReapDeferredLocked(); }
+
+    private static void ReapDeferredLocked()
+    {
+        var now = Environment.TickCount64;
+        while (Deferred.Count > 0 && now - Deferred.Peek().Tick >= MediaFoundationLifetime.ReleaseGraceMs)
+        {
+            Release(Deferred.Dequeue().Ptr);
+            Interlocked.Decrement(ref MediaFoundationLifetime.s_deferredPending);
+        }
     }
 
     private static IntPtr* V(IntPtr p) => *(IntPtr**)p;
@@ -104,6 +182,8 @@ internal static unsafe class Mf
     public static int Activate(IntPtr a, in Guid iid, out IntPtr o) { fixed (Guid* g = &iid) fixed (IntPtr* r = &o) return ((delegate* unmanaged[Stdcall]<IntPtr, Guid*, IntPtr*, int>)V(a)[33])(a, g, r); }
     public static int GetEvent(IntPtr gen, uint flags, out IntPtr ev) { fixed (IntPtr* r = &ev) return ((delegate* unmanaged[Stdcall]<IntPtr, uint, IntPtr*, int>)V(gen)[3])(gen, flags, r); }
     public static int EventType(IntPtr ev, out uint t) { fixed (uint* r = &t) return ((delegate* unmanaged[Stdcall]<IntPtr, uint*, int>)V(ev)[33])(ev, r); }
+    // IMFShutdown
+    public static int Shutdown(IntPtr sd) => ((delegate* unmanaged[Stdcall]<IntPtr, int>)V(sd)[3])(sd);
     public static int CodecSet(IntPtr api, in Guid k, uint value)
     {
         var v = new Variant { Vt = 19, Value = value };
@@ -138,14 +218,35 @@ internal static unsafe class Mf
 /// <summary>MFT 구동기 — 동기(소프트웨어) · 비동기(하드웨어, 이벤트) 공통 출력 수확.</summary>
 internal sealed unsafe class MfTransform : IDisposable
 {
+    private readonly object _gate = new();
     private IntPtr _t, _events, _api, _outSample;
     private uint _outFlags, _outSize;
-    private int _needInput;
+    private int _needInput, _depth;
+    private bool _streaming, _drained, _disposed, _disposePending;
     public MfTransform(IntPtr transform, bool async)
     {
         _t = transform; Async = async;
         if (async) Mf.QI(_t, Mf.IID_EventGen, out _events);
         Mf.QI(_t, Mf.IID_CodecApi, out _api);
+        Interlocked.Increment(ref MediaFoundationLifetime.s_live);
+    }
+
+    /// <summary>
+    /// Step 13 수명 게이트 — 모든 네이티브 호출을 직렬화하고 해제 후 호출을 거부(무할당 Monitor).
+    /// 싱크 콜백 안에서 Dispose 가 재진입하면 즉시 해제하지 않고 최외곽 Exit 시점으로 미룬다(사용 중 해제 방지).
+    /// </summary>
+    public bool Enter()
+    {
+        Monitor.Enter(_gate);
+        if (_disposed || _disposePending) { Monitor.Exit(_gate); return false; }
+        _depth++;
+        return true;
+    }
+
+    public void Exit()
+    {
+        try { if (--_depth == 0 && _disposePending) ReleaseCore(); }
+        finally { Monitor.Exit(_gate); }
     }
     public bool Async { get; }
     public IntPtr Handle => _t;
@@ -156,12 +257,18 @@ internal sealed unsafe class MfTransform : IDisposable
 
     public bool Begin()
     {
-        Mf.OutStreamInfo(_t, out var si); _outFlags = si.Flags; _outSize = Math.Max(si.Size, 1u << 20);
-        return (LastHr = Mf.Message(_t, Mf.MSG_BEGIN_STREAMING)) >= 0 && (LastHr = Mf.Message(_t, Mf.MSG_START_OF_STREAM)) >= 0;
+        if (!Enter()) { LastHr = Mf.MF_E_SHUTDOWN; return false; }
+        try
+        {
+            Mf.OutStreamInfo(_t, out var si); _outFlags = si.Flags; _outSize = Math.Max(si.Size, 1u << 20);
+            _streaming = (LastHr = Mf.Message(_t, Mf.MSG_BEGIN_STREAMING)) >= 0 && (LastHr = Mf.Message(_t, Mf.MSG_START_OF_STREAM)) >= 0;
+            return _streaming;
+        }
+        finally { Exit(); }
     }
 
     /// <summary>비동기 이벤트 펌프 — NeedInput 크레딧 적립 · HaveOutput 수확. 동기 MFT 는 무동작.</summary>
-    private void Pump(IMfSampleSink sink)
+    private void Pump(IMfSampleSink? sink)
     {
         if (!Async || _events == IntPtr.Zero) return;
         for (var i = 0; i < 64; i++)
@@ -172,11 +279,19 @@ internal sealed unsafe class MfTransform : IDisposable
             Mf.Release(ev);
             if (type == Mf.METransformNeedInput) _needInput++;
             else if (type == Mf.METransformHaveOutput) Drain(sink, 1);
+            else if (type == Mf.METransformDrainComplete) _drained = true;
         }
     }
 
     /// <summary>입력 1개 제출(동기 = 즉시 · 비동기 = 크레딧 대기 최대 waitMs). 출력은 sink 로 전달.</summary>
     public bool Feed(IntPtr sample, IMfSampleSink sink, int waitMs = 200)
+    {
+        if (!Enter()) { LastHr = Mf.MF_E_SHUTDOWN; return false; }
+        try { return FeedCore(sample, sink, waitMs); }
+        finally { Exit(); }
+    }
+
+    private bool FeedCore(IntPtr sample, IMfSampleSink sink, int waitMs)
     {
         if (Async)
         {
@@ -187,7 +302,7 @@ internal sealed unsafe class MfTransform : IDisposable
             _needInput--;
             var ah = LastHr = Mf.ProcessInput(_t, sample);
             Pump(sink);
-            if (ah >= 0) Inputs++;
+            if (ah >= 0) { Inputs++; _drained = false; }
             return ah >= 0;
         }
         // v17.74: 수락 여부 = ProcessInput 결과(후속 Drain 의 NEED_MORE_INPUT 은 정상 — 이전엔 LastHr 덮어써 false 오보)
@@ -201,14 +316,29 @@ internal sealed unsafe class MfTransform : IDisposable
 
     public void Finish(IMfSampleSink sink)
     {
-        Mf.Message(_t, Mf.MSG_END_OF_STREAM);
-        Mf.Message(_t, Mf.MSG_DRAIN);
-        if (Async) { var deadline = Environment.TickCount64 + 1000; while (Environment.TickCount64 < deadline) { Pump(sink); Thread.Sleep(1); } }
-        else Drain(sink, 4096);
+        if (!Enter()) return;
+        try
+        {
+            Mf.Message(_t, Mf.MSG_END_OF_STREAM);
+            if (Async) DrainAsync(sink, 1000);
+            else { Mf.Message(_t, Mf.MSG_DRAIN); Drain(sink, 4096); }
+        }
+        finally { Exit(); }
+    }
+
+    /// <summary>비동기 Drain — METransformDrainComplete(진행 중 작업 항목 소진) 수신 또는 기한까지 펌프. 반환 = 정지 확인.</summary>
+    private bool DrainAsync(IMfSampleSink? sink, int waitMs)
+    {
+        _drained = false;
+        if (Mf.Message(_t, Mf.MSG_DRAIN) < 0) return false;
+        var deadline = Environment.TickCount64 + waitMs;
+        Pump(sink);
+        while (!_drained && Environment.TickCount64 < deadline) { Thread.Sleep(1); Pump(sink); }
+        return _drained;
     }
 
     /// <summary>ProcessOutput 반복 — 스트림 변경 시 첫 가용 출력 형식(디코더는 NV12)으로 재설정.</summary>
-    public int Drain(IMfSampleSink sink, int max, Guid? wantSub = null)
+    private int Drain(IMfSampleSink? sink, int max, Guid? wantSub = null)
     {
         var got = 0;
         for (var k = 0; k < max; k++)
@@ -216,8 +346,9 @@ internal sealed unsafe class MfTransform : IDisposable
             var provides = (_outFlags & (Mf.MFT_OUTPUT_STREAM_PROVIDES_SAMPLES | Mf.MFT_OUTPUT_STREAM_CAN_PROVIDE_SAMPLES)) != 0;
             if (!provides && _outSample == IntPtr.Zero)
             {
-                Mf.MFCreateSample(out _outSample);
-                Mf.MFCreateMemoryBuffer(_outSize, out var b); Mf.AddBuffer(_outSample, b); Mf.Release(b);
+                if (Mf.MFCreateSample(out _outSample) < 0 || _outSample == IntPtr.Zero) { _outSample = IntPtr.Zero; LastHr = unchecked((int)0x8007000E); break; }
+                if (Mf.MFCreateMemoryBuffer(_outSize, out var b) < 0 || b == IntPtr.Zero) { Mf.Release(_outSample); _outSample = IntPtr.Zero; LastHr = unchecked((int)0x8007000E); break; }
+                Mf.AddBuffer(_outSample, b); Mf.Release(b);
             }
             Mf.OutputDataBuffer odb = default;
             odb.Sample = provides ? IntPtr.Zero : _outSample;
@@ -236,7 +367,7 @@ internal sealed unsafe class MfTransform : IDisposable
                 Mf.GetTime(s, out var t);
                 if (Mf.Lock(buf, out var p, out _, out var len) >= 0)
                 {
-                    try { sink.OnSample(new ReadOnlySpan<byte>(p, (int)len), t); }
+                    try { sink?.OnSample(new ReadOnlySpan<byte>(p, (int)len), t); }
                     finally { Mf.Unlock(buf); }
                 }
                 Mf.Release(buf);
@@ -268,10 +399,41 @@ internal sealed unsafe class MfTransform : IDisposable
 
     public void Dispose()
     {
-        Mf.Release(_outSample); _outSample = IntPtr.Zero;
-        Mf.Release(_events); _events = IntPtr.Zero;
-        Mf.Release(_api); _api = IntPtr.Zero;
-        Mf.Release(_t); _t = IntPtr.Zero;
+        lock (_gate)
+        {
+            if (_disposed || _disposePending) return;
+            if (_depth > 0) { _disposePending = true; return; }   // 싱크 콜백 재진입 — 최외곽 Exit 에서 해제
+            ReleaseCore();
+        }
+    }
+
+    /// <summary>
+    /// 결정적 해제(게이트 보유 상태). 비동기 MFT: Drain 완료 대기 → Flush → EndStreaming → IMFShutdown → 유예 Release.
+    /// 동기 MFT 는 진행 중 작업 항목이 없으므로 기존대로 즉시 Release.
+    /// </summary>
+    private void ReleaseCore()
+    {
+        _disposed = true; _disposePending = false;
+        var t = _t;
+        try
+        {
+            if (t != IntPtr.Zero && Async)
+            {
+                var quiesced = !_streaming || Inputs == 0 || _drained || DrainAsync(null, 500);
+                if (!quiesced) Interlocked.Increment(ref MediaFoundationLifetime.s_unquiesced);
+                if (_streaming) { Mf.Message(t, Mf.MSG_FLUSH); Mf.Message(t, Mf.MSG_END_STREAMING); }
+                if (Mf.QI(t, Mf.IID_Shutdown, out var sd) >= 0 && sd != IntPtr.Zero) { Mf.Shutdown(sd); Mf.Release(sd); }
+            }
+        }
+        finally
+        {
+            _t = IntPtr.Zero;
+            Mf.Release(_outSample); _outSample = IntPtr.Zero;
+            Mf.Release(_events); _events = IntPtr.Zero;
+            Mf.Release(_api); _api = IntPtr.Zero;
+            if (Async) Mf.DeferRelease(t); else Mf.Release(t);
+            Interlocked.Decrement(ref MediaFoundationLifetime.s_live);
+        }
     }
 }
 
@@ -424,11 +586,13 @@ public sealed unsafe class MfH264Encoder : IDisposable
             Mf.CodecSet(x.CodecApi, Mf.API_BCount, 0);
         }
         var o = Mf.NewType(Mf.MediaTypeVideo, Mf.H264);
+        if (o == IntPtr.Zero) return false;
         Mf.SetU64(o, Mf.MT_FRAME_SIZE, size); Mf.SetU64(o, Mf.MT_FRAME_RATE, rate); Mf.SetU64(o, Mf.MT_PAR, 1UL << 32 | 1);
         Mf.SetU32(o, Mf.MT_INTERLACE, 2); Mf.SetU32(o, Mf.MT_AVG_BITRATE, (uint)kbps * 1000); Mf.SetU32(o, Mf.MT_PROFILE, 66);
         var hr = Mf.SetOut(x.Handle, o); Mf.Release(o);
         if (hr < 0) return false;
         var i = Mf.NewType(Mf.MediaTypeVideo, Mf.NV12);
+        if (i == IntPtr.Zero) return false;
         Mf.SetU64(i, Mf.MT_FRAME_SIZE, size); Mf.SetU64(i, Mf.MT_FRAME_RATE, rate); Mf.SetU64(i, Mf.MT_PAR, 1UL << 32 | 1); Mf.SetU32(i, Mf.MT_INTERLACE, 2);
         hr = Mf.SetIn(x.Handle, i); Mf.Release(i);
         BitrateKbps = kbps;
@@ -438,23 +602,29 @@ public sealed unsafe class MfH264Encoder : IDisposable
     /// <summary>평균 비트레이트 동적 변경(ICodecAPI) — 미지원이면 false.</summary>
     public bool SetBitrate(int kbps)
     {
-        if (_x is null || _x.CodecApi == IntPtr.Zero) return false;
-        if (Mf.CodecSet(_x.CodecApi, Mf.API_MeanBitRate, (uint)kbps * 1000) < 0) return false;
-        BitrateKbps = kbps;
-        return true;
+        var x = _x;
+        if (x is null || !x.Enter()) return false;
+        try
+        {
+            if (x.CodecApi == IntPtr.Zero || Mf.CodecSet(x.CodecApi, Mf.API_MeanBitRate, (uint)kbps * 1000) < 0) return false;
+            BitrateKbps = kbps;
+            return true;
+        }
+        finally { x.Exit(); }
     }
 
     public bool Encode(ReadOnlySpan<byte> y, ReadOnlySpan<byte> uv, long time100ns, long dur100ns, IMfSampleSink sink)
     {
-        if (_x is null) return false;
+        var x = _x;
+        if (x is null) return false;
         var s = Mf.NewSample(y, uv, time100ns, dur100ns);
         if (s == IntPtr.Zero) return false;
-        try { return _x.Feed(s, sink); }
+        try { return x.Feed(s, sink); }
         finally { Mf.Release(s); }
     }
 
-    public void Finish(IMfSampleSink sink) => _x?.Finish(sink);
-    public void Dispose() { _x?.Dispose(); _x = null; }
+    public void Finish(IMfSampleSink sink) => Volatile.Read(ref _x)?.Finish(sink);
+    public void Dispose() => Interlocked.Exchange(ref _x, null)?.Dispose();
 }
 
 /// <summary>AAC-LC 인코더(Microsoft AAC MFT · 128 kbps · 48 kHz 스테레오 · raw 페이로드).</summary>
@@ -479,15 +649,16 @@ public sealed class MfAacEncoder : IDisposable
 
     public bool Encode(ReadOnlySpan<byte> pcm16, long time100ns, IMfSampleSink sink)
     {
-        if (_x is null) return false;
+        var x = _x;
+        if (x is null) return false;
         var s = Mf.NewSample(pcm16, default, time100ns, pcm16.Length / 4 * 10_000_000L / 48000);
         if (s == IntPtr.Zero) return false;
-        try { return _x.Feed(s, sink); }
+        try { return x.Feed(s, sink); }
         finally { Mf.Release(s); }
     }
 
-    public void Finish(IMfSampleSink sink) => _x?.Finish(sink);
-    public void Dispose() { _x?.Dispose(); _x = null; }
+    public void Finish(IMfSampleSink sink) => Volatile.Read(ref _x)?.Finish(sink);
+    public void Dispose() => Interlocked.Exchange(ref _x, null)?.Dispose();
 }
 
 /// <summary>H.264 → NV12 디코더(Microsoft MFT) — 인코딩 결과 루프백 검증 · 프리뷰 전용.</summary>
@@ -524,25 +695,32 @@ public sealed class MfH264Decoder : IDisposable
     public bool OutputSize(out int w, out int h, out int stride)
     {
         w = h = stride = 0;
-        if (_x is null || Mf.OutCurrent(_x.Handle, out var t) < 0) return false;
-        Mf.GetU64(t, Mf.MT_FRAME_SIZE, out var sz);
-        stride = Mf.GetU32(t, Mf.MT_STRIDE, out var st) >= 0 ? (int)st : (int)(sz >> 32);
-        Mf.Release(t);
-        w = (int)(sz >> 32); h = (int)(sz & 0xFFFFFFFF);
-        return true;
+        var x = _x;
+        if (x is null || !x.Enter()) return false;
+        try
+        {
+            if (Mf.OutCurrent(x.Handle, out var t) < 0 || t == IntPtr.Zero) return false;
+            Mf.GetU64(t, Mf.MT_FRAME_SIZE, out var sz);
+            stride = Mf.GetU32(t, Mf.MT_STRIDE, out var st) >= 0 ? (int)st : (int)(sz >> 32);
+            Mf.Release(t);
+            w = (int)(sz >> 32); h = (int)(sz & 0xFFFFFFFF);
+            return true;
+        }
+        finally { x.Exit(); }
     }
 
     public bool Decode(ReadOnlySpan<byte> annexB, long time100ns, IMfSampleSink sink)
     {
-        if (_x is null) return false;
+        var x = _x;
+        if (x is null) return false;
         var s = Mf.NewSample(annexB, default, time100ns, 0);
         if (s == IntPtr.Zero) return false;
-        try { return _x.Feed(s, sink); }
+        try { return x.Feed(s, sink); }
         finally { Mf.Release(s); }
     }
 
-    public void Finish(IMfSampleSink sink) => _x?.Finish(sink);
-    public void Dispose() { _x?.Dispose(); _x = null; }
+    public void Finish(IMfSampleSink sink) => Volatile.Read(ref _x)?.Finish(sink);
+    public void Dispose() => Interlocked.Exchange(ref _x, null)?.Dispose();
 }
 #else
 public sealed class MfH264Encoder : IDisposable

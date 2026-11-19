@@ -24,8 +24,21 @@ public interface ICutRenderCheckpointService
     /// <summary><c>{key}.mp4</c> 실존 · 24시간 이내 · MP4 무결성 통과 시에만 true.</summary>
     bool TryGetValidCheckpoint(string cutKey, out string cachedMp4Path);
 
-    /// <summary>원본 MP4 검증 → 임시 파일 → 원자 이동 저장 · 30개 초과 시 오래된 순 정리.</summary>
+    /// <summary>원본 MP4 검증 → 임시 파일 → 원자 이동 저장 · 저장 직후 TTL + LRU(개수 · 총 용량) 정리.</summary>
     void SaveCheckpoint(string cutKey, string sourceMp4Path);
+
+    /// <summary>
+    /// 🧹 결정론 TTL + LRU 정리 — <paramref name="maxAge"/> 초과 항목 삭제 후, 총 용량이 <paramref name="maxTotalBytes"/> 이하가 될 때까지
+    /// 가장 오래 쓰이지 않은 항목부터 축출(0 이하 → 해당 기준 생략). 예외 미전파. 기본 구현 → 무동작.
+    /// </summary>
+    CutCheckpointPruneReport PruneStaleCheckpoints(TimeSpan maxAge, long maxTotalBytes) => CutCheckpointPruneReport.Empty;
+}
+
+/// <summary>🧹 체크포인트 정리 결과 — 검사 수 · TTL 만료 삭제 · LRU 축출(개수/용량) · 고아 임시 파일 삭제 · 잔여 개수/바이트.</summary>
+public sealed record CutCheckpointPruneReport(int ScannedCount, int ExpiredRemoved, int EvictedForBudget, int OrphanTempRemoved, int RemainingCount, long RemainingBytes)
+{
+    public static readonly CutCheckpointPruneReport Empty = new(0, 0, 0, 0, 0, 0L);
+    public int TotalRemoved => ExpiredRemoved + EvictedForBudget + OrphanTempRemoved;
 }
 
 /// <summary>무동작 체크포인트(레거시 직접 생성 엔진 기본값) — 항상 미스 · 저장 생략.</summary>
@@ -37,14 +50,39 @@ public sealed class NullCutRenderCheckpointService : ICutRenderCheckpointService
         => CutRenderCheckpointService.ComputeKey(prompt, cutIndex, durationSeconds, resolution, provider);
     public bool TryGetValidCheckpoint(string cutKey, out string cachedMp4Path) { cachedMp4Path = string.Empty; return false; }
     public void SaveCheckpoint(string cutKey, string sourceMp4Path) { }
+    public CutCheckpointPruneReport PruneStaleCheckpoints(TimeSpan maxAge, long maxTotalBytes) => CutCheckpointPruneReport.Empty;
 }
 
-/// <summary>순수 BCL(SHA256 · FileStream) 컷 체크포인트 — <c>{LocalAppData}\PromptFlowStudio\cut_checkpoints</c>.</summary>
+/// <summary>
+/// 순수 BCL(SHA256 · FileStream) 컷 체크포인트 — <c>{LocalAppData}\PromptFlowStudio\cut_checkpoints</c>.
+///   ▸ 🩹 자가 치유: 재사용 직전 <see cref="ExportMediaIntegrityGuard"/> 컨테이너 검증 — 0바이트 → 삭제 · 손상 → <c>quarantine\</c> 격리(진단용 최근
+///     <see cref="MaxQuarantineEntries"/>개) → 미스로 보고해 새로 생성(최종 합본 오염 차단).
+///   ▸ 🧹 TTL(<see cref="MaxAge"/> · 기록 시각 기준) + LRU(마지막 적중 시각 기준 · <see cref="MaxEntries"/>개 · <see cref="MaxTotalBytes"/>) —
+///     저장 직후 잠금 안에서 수행 · 중단된 저장이 남긴 고아 <c>.tmp</c> 도 회수.
+/// </summary>
 public sealed class CutRenderCheckpointService : ICutRenderCheckpointService
 {
     public const string FolderName = "cut_checkpoints";
+    public const string QuarantineFolderName = "quarantine";
+    public const string QuarantineExtension = ".corrupt";
     public const int MaxEntries = 30;
+    public const int MaxQuarantineEntries = 5;
+    /// <summary>총 용량 상한(2 GiB) — 4K 컷이 쌓여도 작업용 디스크를 잠식하지 않는 크기.</summary>
+    public const long MaxTotalBytes = 2L * 1024 * 1024 * 1024;
     public static readonly TimeSpan MaxAge = TimeSpan.FromHours(24);
+    /// <summary>이 시간보다 오래된 <c>.tmp</c> 는 중단된 저장의 잔재로 보고 회수(진행 중 저장 보호).</summary>
+    public static readonly TimeSpan OrphanTempAge = TimeSpan.FromHours(1);
+
+    private int _integrityRejections;
+    private volatile string? _lastIntegrityError;
+    private volatile CutCheckpointPruneReport _lastPrune = CutCheckpointPruneReport.Empty;
+
+    /// <summary>🩹 무결성 검증 실패로 거부한 캐시 파일 누계(세션).</summary>
+    public int IntegrityRejections => Volatile.Read(ref _integrityRejections);
+    /// <summary>🩹 마지막 무결성 거부 사유(없음 → null).</summary>
+    public string? LastIntegrityError => _lastIntegrityError;
+    /// <summary>🧹 마지막 정리 결과.</summary>
+    public CutCheckpointPruneReport LastPruneReport => _lastPrune;
 
     private readonly Func<string> _root;
     private readonly object _gate = new();
@@ -100,13 +138,47 @@ public sealed class CutRenderCheckpointService : ICutRenderCheckpointService
             {
                 var fi = new FileInfo(path);
                 if (!fi.Exists) return false;
-                if (Clock().UtcDateTime - fi.LastWriteTimeUtc > MaxAge) { TryDelete(path); return false; }
-                if (!ExportMediaIntegrityGuard.TryValidateMp4(path, out _)) { TryDelete(path); return false; }
+                var now = Clock().UtcDateTime;
+                if (now - fi.LastWriteTimeUtc > MaxAge) { TryDelete(path); return false; }
+                if (fi.Length == 0) { Reject(path, "0바이트 캐시 파일", quarantine: false); return false; }
+                try { ExportMediaIntegrityGuard.EnsureValidMp4(path); }
+                catch (InvalidOperationException bad) { Reject(path, bad.Message, quarantine: true); return false; }
+                try { File.SetLastAccessTimeUtc(path, now); }   // LRU 최근 사용 표시(실패해도 적중은 유효)
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
             }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return false; }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or ArgumentException) { return false; }
         }
         cachedMp4Path = path;
         return true;
+    }
+
+    /// <summary>🩹 손상 캐시 거부 — 격리(실패 시 삭제) 후 계수. 호출자가 <c>_gate</c> 보유.</summary>
+    private void Reject(string path, string reason, bool quarantine)
+    {
+        Interlocked.Increment(ref _integrityRejections);
+        _lastIntegrityError = reason;
+        if (quarantine)
+        {
+            try
+            {
+                var qdir = Path.Combine(Path.GetDirectoryName(path)!, QuarantineFolderName);
+                Directory.CreateDirectory(qdir);
+                var dest = Path.Combine(qdir, Path.GetFileNameWithoutExtension(path) + "." + Clock().UtcTicks.ToString(System.Globalization.CultureInfo.InvariantCulture) + QuarantineExtension);
+                File.Move(path, dest, overwrite: true);
+                TrimQuarantine(qdir);
+                return;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or ArgumentException) { }   // 격리 실패 → 삭제로 폴백
+        }
+        TryDelete(path);
+    }
+
+    private static void TrimQuarantine(string qdir)
+    {
+        var files = new List<FileInfo>(new DirectoryInfo(qdir).EnumerateFiles("*" + QuarantineExtension));
+        if (files.Count <= MaxQuarantineEntries) return;
+        files.Sort(static (a, b) => { var c = a.LastWriteTimeUtc.CompareTo(b.LastWriteTimeUtc); return c != 0 ? c : string.CompareOrdinal(a.Name, b.Name); });
+        for (var i = 0; i < files.Count - MaxQuarantineEntries; i++) TryDelete(files[i].FullName);
     }
 
     public void SaveCheckpoint(string cutKey, string sourceMp4Path)
@@ -128,27 +200,68 @@ public sealed class CutRenderCheckpointService : ICutRenderCheckpointService
             lock (_gate)
             {
                 File.Move(temp, dest, overwrite: true);
-                File.SetLastWriteTimeUtc(dest, Clock().UtcDateTime);
-                Prune(dir);
+                var now = Clock().UtcDateTime;
+                File.SetLastWriteTimeUtc(dest, now);
+                File.SetLastAccessTimeUtc(dest, now);
+                try { _lastPrune = PruneLocked(dir, MaxAge, MaxTotalBytes, protect: dest); }   // 정리 실패가 방금 성공한 저장을 실패로 만들지 않게 격리
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
             }
         }
         finally { TryDelete(temp); }
     }
 
-    private static void Prune(string dir)
+    public CutCheckpointPruneReport PruneStaleCheckpoints(TimeSpan maxAge, long maxTotalBytes)
     {
-        var files = new List<FileInfo>();
-        foreach (var f in new DirectoryInfo(dir).EnumerateFiles("*.mp4"))
-            if (IsValidKey(Path.GetFileNameWithoutExtension(f.Name))) files.Add(f);
-        if (files.Count <= MaxEntries) return;
-        files.Sort(static (a, b) => a.LastWriteTimeUtc.CompareTo(b.LastWriteTimeUtc));
-        for (var i = 0; i < files.Count - MaxEntries; i++) TryDelete(files[i].FullName);
+        try
+        {
+            var dir = Root;
+            if (!Directory.Exists(dir)) return CutCheckpointPruneReport.Empty;
+            lock (_gate) return _lastPrune = PruneLocked(dir, maxAge, maxTotalBytes, protect: null);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or ArgumentException) { return CutCheckpointPruneReport.Empty; }
     }
 
-    private static void TryDelete(string path)
+    /// <summary>
+    /// TTL → LRU(개수 → 총 용량) → 고아 임시 파일 순 정리(호출자가 <c>_gate</c> 보유). 최근성 = max(기록 시각, 마지막 적중 시각) ·
+    /// 동률 → 파일명 서수(결정론). <paramref name="protect"/>(방금 저장한 파일)는 용량 축출 대상에서 제외.
+    /// </summary>
+    private CutCheckpointPruneReport PruneLocked(string dir, TimeSpan maxAge, long maxTotalBytes, string? protect)
     {
-        try { if (File.Exists(path)) File.Delete(path); }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+        var now = Clock().UtcDateTime;
+        var files = new List<(string Path, string Name, DateTime Recency, long Bytes)>();
+        int scanned = 0, expired = 0, evicted = 0, orphans = 0;
+        foreach (var f in new DirectoryInfo(dir).EnumerateFiles("*.mp4"))
+        {
+            if (!IsValidKey(Path.GetFileNameWithoutExtension(f.Name))) continue;
+            scanned++;
+            if (maxAge > TimeSpan.Zero && now - f.LastWriteTimeUtc > maxAge) { if (TryDelete(f.FullName)) expired++; continue; }
+            var recency = f.LastAccessTimeUtc > f.LastWriteTimeUtc ? f.LastAccessTimeUtc : f.LastWriteTimeUtc;
+            files.Add((f.FullName, f.Name, recency, f.Length));
+        }
+        files.Sort(static (a, b) => { var c = a.Recency.CompareTo(b.Recency); return c != 0 ? c : string.CompareOrdinal(a.Name, b.Name); });   // 가장 오래 안 쓴 것부터
+        long total = 0;
+        for (var i = 0; i < files.Count; i++) total += files[i].Bytes;
+        var remaining = files.Count;
+        for (var i = 0; i < files.Count; i++)
+        {
+            var overCount = remaining > MaxEntries;
+            var overBytes = maxTotalBytes > 0 && total > maxTotalBytes;
+            if (!overCount && !overBytes) break;
+            if (protect is not null && string.Equals(files[i].Path, protect, StringComparison.OrdinalIgnoreCase)) continue;
+            if (!TryDelete(files[i].Path)) continue;   // 잠긴 파일(재사용 복사 중) → 다음 후보
+            total -= files[i].Bytes;
+            remaining--;
+            evicted++;
+        }
+        foreach (var t in new DirectoryInfo(dir).EnumerateFiles("*.tmp"))
+            if (now - t.LastWriteTimeUtc > OrphanTempAge && TryDelete(t.FullName)) orphans++;
+        return new CutCheckpointPruneReport(scanned, expired, evicted, orphans, remaining, total);
+    }
+
+    private static bool TryDelete(string path)
+    {
+        try { if (File.Exists(path)) File.Delete(path); return true; }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return false; }
     }
 }
 

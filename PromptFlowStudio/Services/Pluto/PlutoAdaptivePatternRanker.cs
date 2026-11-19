@@ -22,6 +22,18 @@ public sealed record PlutoRankedOption(string Key, string DisplayLabel, double B
     public double ExplorationBonus { get; init; }
     /// <summary>🎰 UCB1 점수 = 사후 평균(<see cref="FinalScore"/>) + 탐색 보너스 — 챌린저/탐색 기획안 선정 기준.</summary>
     public double UcbScore => FinalScore + ExplorationBonus;
+    /// <summary>🎯 베이지안 사후 신뢰(학습 배수 척도 · 이력 없음 → 사전 분포).</summary>
+    public PlutoPosteriorConfidence Posterior { get; init; } = PlutoPosteriorConfidence.Prior;
+    /// <summary>🎯 사후 평균 배수(소표본일수록 1.0 으로 수축).</summary>
+    public double PosteriorMean => Posterior.PosteriorMean;
+    /// <summary>🎯 사후 표준편차.</summary>
+    public double PosteriorUncertainty => Posterior.PosteriorUncertainty;
+    /// <summary>🎯 90% 신뢰 하한 — 챔피언(위험 회피) 선정 기준.</summary>
+    public double LowerConfidenceBound => Posterior.LowerConfidenceBound;
+    /// <summary>🎯 90% 신뢰 상한.</summary>
+    public double UpperConfidenceBound => Posterior.UpperConfidenceBound;
+    /// <summary>📐 컨텍스트 잔차 알파 기대치(합성 점수 0~1 척도 · 포맷 기준선 대비 평균 초과분 · 미추적 → 0).</summary>
+    public double ResidualAlpha { get; init; }
 }
 
 /// <summary>
@@ -69,6 +81,15 @@ public interface IPlutoAdaptivePatternRanker
 
     /// <summary>🎰 현재 UCB1 탐색 텔레메트리(훅 + 룩).</summary>
     PlutoExplorationTelemetry GetExplorationTelemetry() => PlutoExplorationTelemetry.Empty;
+
+    /// <summary>🌊 레짐 드리프트 · 탐색 서지 현황(기본 구현 → 안정).</summary>
+    PlutoRegimeDriftStatus GetRegimeDriftStatus() => PlutoRegimeDriftStatus.Stable;
+
+    /// <summary>📐 컨텍스트(Domain × RenderMode) EWMA 기준선(기본 구현 → 없음).</summary>
+    IReadOnlyList<PlutoContextBaselineStat> GetContextBaselines() => Array.Empty<PlutoContextBaselineStat>();
+
+    /// <summary>🎯 메타 보정(Brier/RMSE · 반사실 후회 · 탐색 배수) 현황(기본 구현 → 기록 없음).</summary>
+    PlutoCalibrationStatus GetCalibrationStatus() => PlutoCalibrationStatus.Empty;
 }
 
 /// <summary>
@@ -79,6 +100,8 @@ public interface IPlutoAdaptivePatternRanker
 ///   ▸ 🎰 UCB1 = FinalScore + C × √(ln(전체 시행 + 1) / (시행 + 1)) — 활용 순위(FinalScore)는 불변 · 탐색 순위는 <see cref="RankForExploration"/>.
 ///   ▸ ⏳ 학습 배수 · 시행 수는 14일 반감기 · 오답 감점은 21일 반감기(각 서비스의 주입 시계 기준 → 재현 가능).
 ///   ▸ 🔗 조합 시너지 = <c>pair:</c>/<c>domain_hook:</c> 학습 배수 × (1 − clamp(조합 감점, 0, 0.85)).
+///   ▸ 🌊 레짐 드리프트 감지 시 탐색 상수 C × 탐색 온도(1~3) — 활용 순위(FinalScore)는 불변 · 탐색 순위만 공격적으로.
+///   ▸ 🎯 후보마다 Normal–Normal 사후 신뢰 구간(<see cref="PlutoPosteriorConfidence"/>) 동봉 — '검증된 승자'와 '1회 급등' 구분.
 /// </summary>
 public sealed class PlutoAdaptivePatternRanker : IPlutoAdaptivePatternRanker
 {
@@ -93,6 +116,11 @@ public sealed class PlutoAdaptivePatternRanker : IPlutoAdaptivePatternRanker
     public const double ExplorationC = 0.5;
     /// <summary>🎰 탐색 후보 판정 시행 상한(미만 → 덜 검증됨).</summary>
     public const double UnderSampledTrials = 2.0;
+    /// <summary>🎚️ 탐색 상수 합산 배수(드리프트 온도 × 메타 보정 배수) 상한.</summary>
+    public const double MaxExplorationMultiplier = 4.0;
+
+    /// <summary>🎯 메타 보정 서비스(미연결 → 배수 1.0 · 기존 동작과 동일).</summary>
+    public IPlutoMetaCalibrationService? MetaCalibration { get; init; }
 
     public const string HookPrefix = "hook:", LookPrefix = "look:", BgmPrefix = "bgm:", StylePrefix = "style:";
 
@@ -128,6 +156,9 @@ public sealed class PlutoAdaptivePatternRanker : IPlutoAdaptivePatternRanker
         try { if (_notebook is not null) await _notebook.EnsureLoadedAsync(ct).ConfigureAwait(false); }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Ranker] notebook load: " + ex.Message); }
+        try { if (MetaCalibration is not null) await MetaCalibration.EnsureLoadedAsync(ct).ConfigureAwait(false); }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Ranker] calibration load: " + ex.Message); }   // [부분 구제] 배수 1.0
     }
 
     public PlutoAdaptiveRecommendation GetCurrentRecommendations(IEnumerable<string>? candidateHooks = null, IEnumerable<string>? candidateLooks = null,
@@ -202,6 +233,59 @@ public sealed class PlutoAdaptivePatternRanker : IPlutoAdaptivePatternRanker
             if (best is null || s.Score > best.Score || (s.Score == best.Score && string.CompareOrdinal(s.PairKey, best.PairKey) < 0)) best = s;
         }
         return best;
+    }
+
+    public PlutoRegimeDriftStatus GetRegimeDriftStatus()
+    {
+        try { return _learning?.GetRegimeDriftStatus() ?? PlutoRegimeDriftStatus.Stable; }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Ranker] drift: " + ex.Message); return PlutoRegimeDriftStatus.Stable; }
+    }
+
+    public IReadOnlyList<PlutoContextBaselineStat> GetContextBaselines()
+    {
+        try { return _learning?.GetContextBaselines() ?? Array.Empty<PlutoContextBaselineStat>(); }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Ranker] baselines: " + ex.Message); return Array.Empty<PlutoContextBaselineStat>(); }
+    }
+
+    /// <summary>
+    /// 🌊🎚️ 현재 유효 탐색 상수 = <see cref="ExplorationC"/> × min(<see cref="MaxExplorationMultiplier"/>, 탐색 온도 × 메타 보정 배수).
+    /// 서지 없음 + 메타 보정 미연결/표본 부족 → C 그대로. 레짐 서지 중에는 메타 수축(&lt; 1)을 무시(탐색을 깎지 않음).
+    /// </summary>
+    public double EffectiveExplorationC()
+    {
+        var temperature = 1.0;
+        try { temperature = PlutoRegimeDriftDetector.ExplorationTemperature(_learning?.GetExplorationSurge() ?? 0.0); }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Ranker] surge: " + ex.Message); }
+        return ExplorationC * CombineExplorationMultiplier(temperature, SafeCalibrationScale());
+    }
+
+    /// <summary>🎚️ 드리프트 온도 × 메타 보정 배수 결합(순수 함수) — 비유한/비양수 → 1 · 서지(온도 &gt; 1) 중 수축 금지 · 상한 ×4.</summary>
+    public static double CombineExplorationMultiplier(double temperature, double calibrationScale)
+    {
+        var t = double.IsFinite(temperature) && temperature > 0 ? temperature : 1.0;
+        var s = double.IsFinite(calibrationScale) && calibrationScale > 0 ? calibrationScale : 1.0;
+        if (t > 1.0 + Epsilon) s = Math.Max(1.0, s);
+        return Math.Min(MaxExplorationMultiplier, t * s);
+    }
+
+    private double SafeCalibrationScale()
+    {
+        if (MetaCalibration is null) return 1.0;
+        try { return MetaCalibration.GetCalibratedExplorationScale(); }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Ranker] calibration scale: " + ex.Message); return 1.0; }
+    }
+
+    public PlutoCalibrationStatus GetCalibrationStatus()
+    {
+        try { return MetaCalibration?.GetStatus() ?? PlutoCalibrationStatus.Empty; }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Ranker] calibration: " + ex.Message); return PlutoCalibrationStatus.Empty; }
+    }
+
+    private double SafeResidualAlpha(string prefix, string label)
+    {
+        if (_learning is null) return 0.0;
+        try { var (a, n) = _learning.GetPatternAlpha(prefix + label); return n > 0 && double.IsFinite(a) ? a : 0.0; }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Ranker] alpha: " + ex.Message); return 0.0; }
     }
 
     public PlutoExplorationTelemetry GetExplorationTelemetry()
@@ -398,6 +482,7 @@ public sealed class PlutoAdaptivePatternRanker : IPlutoAdaptivePatternRanker
             totalTrials += trials[i];
         }
         var list = new List<PlutoRankedOption>(labels.Count);
+        var explorationC = EffectiveExplorationC();   // 🌊 레짐 드리프트 → 탐색 서지
         for (var i = 0; i < labels.Count; i++)
         {
             var label = labels[i];
@@ -408,7 +493,9 @@ public sealed class PlutoAdaptivePatternRanker : IPlutoAdaptivePatternRanker
             list.Add(new PlutoRankedOption(key, label, b, mult, pf, ComputeFinalScore(b, mult, pf, key), BadgeFor(mult, pf))
             {
                 ArmTrials = trials[i],
-                ExplorationBonus = ExplorationBonusFor(ExplorationC, totalTrials, trials[i]),
+                ExplorationBonus = ExplorationBonusFor(explorationC, totalTrials, trials[i]),
+                Posterior = PlutoPosteriorConfidence.Compute(mult, trials[i]),
+                ResidualAlpha = SafeResidualAlpha(prefix, label),
             });
         }
         list.Sort(static (a, b) =>

@@ -137,6 +137,7 @@ public sealed class PlutoTrendOpportunityEngine : IPlutoTrendOpportunityEngine
         var negative = SafeNegativeConstraint();
         var date = now.AddHours(9).ToString("yyyyMMdd", Inv);   // KST 일자
 
+        var surge = SafeSurge(ranker);   // 🌊 레짐 드리프트 → 첫 1건만 활용 · 나머지는 전부 탐색 슬롯
         var briefs = new PlutoTrendOpportunityBrief[picked.Count];
         for (var i = 0; i < briefs.Length; i++)
         {
@@ -144,7 +145,7 @@ public sealed class PlutoTrendOpportunityEngine : IPlutoTrendOpportunityEngine
             var hook = ResolveHook(ranker, rec, kw, suppressed, out var hookSkipped, out var hookReinforced);
             var briefLook = look;
             var exploration = false;
-            if (briefs.Length >= 2 && i == briefs.Length - 1)   // 🎰 마지막 1건 = 탐색 슬롯(이력 없으면 활용 유지)
+            if (briefs.Length >= 2 && (i == briefs.Length - 1 || (surge && i >= 1)))   // 🎰 마지막 1건 = 탐색 슬롯(이력 없으면 활용 유지) · 🌊 서지 중엔 2번째부터 전부
             {
                 var exHook = PickExplorationHook(ranker, kw, hook, suppressed);
                 var exLook = PickExplorationLook(ranker, look, suppressed);
@@ -272,6 +273,13 @@ public sealed class PlutoTrendOpportunityEngine : IPlutoTrendOpportunityEngine
     }
 
     // ── 🎰 탐색 · 🔗 조합 ──
+
+    /// <summary>🌊 탐색 서지 활성 여부(실패 → false · [부분 구제] 기본 탐색 슬롯 1건).</summary>
+    private static bool SafeSurge(IPlutoAdaptivePatternRanker ranker)
+    {
+        try { return ranker.GetRegimeDriftStatus() is { IsSurgeActive: true }; }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Opportunity] surge: " + ex.Message); return false; }
+    }
 
     /// <summary>🎰 탐색 훅 — 키워드 테마 훅 + 활용 훅을 한 풀로 UCB1 랭킹 → 활용 훅이 아닌 첫 비감점 · 비차단 · 덜 검증된(보너스 &gt; 0) 후보(없음 → null).</summary>
     private string? PickExplorationHook(IPlutoAdaptivePatternRanker ranker, string keyword, string exploitHook, IReadOnlySet<string>? suppressed)

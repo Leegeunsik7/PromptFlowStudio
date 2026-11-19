@@ -41,3 +41,13 @@
 - drawtext `text='…'` 는 FFmpeg 3단계 파싱(그래프 따옴표 → 옵션 `av_get_token` → drawtext 확장): `%`는 `\\%`, `\`는 `\\\\`, `'`는 `'\\\''`(따옴표 닫고 재개) — 1단계(`\%`)만 하면 "Stray %"로 필터 실패 → 오버레이 전부 생략 폴백. 검증은 `PlutoHardeningAuditTests` 파서 포팅 시뮬레이터.
 - JSON 저장소 `lock{스냅샷}` → `await gate{기록}` 순서는 동시 기록 시 오래된 스냅샷이 나중에 써지는 Lost-Update. 게이트 안에서 최신 상태 직렬화(`PlutoJsonStore`). 적재 시 일시 잠금을 "빈 파일"로 오인하면 다음 저장이 누적 학습을 덮어씀 → Unreadable 세션은 쓰기 금지.
 - 벽시계 단일 최대치(`MaxIngestUs < 2ms`) 단언은 병렬 GC 정지 1회로 깨짐 → N회 중 최선(min) 실측으로 SLA, 최대치는 계측 여부만.
+## 9. 비동기 하드웨어 MFT 해제 후 사용 → testhost 0xc0000005 (Step 13 확정)
+- 증상: 빌드 직후 전체 실행에서 testhost 가 4~12초 내 `ntdll.dll` 0xc0000005(오프셋 0x1a12d)로 종료(간헐). WER 덤프 2건 스택 동일: `ntdll!RtlpWaitOnCriticalSection ← nvEncMFTH264x ← RTWorkQ!CSerialWorkQueue…OnWorkItemAsyncCallback`.
+- 원인: v17.75 하드웨어 H.264 프로브가 비동기 MFT 에 프레임을 넣고 곧바로 최종 `Release` — 드라이버 직렬 작업 큐에 남은 작업 항목이 이미 파괴된 객체의 임계 구역에 진입(부하 시 GPU 기동 지연으로 창이 넓어짐).
+- 규칙: 비동기 MFT 는 `DRAIN`(METransformDrainComplete 대기) → `FLUSH` → `END_STREAMING` → `IMFShutdown::Shutdown` 후에만 해제하고 최종 `Release` 는 유예 큐(`Mf.DeferRelease` · 5초)로. 모든 MFT 호출은 인스턴스 게이트(`MfTransform.Enter/Exit`)로 `Dispose` 와 직렬화. `MFShutdown` 은 호출하지 않는다(MFStartup 1회 · MTA 는 `CoIncrementMTAUsage` 로 고정).
+- 진단: `Get-WinEvent Application Id=1000` → `%LOCALAPPDATA%\CrashDumps\testhost.exe.<pid>.dmp` → `cdb -z <dmp> -c ".ecxr; kn 14; q"`. 회귀 `PlutoContextualBayesianAndDriftTests.MediaFoundation_ParallelInit…`.
+## 10. 부하 민감 타이밍 단언 · 캐시 자가 치유 · 회로 차단 (Step 14)
+- 자식 프로세스 기동 예산을 벽시계(`Stopwatch`)로 재면 전체 스위트 부하에 비례해 늘어난다(유휴 1.7초 → 부하 13.6초 · `SingleFileBinaryProcessBootstrap_Check` 간헐 실패). 성능 예산은 `Process.TotalProcessorTime`(스케줄링 대기 제외)로, 벽시계는 교착 판정(넉넉한 상한)에만.
+- 디스크 캐시(컷 체크포인트)는 '쓸 때 검증'만으로는 부족 — 재사용 직전에 컨테이너 무결성 재검증, 손상본은 격리(`quarantine\` 최근 5개) 후 미스 처리. 정리는 TTL(기록 시각) + LRU(적중 시각 · 개수 · 총 용량)이며 테스트 시계는 실제 시각보다 미래로 잡아 OS/백신의 접근 시각 갱신이 순서에 끼어들지 못하게 한다.
+- 컷 단위 재시도는 프로바이더 전체 장애를 흡수하지 못한다(3컷 × 3부작 × 3회 = 27회 호출). 작업 단위 일시 실패 3연속 → 회로 차단(30초 → 2배 · 상한 5분 · 탐침 1건). 인증/검증 오류는 '응답 중'의 증거이므로 차단 사유가 아니다. 차단 메시지는 재시도 분류기(`CutRetryPolicy.IsTransientMessage`)에 잡히지 않는 문구로.
+- 예측 감사는 관측이 기준선·기대치를 갱신하기 **전**에 스냅샷(`ForecastExpectancy`)을 떠야 한다 — 갱신 후에 뜨면 예측이 정답을 이미 본 상태라 보정 오차가 과소 집계된다.

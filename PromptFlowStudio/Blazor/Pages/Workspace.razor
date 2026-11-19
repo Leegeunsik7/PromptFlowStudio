@@ -130,6 +130,13 @@
                     <span class="@(bs.TopSynergyScore > 1.0 ? "ws-pcore on" : "ws-retry")" data-brain-synergy="@(bs.TopSynergyPairLabel)" style="white-space:normal" title="훅 × 룩 조합 키(pair:) 학습 배수 × 조합 감점 반영 — 14일 반감기 감쇠">🔗 최강 시너지 조합: @(bs.TopSynergyPairLabel) · ×@(bs.TopSynergyScore.ToString("0.00", CultureInfo.InvariantCulture))</span>
                     <span class="ws-retry" data-brain-explore="@(bs.ExplorationRatePct.ToString("0.#", CultureInfo.InvariantCulture))" title="UCB1 = 사후 평균 + C·√(ln(전체 시행+1)/(시행+1)) — 덜 검증된 훅·룩을 챌린저 B와 탐색 기획안에 배정">🎰 UCB1 탐색 @(bs.ExplorationRatePct.ToString("0.#", CultureInfo.InvariantCulture))% · 후보 @(bs.ExplorationCandidateCount.ToString(CultureInfo.InvariantCulture))개 · 시행 @(bs.TotalBanditTrials.ToString("0.#", CultureInfo.InvariantCulture))회</span>
                     <span class="ws-retry" data-brain-decay="@(bs.MistakeDecay.RecoveringCount.ToString(CultureInfo.InvariantCulture))" style="white-space:normal" title="오답 노트 벌점은 21일 반감기로 감쇠 — 재범이 없으면 자연 복권">⏳ 오답 노트 감쇠: @(bs.MistakeDecayLabel)</span>
+                    @* 🌊 레짐 드리프트(Page-Hinkley) · 📐 컨텍스트 기준선(잔차 알파) · 🎯 사후 신뢰 구간 *@
+                    <span class="@(bs.RegimeDrift.IsSurgeActive ? "ws-pcore on" : "ws-retry")" data-brain-drift="@(bs.RegimeDrift.IsSurgeActive ? "surge" : "stable")" style="white-space:normal" title="Page-Hinkley: 예측 잔차(기대 − 관측) 누적합 m_T − 최소 M_T 가 임계를 넘으면 레짐 변화로 판정 → UCB1 탐색 온도 상향 · 새 관측이 안정되면 서지 감쇠">🌊 레짐 드리프트: @(bs.RegimeDriftLabel)</span>
+                    <span class="ws-retry" data-brain-context="@(bs.ContextBaselines.Count.ToString(CultureInfo.InvariantCulture))" style="white-space:normal" title="도메인 × 렌더 포맷별 EWMA 기준선(합성 점수) — 패턴 보상은 원시 지표가 아니라 기준선 대비 잔차 알파로 평가">📐 컨텍스트 기준선: @(bs.ContextBaselineLabel)</span>
+                    <span class="@(bs.TopHookConfidence.IsProvenWinner ? "ws-pcore on" : "ws-retry")" data-brain-posterior="@(bs.TopHookConfidence.LowerConfidenceBound.ToString("0.00", CultureInfo.InvariantCulture))" style="white-space:normal" title="Normal–Normal 사후 분포: 평균 = 1 + (배수 − 1)·n/(n + 1) · 표준편차 = 0.35/√(n + 1) · 90% 구간 — 하한이 1.0 을 넘어야 검증된 승자">🎯 사후 신뢰: @(bs.PosteriorConfidenceLabel)</span>
+                    @* 🎯 메타 보정(예측 vs 실현 Brier/RMSE) · 💸 반사실 후회 → UCB1 탐색 배수 *@
+                    <span class="@(bs.Calibration.IsAmplifying ? "ws-pcore on" : "ws-retry")" data-brain-calibration="@(bs.Calibration.AccuracyPct.ToString("0.#", CultureInfo.InvariantCulture))" style="white-space:normal" title="예측 기대 점수(기준선 + 패턴 알파) vs 실현 합성 점수 — 최근 64건 Brier/RMSE · 예측이 실현보다 계속 높으면(과신) UCB1 탐색 상수를 최대 ×2 로 증폭, 잘 맞으면 ×0.6 까지 활용 집중">🎯 보정 정확도: @(bs.CalibrationLabel)</span>
+                    <span class="@(bs.Calibration.MeanRegret > PromptFlowStudio.Services.Pluto.PlutoMetaCalibrationService.RegretDeadBand ? "ws-pcore on" : "ws-retry")" data-brain-regret="@(bs.Calibration.CumulativeRegret.ToString("0.00", CultureInfo.InvariantCulture))" style="white-space:normal" title="반사실 후회 = max(0, 선택하지 않은 최선 대안 점수 − 실현 점수) · A/B 는 상대 변형의 실측 점수 사용 — 후회가 커지면 탐색을 늘려 놓친 대안을 다시 검증">💸 반사실 후회: @(bs.CounterfactualRegretLabel)</span>
                     @* 🛡️ 오답 노트 활성 가드 인스펙터 — 패턴 · 유효 벌점 · 진단 사유 · [해제](오탐 용서) *@
                     <div class="ws-brain-guards" data-mistake-inspector="@(_mistakeRules.Count.ToString(CultureInfo.InvariantCulture))" style="flex-basis:100%;display:flex;flex-wrap:wrap;gap:4px;align-items:center;font-size:12px">
                         <span class="ws-retry">🛡️ 오답 노트 활성 가드</span>
@@ -581,6 +588,7 @@
                 <div class="ws-dur-hint" role="status" data-duration-need-input="1">⚠ 프롬프트를 입력하거나(T2V) 참조 사진 1장을 올려 주세요(I2V) — 입력 후 [✨ 생성 시작]</div>
             }
             @if (_durationMsg is not null) { <div class="ws-dur-hint">@_durationMsg</div> }
+            @if (_coherenceBadge is { } cohBadge) { <div class="ws-dur-hint" role="status" data-coherence-badge="@(_coherenceScore.ToString(CultureInfo.InvariantCulture))" title="@(_coherenceDetail)" style="white-space:normal">@(cohBadge)</div> }
             @if (_mini.Phase != PromptFlowStudio.Services.Render.MiniQueuePhase.Idle)
             {
                 <div class="ws-mini-q @(_mini.Phase == PromptFlowStudio.Services.Render.MiniQueuePhase.Failed || _miniStitchFail is not null || _miniError is not null ? "bad" : null)">
@@ -2329,6 +2337,9 @@
             IReadOnlyList<PromptFlowStudio.Services.Export.SubtitleCue> cues = _montageCues is { Count: > 0 } mc && _activeMontagePlan is { } amp && amp.Clips.Count == photos.Length
                 ? mc   // 🎬 클립 경계 정렬 3막 자막(프리뷰와 동일)
                 : (await GenerateWorkspaceLetterAsync(_mediaCts.Token)).ToCues();
+            // 🧩 프리플라이트 — 빈/연속 중복 자막 큐 보정 · 9:16 폭 초과 · 오답 노트 차단 훅×룩 조합 경고
+            var montageGate = RunCoherenceGate(_prompt, null, cues, cues.Count > 0 && !string.IsNullOrWhiteSpace(cues[0].Text) ? cues[0].Text.Trim() : null, _montageLook, vertical9x16 ? "9:16" : "16:9");
+            if (montageGate is { WasAutoSanitized: true, SanitizedSubtitleCues.Count: > 0 }) cues = montageGate.SanitizedSubtitleCues;
             // 🔒 Zero-Drift — 프리뷰 · 3막 자막과 동일한 컷 경계(클립 수 일치 시)
             var locked = _activeMontagePlan is { } lp && lp.Clips.Count == photos.Length ? lp : null;
             var montageOptions = new PromptFlowStudio.Services.Export.ExportOptions();
@@ -2344,6 +2355,7 @@
                 if (abRun is not null) AttachAbArtifact(abRun.ExperimentId, abChallenger ? null : rendered, abChallenger ? rendered : null);
             }
             _montageToast = r.Ok ? "✅ " + r.Message : "⚠ " + r.Message;
+            if (montageGate is { HasFindings: true }) _montageToast += " · " + montageGate.SummaryKorean;
         }
         catch (OperationCanceledException) { }   // 페이지 이탈
         catch (Exception ex) { Program.Log("Workspace.MontageVideo", ex); _montageToast = "⚠ 몽타주 렌더 실패: " + ex.Message; }
@@ -3064,6 +3076,20 @@
     }
 
     /// <summary>🧠 두뇌 리포트 갱신(세대 가드 · 예외 전파 금지 · 서비스 미등록 → 생략).</summary>
+    /// <summary>📐 렌더 카탈로그에서 영상의 렌더 포맷 조회(컨텍스트 기준선 키) — 미등록/실패 → null(도메인만으로 컨텍스트 구성).</summary>
+    private async Task<string?> ResolvePerfRenderModeAsync(string videoId)
+    {
+        try
+        {
+            if (EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoRenderCatalogService)) is PromptFlowStudio.Services.Pluto.IPlutoRenderCatalogService cat
+                && await cat.FindByVideoIdOrTitleAsync(videoId, _mediaCts.Token) is { } clipRec && !string.IsNullOrWhiteSpace(clipRec.RenderMode))
+                return clipRec.RenderMode;
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) { Program.Log("Workspace.PerfRenderMode", ex); }
+        return null;
+    }
+
     private async Task RefreshBrainSummaryAsync()
     {
         if (_disposed || EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoAutonomousBrainSummaryService)) is not PromptFlowStudio.Services.Pluto.IPlutoAutonomousBrainSummaryService svc) return;
@@ -3121,6 +3147,34 @@
     }
 
     private string CurrentBgmMood() => _customBgm is not null ? "custom" : _bgmOn ? _bgmTrack.ToString() : "none";
+
+    // ── 🧩 Step 14 — 렌더 직전 교차 모달 정합성 게이트(보정/경고가 있을 때만 배지 표시) ──
+    private string? _coherenceBadge;
+    private string _coherenceDetail = "";
+    private int _coherenceScore = 100;
+
+    /// <summary>🧩 프리플라이트 감사 — 보정본(네거티브 · 자막 큐)을 돌려주고 배지 갱신. 서비스 미등록/예외 → 입력 그대로(렌더를 막지 않음).</summary>
+    private PromptFlowStudio.Services.Pluto.PlutoCoherenceAuditReport? RunCoherenceGate(string? prompt, string? negative,
+        IReadOnlyList<PromptFlowStudio.Services.Export.SubtitleCue>? cues, string? hook, string? look, string aspect)
+    {
+        try
+        {
+            if (EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoPreRenderCoherenceGuard)) is not PromptFlowStudio.Services.Pluto.IPlutoPreRenderCoherenceGuard guard) return null;
+            var bgm = CurrentBgmMood();
+            var report = guard.Audit(new PromptFlowStudio.Services.Pluto.PlutoPreRenderCoherenceRequest(
+                PromptFlowStudio.Services.Pluto.PromptDomainClassifier.Classify(prompt, _babyExplicit), prompt, negative, cues, hook, look,
+                string.Equals(bgm, "none", StringComparison.Ordinal) || string.Equals(bgm, "custom", StringComparison.Ordinal) ? null : bgm, aspect));
+            _coherenceScore = report.CoherenceScore0To100;
+            if (report.HasFindings)
+            {
+                _coherenceBadge = report.SummaryKorean + (report.WarningsKorean.Count > 0 ? " — " + report.WarningsKorean[0] : "");
+                _coherenceDetail = string.Join(" / ", report.SanitizationsKorean) + (report.SanitizationsKorean.Count > 0 && report.WarningsKorean.Count > 0 ? " / " : "") + string.Join(" / ", report.WarningsKorean);
+            }
+            else { _coherenceBadge = null; _coherenceDetail = ""; }
+            return report;
+        }
+        catch (Exception ex) { Program.Log("Workspace.CoherenceGate", ex); return null; }
+    }
 
     private string PerfHookFromPrompt()
     {
@@ -3300,7 +3354,7 @@
             var tags = string.IsNullOrWhiteSpace(_perfStyleTags) ? ActiveViralTagsSafe(3) : SplitPerfTags(_perfStyleTags);
             var telemetry = new PromptFlowStudio.Services.Pluto.PlutoVideoPerformanceTelemetry(videoId, _perfPlatform, hook, look,
                 bgm, tags,
-                _perfHook, _perfCompletion, _perfCtr, DateTimeOffset.UtcNow) { Domain = PromptDomain.ToString() };   // 🧭 domain_hook 상호작용 키
+                _perfHook, _perfCompletion, _perfCtr, DateTimeOffset.UtcNow) { Domain = PromptDomain.ToString(), RenderMode = await ResolvePerfRenderModeAsync(videoId) };   // 🧭 domain_hook 상호작용 키 · 📐 컨텍스트 기준선(ctx:)
             _perfOutcome = await svc.IngestPerformanceAsync(telemetry, _mediaCts.Token);
             _snsToast = null;
             try
@@ -4917,6 +4971,7 @@
             ? new Dictionary<string, string>(StringComparer.Ordinal) { [PromptFlowStudio.Services.Render.VideoEngineRenderExecutionEngine.MetaAmbientPingPong] = "true" }
             : null;
         var negative = EffectiveNegative(prompt);   // 🧭 도메인 격리 네거티브
+        if (RunCoherenceGate(prompt, negative, null, null, null, _size) is { WasAutoSanitized: true } gate) negative = gate.SanitizedNegativePrompt;   // 🧩 누출 토큰·중복 구문 보정본 전송
         if (!string.IsNullOrWhiteSpace(negative))   // ☁️ Cloud 요청에 네거티브 프롬프트 전달
             meta = PromptFlowStudio.Services.Render.MultiDurationPlanner.WithMeta(meta, PromptFlowStudio.Services.Render.VideoEngineRenderExecutionEngine.MetaNegativePrompt, negative);
         var template = new PromptFlowStudio.Services.Batch.BatchRenderJob
@@ -4953,6 +5008,7 @@
         // v16.22.0 피사체 Identity 고정 — 프로필 정체성/의상/스타일 구문(비영속) · 얼굴 사진 I2V(사용자 이미지 우선) · 프로필 시드(핀 우선).
         var idLock = _idLockOn ? IdentityLockOf() : null;
         var domainNeg = EffectiveNegative(anchored);   // 🧭 GeneralCinematic → 아기 전용 네거티브 미주입
+        if (RunCoherenceGate(anchored, domainNeg, null, null, null, _size) is { WasAutoSanitized: true } gate) domainNeg = gate.SanitizedNegativePrompt;   // 🧩 프리플라이트 보정본
         var (lockedPrompt, lockedNeg) = idLock is null ? (anchored, domainNeg) : EpisodicStorySeriesBuilder.ComposeScenePrompt(anchored, domainNeg, idLock);
         var emo = FacialEmotionPuppeteerEngine.Apply(lockedPrompt, lockedNeg, _emotion, _emotionIntensity);
         var faceRef = idLock?.FaceImagePath is { } fp && File.Exists(fp) ? fp : null;

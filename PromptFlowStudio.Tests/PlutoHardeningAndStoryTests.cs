@@ -205,17 +205,17 @@ public sealed class PlutoHardeningAndStoryTests
         {
             var svc = new PlutoDriveHealthService();
 
-            var total = PlutoDriveHealthService.PlutoFiles.Length + PlutoDriveHealthService.StudioFiles.Length;   // 7 + 2
+            var total = PlutoDriveHealthService.PlutoFiles.Length + PlutoDriveHealthService.StudioFiles.Length;   // 8 + 2
 
             // 1) 빈 폴더 → 전부 Missing
             var empty = svc.CheckHealth(pluto, studio);
             Assert.True(empty.IsDriveMounted);
-            Assert.Equal(9, total);
+            Assert.Equal(10, total);
             Assert.Equal(total, empty.TotalCount);
             Assert.Equal(total, empty.Items.Count);
             Assert.Equal(0, empty.HealthyCount);
             Assert.All(empty.Items, i => Assert.Equal(PlutoDriveFileStatus.Missing, i.Status));
-            Assert.Equal(7, empty.Items.Count(i => i.Category == PlutoDriveHealthService.CategoryPluto));
+            Assert.Equal(8, empty.Items.Count(i => i.Category == PlutoDriveHealthService.CategoryPluto));
             Assert.Equal(2, empty.Items.Count(i => i.Category == PlutoDriveHealthService.CategoryStudio));
 
             // 2) 정상 JSON 6개 + 손상 JSON 1개 + 빈 파일 1개
@@ -225,7 +225,7 @@ public sealed class PlutoHardeningAndStoryTests
             System.IO.File.WriteAllText(System.IO.Path.Combine(studio, "user_settings.json"), "");
 
             var rep = svc.CheckHealth(pluto, studio);
-            Assert.Equal(7, rep.HealthyCount);
+            Assert.Equal(8, rep.HealthyCount);
             Assert.All(rep.Items.Where(i => i.Category == PlutoDriveHealthService.CategoryPluto), i =>
             {
                 Assert.Equal(PlutoDriveFileStatus.Healthy, i.Status);

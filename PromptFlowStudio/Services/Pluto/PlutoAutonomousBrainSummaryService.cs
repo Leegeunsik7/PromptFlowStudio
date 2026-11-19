@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.Threading;
 using System.Threading.Tasks;
@@ -23,6 +24,26 @@ public sealed record PlutoBrainSummarySnapshot(int TotalEvaluatedExperiments, in
     public PlutoMistakeDecayStatus MistakeDecay { get; init; } = PlutoMistakeDecayStatus.Empty;
     /// <summary>⏳ 오답 노트 감쇠 상태 1줄(결정론 한국어).</summary>
     public string MistakeDecayLabel { get; init; } = PlutoAutonomousBrainSummaryService.NoneLabel;
+    /// <summary>🌊 레짐 드리프트 · 탐색 서지 현황.</summary>
+    public PlutoRegimeDriftStatus RegimeDrift { get; init; } = PlutoRegimeDriftStatus.Stable;
+    /// <summary>🌊 드리프트 상태 1줄(결정론 한국어).</summary>
+    public string RegimeDriftLabel { get; init; } = PlutoAutonomousBrainSummaryService.NoneLabel;
+    /// <summary>📐 컨텍스트(Domain × RenderMode) 기준선(표본 내림차순).</summary>
+    public IReadOnlyList<PlutoContextBaselineStat> ContextBaselines { get; init; } = Array.Empty<PlutoContextBaselineStat>();
+    /// <summary>📐 컨텍스트 기준선 1줄(상위 <see cref="PlutoAutonomousBrainSummaryService.MaxContextLabels"/>개).</summary>
+    public string ContextBaselineLabel { get; init; } = PlutoAutonomousBrainSummaryService.NoneLabel;
+    /// <summary>🎯 1위 훅 사후 신뢰 구간.</summary>
+    public PlutoPosteriorConfidence TopHookConfidence { get; init; } = PlutoPosteriorConfidence.Prior;
+    /// <summary>🎯 1위 룩 사후 신뢰 구간.</summary>
+    public PlutoPosteriorConfidence TopLookConfidence { get; init; } = PlutoPosteriorConfidence.Prior;
+    /// <summary>🎯 사후 신뢰 1줄(훅 · 룩).</summary>
+    public string PosteriorConfidenceLabel { get; init; } = PlutoAutonomousBrainSummaryService.NoneLabel;
+    /// <summary>🎯 메타 보정(예측 vs 실현 · 반사실 후회 · 탐색 배수) 현황.</summary>
+    public PlutoCalibrationStatus Calibration { get; init; } = PlutoCalibrationStatus.Empty;
+    /// <summary>🎯 보정 정확도 1줄(결정론 한국어).</summary>
+    public string CalibrationLabel { get; init; } = PlutoAutonomousBrainSummaryService.NoneLabel;
+    /// <summary>💸 반사실 후회 1줄(결정론 한국어).</summary>
+    public string CounterfactualRegretLabel { get; init; } = PlutoAutonomousBrainSummaryService.NoneLabel;
 }
 
 /// <summary>🧠 Pluto 4.6 자율 두뇌 텔레메트리 요약 — 실험 장부 × 적응형 랭커 × 오답 노트 집계.</summary>
@@ -38,6 +59,8 @@ public sealed class PlutoAutonomousBrainSummaryService : IPlutoAutonomousBrainSu
     public const string NoneLabel = "—";
     /// <summary>집계 대상 판정 상한(= 장부 용량).</summary>
     public const int MaxEvaluations = PlutoExperimentLedgerService.Capacity;
+    /// <summary>두뇌 리포트 1줄에 표기할 컨텍스트 기준선 최대 수.</summary>
+    public const int MaxContextLabels = 3;
 
     private static readonly CultureInfo Inv = CultureInfo.InvariantCulture;
 
@@ -60,6 +83,10 @@ public sealed class PlutoAutonomousBrainSummaryService : IPlutoAutonomousBrainSu
         PlutoPairSynergy? topPair = null;
         var explore = PlutoExplorationTelemetry.Empty;
         var decay = PlutoMistakeDecayStatus.Empty;
+        var drift = PlutoRegimeDriftStatus.Stable;
+        IReadOnlyList<PlutoContextBaselineStat> baselines = Array.Empty<PlutoContextBaselineStat>();
+        PlutoPosteriorConfidence hookConf = PlutoPosteriorConfidence.Prior, lookConf = PlutoPosteriorConfidence.Prior;
+        var calibration = PlutoCalibrationStatus.Empty;
 
         if (_ledger is not null)
         {
@@ -99,6 +126,11 @@ public sealed class PlutoAutonomousBrainSummaryService : IPlutoAutonomousBrainSu
                 bgm = Label(rec.TopBgmMood);
                 topPair = _ranker.GetTopSynergyPair();
                 explore = _ranker.GetExplorationTelemetry() ?? PlutoExplorationTelemetry.Empty;
+                hookConf = rec.TopHook?.Posterior ?? PlutoPosteriorConfidence.Prior;
+                lookConf = rec.TopColorLook?.Posterior ?? PlutoPosteriorConfidence.Prior;
+                drift = _ranker.GetRegimeDriftStatus() ?? PlutoRegimeDriftStatus.Stable;
+                baselines = _ranker.GetContextBaselines() ?? Array.Empty<PlutoContextBaselineStat>();
+                calibration = _ranker.GetCalibrationStatus() ?? PlutoCalibrationStatus.Empty;
             }
             catch (OperationCanceledException) { throw; }
             catch (Exception ex) { Program.Log("Pluto.BrainSummary.Ranker", ex); }
@@ -114,7 +146,34 @@ public sealed class PlutoAutonomousBrainSummaryService : IPlutoAutonomousBrainSu
             TotalBanditTrials = explore.TotalTrials,
             MistakeDecay = decay,
             MistakeDecayLabel = BuildDecayLabel(decay),
+            RegimeDrift = drift,
+            RegimeDriftLabel = PlutoRegimeDriftDetector.BuildLabel(drift),
+            ContextBaselines = baselines,
+            ContextBaselineLabel = BuildContextLabel(baselines),
+            TopHookConfidence = hookConf,
+            TopLookConfidence = lookConf,
+            PosteriorConfidenceLabel = "훅 " + hookConf.ToLabel() + " / 룩 " + lookConf.ToLabel(),
+            Calibration = calibration,
+            CalibrationLabel = PlutoMetaCalibrationService.BuildCalibrationLabel(calibration),
+            CounterfactualRegretLabel = PlutoMetaCalibrationService.BuildRegretLabel(calibration),
         };
+    }
+
+    /// <summary>📐 컨텍스트 기준선 1줄(결정론) — <c>도메인·포맷 기준 62.5(±4.1 · n=7)</c> 상위 <see cref="MaxContextLabels"/>개 · 없음 → "기록 없음".</summary>
+    public static string BuildContextLabel(IReadOnlyList<PlutoContextBaselineStat>? baselines)
+    {
+        if (baselines is null || baselines.Count == 0) return "기록 없음 · 표본 " + PlutoContextualBaseline.MinContextSamples.ToString("0", Inv) + "건부터 잔차 보정";
+        var sb = new System.Text.StringBuilder(96);
+        var n = Math.Min(MaxContextLabels, baselines.Count);
+        for (var i = 0; i < n; i++)
+        {
+            var b = baselines[i];
+            if (i > 0) sb.Append(" / ");
+            sb.Append(b.Domain).Append('·').Append(b.RenderMode).Append(" 기준 ").Append((b.Baseline * 100).ToString("0.#", Inv))
+              .Append("(±").Append((b.StdDev * 100).ToString("0.#", Inv)).Append(" · n=").Append(b.Samples.ToString("0", Inv)).Append(b.IsEstablished ? ")" : " · 수집 중)");
+        }
+        if (baselines.Count > n) sb.Append(" 외 ").Append((baselines.Count - n).ToString(Inv)).Append('개');
+        return sb.ToString();
     }
 
     /// <summary>⏳ 오답 노트 감쇠 상태 1줄(결정론) — 추적 0 → "기록 없음".</summary>

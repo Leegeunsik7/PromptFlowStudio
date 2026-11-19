@@ -24,6 +24,16 @@ public sealed record PlutoVariantABPlan(string ExperimentId, string ThemeHint, P
     public double ChampionSynergyScore { get; init; } = 1.0;
     /// <summary>🔗 챌린저 훅 × 룩 조합 시너지 점수(이력 없음 → 1.0).</summary>
     public double ChallengerSynergyScore { get; init; } = 1.0;
+    /// <summary>🎯 챔피언 훅 사후 신뢰 구간(이력 없음 → 사전 분포).</summary>
+    public PlutoPosteriorConfidence ChampionConfidence { get; init; } = PlutoPosteriorConfidence.Prior;
+    /// <summary>🎯 챌린저 훅 사후 신뢰 구간.</summary>
+    public PlutoPosteriorConfidence ChallengerConfidence { get; init; } = PlutoPosteriorConfidence.Prior;
+    /// <summary>🎯 1위 훅이 소표본 급등이라 신뢰 하한이 더 높은 검증 후보를 챔피언으로 교체함.</summary>
+    public bool ChampionPromotedByConfidence { get; init; }
+    /// <summary>🌊 레짐 드리프트 탐색 서지 중 생성된 실험(챌린저 = 탐색 온도 상향 UCB1).</summary>
+    public bool IsExplorationSurge { get; init; }
+    /// <summary>🌊 생성 시점 탐색 온도 배수(서지 없음 → 1.0).</summary>
+    public double ExplorationTemperature { get; init; } = 1.0;
 }
 
 /// <summary>⚖️ Pluto 4.3 통제 A/B 변형 생성기.</summary>
@@ -103,7 +113,9 @@ public sealed class PlutoVariantABGenerator : IPlutoVariantABGenerator
         var champHook = rec?.TopHook.DisplayLabel ?? themeHooks[0];
         var champLook = rec?.TopColorLook.DisplayLabel ?? PlutoColorGradingCompiler.NaturalPastelName;
         var champBgm = FirstUsable(bgms, rec?.TopBgmMood.DisplayLabel, ExcludedBgmMoods) ?? BabyBgmTrack.Lullaby.ToString();
-        var champSynergy = PromoteSynergisticChampion(ranker, hooks, looks, domain, ref champHook, ref champLook);   // 🔗 강한 조합 시너지 → 챔피언 승격
+        var promotedByConfidence = PromoteProvenChampion(hooks, ref champHook);   // 🎯 소표본 급등 1위 → 신뢰 하한이 더 높은 검증 후보
+        var drift = SafeDrift(ranker);                                             // 🌊 레짐 드리프트 → 탐색 서지
+        var champSynergy = PromoteSynergisticChampion(ranker, hooks, looks, domain, ref champHook, ref champLook, promotedByConfidence);   // 🔗 강한 조합 시너지 → 챔피언 승격
 
         // 🧪 챌린저 — 감점·차단 제외 UCB1 최상위(테마 훅 우선 · 덜 검증된 후보 우대) · 역시너지 조합 회피 · 훅/룩 차이 보장
         var challHook = PickChallenger(PreferThemed(WithoutDomainAntiSynergy(ranker, exploreHooks, domain), themeHooks), champHook, null, suppressed) ?? AlternateTemplateHook(themeHooks, champHook);
@@ -125,12 +137,59 @@ public sealed class PlutoVariantABGenerator : IPlutoVariantABGenerator
         var hypothesis = BuildHypothesis(a, b, rec);
         if (challBonus > PlutoAdaptivePatternRanker.Epsilon) hypothesis += " · 🎰 UCB1 탐색 보너스 +" + challBonus.ToString("0.00", CultureInfo.InvariantCulture) + "(덜 검증된 후보)";
         if (champSynergy >= PlutoPairAttribution.StrongSynergyScore) hypothesis += " · 🔗 챔피언 조합 시너지 ×" + champSynergy.ToString("0.00", CultureInfo.InvariantCulture);
+        var champConf = ConfidenceOf(hooks, champHook);
+        var challConf = ConfidenceOf(exploreHooks, challHook);
+        if (promotedByConfidence) hypothesis += " · 🎯 챔피언 = 신뢰 하한 최대(" + champConf.LowerConfidenceBound.ToString("0.00", CultureInfo.InvariantCulture) + ") — 소표본 급등 1위는 챌린저 검증 대상으로";
+        else if (champConf.IsProvenWinner) hypothesis += " · 🎯 챔피언 검증됨(90% 하한 ×" + champConf.LowerConfidenceBound.ToString("0.00", CultureInfo.InvariantCulture) + ")";
+        if (drift.IsSurgeActive) hypothesis += " · 🌊 레짐 변화 감지 — 탐색 온도 ×" + drift.ExplorationTemperature.ToString("0.00", CultureInfo.InvariantCulture) + "(낡은 승자 대신 새 후보 공격 검증)";
         return new PlutoVariantABPlan(_idFactory(), themeHint, a, b, hypothesis)
         {
             ChallengerExplorationBonus = challBonus,
             ChampionSynergyScore = champSynergy,
             ChallengerSynergyScore = challSynergy,
+            ChampionConfidence = champConf,
+            ChallengerConfidence = challConf,
+            ChampionPromotedByConfidence = promotedByConfidence,
+            IsExplorationSurge = drift.IsSurgeActive,
+            ExplorationTemperature = drift.ExplorationTemperature,
         };
+    }
+
+    // ── 🎯 사후 신뢰 · 🌊 레짐 드리프트 ──
+
+    private static PlutoRegimeDriftStatus SafeDrift(IPlutoAdaptivePatternRanker ranker)
+    {
+        try { return ranker.GetRegimeDriftStatus() ?? PlutoRegimeDriftStatus.Stable; }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.AB] drift: " + ex.Message); return PlutoRegimeDriftStatus.Stable; }
+    }
+
+    private static PlutoPosteriorConfidence ConfidenceOf(IReadOnlyList<PlutoRankedOption> ranked, string label)
+    {
+        for (var i = 0; i < ranked.Count; i++) if (string.Equals(ranked[i].DisplayLabel, label, StringComparison.Ordinal)) return ranked[i].Posterior ?? PlutoPosteriorConfidence.Prior;
+        return PlutoPosteriorConfidence.Prior;
+    }
+
+    /// <summary>
+    /// 🎯 챔피언 = 위험 회피(신뢰 하한) · 챌린저 = 낙관(UCB) — 현재 챔피언 훅이 덜 검증(시행 &lt; <see cref="PlutoAdaptivePatternRanker.UnderSampledTrials"/>)이고
+    /// 비감점 · 다회 검증(시행 ≥ 기준) 훅 중 신뢰 하한이 엄격히 더 높은 후보가 있으면 그 후보로 교체(소표본 급등은 챌린저 슬롯에서 검증받는다).
+    /// 이력 없음(전 후보 시행 0) → 무변경. 반환 = 교체 여부.
+    /// </summary>
+    private static bool PromoteProvenChampion(IReadOnlyList<PlutoRankedOption> hooks, ref string champHook)
+    {
+        PlutoRankedOption? current = null;
+        for (var i = 0; i < hooks.Count; i++) if (string.Equals(hooks[i].DisplayLabel, champHook, StringComparison.Ordinal)) { current = hooks[i]; break; }
+        if (current is null || current.ArmTrials >= PlutoAdaptivePatternRanker.UnderSampledTrials) return false;
+        PlutoRankedOption? best = null;
+        for (var i = 0; i < hooks.Count; i++)
+        {
+            var o = hooks[i];
+            if (o.IsPenalized || o.ArmTrials < PlutoAdaptivePatternRanker.UnderSampledTrials) continue;
+            if (o.LowerConfidenceBound <= current.LowerConfidenceBound + PlutoAdaptivePatternRanker.Epsilon) continue;
+            if (best is null || o.LowerConfidenceBound > best.LowerConfidenceBound) best = o;
+        }
+        if (best is null) return false;
+        champHook = best.DisplayLabel;
+        return true;
     }
 
     // ── 🔗 조합 시너지 · 🎰 탐색 ──
@@ -152,7 +211,7 @@ public sealed class PlutoVariantABGenerator : IPlutoVariantABGenerator
     /// 현재 챔피언(1위 훅 × 1위 룩)보다 엄격히 큰 조합이 있으면 교체. 조합 이력 없음 → 모든 시너지 1.0 → 무변경. 반환 = 최종 챔피언 조합 시너지 점수.
     /// </summary>
     private static double PromoteSynergisticChampion(IPlutoAdaptivePatternRanker ranker, IReadOnlyList<PlutoRankedOption> hooks, IReadOnlyList<PlutoRankedOption> looks,
-        string domain, ref string champHook, ref string champLook)
+        string domain, ref string champHook, ref string champLook, bool provenHooksOnly = false)
     {
         var current = SafeSynergy(ranker, champHook, champLook).Score;
         var best = ScoreOf(hooks, champHook) * ScoreOf(looks, champLook) * current * SafeDomainSynergy(ranker, domain, champHook).Score;
@@ -162,6 +221,7 @@ public sealed class PlutoVariantABGenerator : IPlutoVariantABGenerator
         {
             var h = hooks[i];
             if (h.IsPenalized) continue;
+            if (provenHooksOnly && h.ArmTrials < PlutoAdaptivePatternRanker.UnderSampledTrials) continue;   // 🎯 신뢰 승격 후엔 소표본 훅으로 되돌리지 않음
             depth++;
             var dom = SafeDomainSynergy(ranker, domain, h.DisplayLabel).Score;
             for (var k = 0; k < looks.Count; k++)

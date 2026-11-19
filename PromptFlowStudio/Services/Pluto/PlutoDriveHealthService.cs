@@ -40,6 +40,7 @@ public sealed class PlutoDriveHealthService : IPlutoDriveHealthService
         PlutoMistakeNotebookService.FileName,                // pluto_mistake_notebook.json
         PlutoExperimentLedgerService.FileName,               // pluto_experiment_ledger.json (🏆 A/B 실험 장부)
         PlutoRenderCatalogService.FileName,                  // pluto_render_catalog.json (🎞️ 영속 렌더 카탈로그)
+        PlutoMetaCalibrationService.FileName,                // pluto_calibration_state.json (🎯 메타 보정 · 반사실 후회)
     };
 
     public static readonly string[] StudioFiles = { "members.json", AppSettingsManager.FileName };

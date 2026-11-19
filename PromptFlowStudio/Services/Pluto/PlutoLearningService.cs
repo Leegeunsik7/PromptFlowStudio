@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -155,6 +156,36 @@ public sealed class PlutoLearningService : IDisposable
         public int BonusXp { get; set; }
         /// <summary>🎰 성과 패턴 시행 수(돌파 · 부진 · 평균 모두 +1 · 갱신 시 반감기 감쇠 후 재기준 · 구버전 파일 → 0 = <see cref="Interactions"/> 폴백).</summary>
         public double Trials { get; set; }
+
+        // ── Step 13(선택 필드 · 기본값은 직렬화 생략 → Step 12 이하 파일과 양방향 호환) ──
+        /// <summary>📐 EWMA 평균 — <c>ctx:</c> = 컨텍스트 기준선(합성 점수 0~1) · <c>pattern:</c> = 잔차 알파 기대치 · <c>drift:</c> = PH 누적 평균 x̄_T.</summary>
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] public double Mean { get; set; }
+        /// <summary>📐 EWMA 분산(<c>ctx:</c> · <c>pattern:</c>).</summary>
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] public double Var { get; set; }
+        /// <summary>📐 <see cref="Mean"/> 표본 수(<c>drift:</c> = PH 재시작 이후 관측 수).</summary>
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] public double Samples { get; set; }
+        /// <summary>🌊 Page-Hinkley 누적합 m_T(<c>drift:</c> 전용).</summary>
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] public double PhSum { get; set; }
+        /// <summary>🌊 Page-Hinkley 누적 최소 M_T(<c>drift:</c> 전용).</summary>
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] public double PhMin { get; set; }
+        /// <summary>🌊 탐색 서지 수준 0~1(<c>drift:</c> 전용 · <see cref="LastUtc"/> 기준 7일 반감기).</summary>
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] public double Surge { get; set; }
+        /// <summary>🌊 누적 드리프트 감지 횟수(<c>drift:</c> 전용).</summary>
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] public int Drifts { get; set; }
+        /// <summary>🌊 마지막 드리프트 감지 시각(<c>drift:</c> 전용).</summary>
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] public DateTime DriftUtc { get; set; }
+    }
+
+    private static double Finite(double v, double min = double.NegativeInfinity) => double.IsFinite(v) && v >= min ? v : 0.0;
+
+    /// <summary>🛡️ Step 13 선택 필드 정규화 — 손상/수기 편집 값(NaN · 음수 표본 · 범위 밖 서지)이 통계에 스며들지 않게 0 으로.</summary>
+    private static void SanitizeExtended(Entry e)
+    {
+        e.Mean = Finite(e.Mean); e.Var = Finite(e.Var, 0.0); e.Samples = Finite(e.Samples, 0.0);
+        e.PhSum = Finite(e.PhSum); e.PhMin = Finite(e.PhMin);
+        e.Surge = double.IsFinite(e.Surge) ? Math.Clamp(e.Surge, 0.0, 1.0) : 0.0;
+        if (e.Drifts < 0) e.Drifts = 0;
+        if (!double.IsFinite(e.Trials) || e.Trials < 0) e.Trials = 0.0;
     }
 
     /// <summary>🧠 누적 XP = 채택×1 + 내보내기×3 + 👍×1.</summary>
@@ -228,7 +259,10 @@ public sealed class PlutoLearningService : IDisposable
                 if (data is not null)
                     foreach (var kv in data)
                         if (kv.Value is not null && !string.IsNullOrWhiteSpace(kv.Key) && double.IsFinite(kv.Value.Weight))
+                        {
+                            SanitizeExtended(kv.Value);
                             _entries[kv.Key] = kv.Value;
+                        }
             }
             _loaded = true;
         }
@@ -454,6 +488,225 @@ public sealed class PlutoLearningService : IDisposable
         await PersistAsync(ct).ConfigureAwait(false);
         RaiseChanged();
         return CurrentXP;
+    }
+
+    // ── 📐 컨텍스트 기준선(잔차 알파) · 🌊 Page-Hinkley 레짐 드리프트 ──
+
+    /// <summary>패턴 기대치 표본 상한(EWMA 스텝 하한 α 가 최근성을 담당 — 카운터 폭주 방지).</summary>
+    public const double MaxExpectancySamples = 1000.0;
+
+    /// <summary>
+    /// 📐🌊 성과 관측 1건을 컨텍스트 기준선 · 패턴 기대치 · 레짐 드리프트 검정에 반영(1회 원자적 영속).
+    ///   ① 잔차 알파 = <paramref name="score"/> − 유효 기준선(관측 <b>이전</b> 컨텍스트 EWMA ⊕ 전역 EWMA 부분 풀링).
+    ///   ② 예측 잔차 x = (기준선 + 패턴 알파 기대치 평균) − 관측 → Page-Hinkley 갱신 · 감지 시 탐색 서지 1.0 + 연루 패턴 초과 가중치 표적 망각.
+    ///   ③ 그 뒤에 컨텍스트 · 전역 기준선과 패턴 기대치를 갱신(관측이 자기 자신의 기준을 오염시키지 않음).
+    /// <paramref name="expectancyTokens"/> = <c>hook:…</c> · <c>look:…</c> 패턴 토큰. 비유한 점수 → 무변경.
+    /// </summary>
+    public async Task<PlutoContextualObservation> RecordContextualObservationAsync(string? domain, string? renderMode, double score, IReadOnlyList<string>? expectancyTokens,
+        CancellationToken ct = default)
+    {
+        if (!double.IsFinite(score)) return PlutoContextualObservation.None;
+        await EnsureLoadedAsync(ct).ConfigureAwait(false);
+        score = Math.Clamp(score, 0.0, 1.0);
+        PlutoContextualObservation obs;
+        lock (_sync)
+        {
+            var now = PatternNow();
+            var key = PlutoContextualBaseline.ContextKey(domain, renderMode);
+            _entries.TryGetValue(key, out var ctx);
+            _entries.TryGetValue(PlutoContextualBaseline.GlobalContextKey, out var glob);
+            var nCtx = ctx?.Samples ?? 0.0;
+            var nGlob = glob?.Samples ?? 0.0;
+            var established = PlutoContextualBaseline.IsExplicit(domain, renderMode) && nCtx >= PlutoContextualBaseline.MinContextSamples;
+            double baseline;
+            if (established) baseline = ctx!.Mean;   // 성립한 컨텍스트는 자기 기준선만 사용(전역 수축은 서로 다른 포맷 편향을 다시 섞는다)
+            else if (nCtx > 0 && nGlob > 0) baseline = (nCtx * ctx!.Mean + PlutoContextualBaseline.PoolingKappa * glob!.Mean) / (nCtx + PlutoContextualBaseline.PoolingKappa);
+            else if (nCtx > 0) baseline = ctx!.Mean;
+            else if (nGlob > 0) baseline = glob!.Mean;
+            else baseline = score;   // 최초 관측 — 정보 없음 → 잔차 0
+            var alpha = score - baseline;
+            var z = established ? alpha / Math.Max(PlutoContextualBaseline.MinStdDev, Math.Sqrt(Math.Max(0.0, ctx!.Var))) : 0.0;
+
+            // 🌊 예측 잔차 — 기대치가 성립한 패턴만 참여
+            double expSum = 0; var expN = 0;
+            if (expectancyTokens is not null)
+                for (var i = 0; i < expectancyTokens.Count; i++)
+                {
+                    var t = expectancyTokens[i];
+                    if (string.IsNullOrWhiteSpace(t)) continue;
+                    if (_entries.TryGetValue(PatternKeyPrefix + t.Trim(), out var pe) && pe.Samples >= PlutoContextualBaseline.MinExpectancySamples) { expSum += pe.Mean; expN++; }
+                }
+            var drift = false;
+            var surge = 0.0;
+            _entries.TryGetValue(PlutoContextualBaseline.DriftStateKey, out var de);
+            if (expN > 0 || de is not null)
+            {
+                if (de is null) { de = new Entry(); _entries[PlutoContextualBaseline.DriftStateKey] = de; }
+                var st = new PlutoPageHinkleyState
+                {
+                    Count = de.Samples, Mean = de.Mean, Cumulative = de.PhSum, Minimum = de.PhMin, Drifts = de.Drifts,
+                    Surge = PlutoRegimeDriftDetector.EffectiveSurge(de.Surge, de.LastUtc, now),
+                };
+                if (expN > 0) drift = PlutoRegimeDriftDetector.Update(ref st, baseline + expSum / expN, score);
+                de.Samples = st.Count; de.Mean = st.Mean; de.PhSum = st.Cumulative; de.PhMin = st.Minimum; de.Drifts = st.Drifts; de.Surge = st.Surge;
+                de.LastUtc = now;
+                if (drift) de.DriftUtc = now;
+                surge = st.Surge;
+            }
+
+            if (expectancyTokens is not null)
+                for (var i = 0; i < expectancyTokens.Count; i++)
+                {
+                    var t = expectancyTokens[i];
+                    if (string.IsNullOrWhiteSpace(t)) continue;
+                    var pk = PatternKeyPrefix + t.Trim();
+                    if (!_entries.TryGetValue(pk, out var pe)) { pe = new Entry { Weight = PatternBaseWeight }; _entries[pk] = pe; }
+                    if (drift && pe.Weight > PatternBaseWeight)
+                    {
+                        // 🌊 표적 망각 — 레짐 전환에 연루된 낡은 승자의 초과 가중치를 즉시 절반으로(감쇠 기준 시각 재설정)
+                        var decayed = DecayPatternWeight(pe.Weight, pe.LastUtc, now);
+                        pe.Trials = EffectiveTrials(pe, now);
+                        pe.Weight = PatternBaseWeight + (decayed - PatternBaseWeight) * PlutoRegimeDriftDetector.RegimeHaircut;
+                        pe.LastUtc = now;
+                    }
+                    UpdateEwma(pe, alpha, PlutoContextualBaseline.PatternAlpha);
+                }
+
+            if (ctx is null) { ctx = new Entry(); _entries[key] = ctx; }
+            UpdateEwma(ctx, score, PlutoContextualBaseline.Alpha);
+            ctx.LastUtc = now;
+            if (!string.Equals(key, PlutoContextualBaseline.GlobalContextKey, StringComparison.Ordinal))
+            {
+                if (glob is null) { glob = new Entry(); _entries[PlutoContextualBaseline.GlobalContextKey] = glob; }
+                UpdateEwma(glob, score, PlutoContextualBaseline.Alpha);
+                glob.LastUtc = now;
+            }
+            obs = new PlutoContextualObservation(key, score, baseline, alpha, z, nCtx, established, drift, surge);
+        }
+        await PersistAsync(ct).ConfigureAwait(false);
+        return obs;
+    }
+
+    /// <summary>EWMA 평균 · 분산 증분 갱신(초기 구간 = 단순 평균 · 이후 스텝 α).</summary>
+    private static void UpdateEwma(Entry e, double x, double alpha)
+    {
+        var n = Math.Min(MaxExpectancySamples, e.Samples + 1.0);
+        var step = PlutoContextualBaseline.StepFor(n, alpha);
+        var d = x - e.Mean;
+        e.Mean += step * d;
+        e.Var = Math.Max(0.0, (1.0 - step) * (e.Var + step * d * d));
+        e.Samples = n;
+    }
+
+    /// <summary>📐 컨텍스트 기준선 스냅샷(전역 <c>ctx:*</c> 제외) — 표본 내림차순 · 키 사전순.</summary>
+    public IReadOnlyList<PlutoContextBaselineStat> GetContextBaselines()
+    {
+        var list = new List<PlutoContextBaselineStat>(8);
+        lock (_sync)
+            foreach (var kv in _entries)
+            {
+                if (kv.Value is null || kv.Value.Samples <= 0 || !kv.Key.StartsWith(PlutoContextualBaseline.ContextKeyPrefix, StringComparison.Ordinal)) continue;
+                if (!PlutoContextualBaseline.TrySplit(kv.Key, out var domain, out var mode)) continue;   // 전역 키(ctx:*)는 구분자 없음 → 제외
+                list.Add(new PlutoContextBaselineStat(kv.Key, domain, mode, kv.Value.Mean, Math.Sqrt(Math.Max(0.0, kv.Value.Var)), kv.Value.Samples));
+            }
+        list.Sort(static (a, b) =>
+        {
+            var c = b.Samples.CompareTo(a.Samples);
+            return c != 0 ? c : string.CompareOrdinal(a.ContextKey, b.ContextKey);
+        });
+        return list;
+    }
+
+    /// <summary>📐 전역 기준선(모든 컨텍스트 EWMA · 없음 → null).</summary>
+    public double? GetGlobalBaseline()
+    {
+        lock (_sync) return _entries.TryGetValue(PlutoContextualBaseline.GlobalContextKey, out var e) && e.Samples > 0 ? e.Mean : null;
+    }
+
+    /// <summary>📐 패턴 잔차 알파 기대치(EWMA · 미추적 → (0, 0)).</summary>
+    public (double Alpha, double Samples) GetPatternAlpha(string patternToken)
+    {
+        if (string.IsNullOrWhiteSpace(patternToken)) return (0.0, 0.0);
+        lock (_sync) return _entries.TryGetValue(PatternKeyPrefix + patternToken, out var e) ? (e.Mean, e.Samples) : (0.0, 0.0);
+    }
+
+    /// <summary>
+    /// 🎯 반사실 예측 스냅샷(읽기 전용 · 관측 반영 <b>이전</b>에 호출) — 메타 보정 감사용.
+    ///   ▸ 예측 = 유효 기준선(<see cref="RecordContextualObservationAsync"/> 와 동일 규칙) + 선택 훅·룩 알파 기대치 평균(성립 패턴만).
+    ///   ▸ 최선 대안 = 같은 기준선 + 종류별 '선택하지 않은' 최고 알파 패턴으로 교체한 구성(대안 없는 종류는 선택 패턴 유지).
+    /// 기준선 정보가 전혀 없으면 <see cref="PlutoExpectancyForecast.None"/> · 대안이 하나도 없으면 대안 점수 NaN.
+    /// </summary>
+    public PlutoExpectancyForecast ForecastExpectancy(string? domain, string? renderMode, string? hook, string? look)
+    {
+        lock (_sync)
+        {
+            _entries.TryGetValue(PlutoContextualBaseline.ContextKey(domain, renderMode), out var ctx);
+            _entries.TryGetValue(PlutoContextualBaseline.GlobalContextKey, out var glob);
+            var nCtx = ctx?.Samples ?? 0.0;
+            var nGlob = glob?.Samples ?? 0.0;
+            if (nCtx <= 0 && nGlob <= 0) return PlutoExpectancyForecast.None;
+            double baseline;
+            if (PlutoContextualBaseline.IsExplicit(domain, renderMode) && nCtx >= PlutoContextualBaseline.MinContextSamples) baseline = ctx!.Mean;
+            else if (nCtx > 0 && nGlob > 0) baseline = (nCtx * ctx!.Mean + PlutoContextualBaseline.PoolingKappa * glob!.Mean) / (nCtx + PlutoContextualBaseline.PoolingKappa);
+            else baseline = nCtx > 0 ? ctx!.Mean : glob!.Mean;
+
+            double chosenSum = 0, altSum = 0; int chosenN = 0, altN = 0;
+            string? altLabel = null; var altBest = double.NegativeInfinity; var anyAlternative = false;
+            ForecastKind("hook:", hook, ref chosenSum, ref chosenN, ref altSum, ref altN, ref altLabel, ref altBest, ref anyAlternative);
+            ForecastKind("look:", look, ref chosenSum, ref chosenN, ref altSum, ref altN, ref altLabel, ref altBest, ref anyAlternative);
+            var predicted = Math.Clamp(baseline + (chosenN > 0 ? chosenSum / chosenN : 0.0), 0.0, 1.0);
+            var alternative = anyAlternative ? Math.Clamp(baseline + altSum / altN, 0.0, 1.0) : double.NaN;
+            return new PlutoExpectancyForecast(true, baseline, predicted, alternative, anyAlternative ? altLabel : null, chosenN);
+        }
+    }
+
+    /// <summary>종류(훅/룩) 1개의 선택 알파 · 최고 미선택 알파 누적(호출자가 <c>_sync</c> 보유 · 동률 → 키 사전순).</summary>
+    private void ForecastKind(string kindPrefix, string? chosenLabel, ref double chosenSum, ref int chosenN, ref double altSum, ref int altN,
+        ref string? altLabel, ref double altBest, ref bool anyAlternative)
+    {
+        var full = PatternKeyPrefix + kindPrefix;
+        var chosenKey = string.IsNullOrWhiteSpace(chosenLabel) ? null : full + chosenLabel.Trim();
+        double? chosenAlpha = null;
+        if (chosenKey is not null && _entries.TryGetValue(chosenKey, out var ce) && ce.Samples >= PlutoContextualBaseline.MinExpectancySamples)
+        {
+            chosenAlpha = ce.Mean;
+            chosenSum += ce.Mean; chosenN++;
+        }
+        string? bestKey = null; var best = double.NegativeInfinity;
+        foreach (var kv in _entries)
+        {
+            if (kv.Value is null || kv.Value.Samples < PlutoContextualBaseline.MinExpectancySamples || !double.IsFinite(kv.Value.Mean)) continue;
+            if (kv.Key.Length <= full.Length || !kv.Key.StartsWith(full, StringComparison.Ordinal)) continue;
+            if (chosenKey is not null && string.Equals(kv.Key, chosenKey, StringComparison.Ordinal)) continue;
+            if (kv.Value.Mean > best || (kv.Value.Mean == best && string.CompareOrdinal(kv.Key, bestKey) < 0)) { best = kv.Value.Mean; bestKey = kv.Key; }
+        }
+        if (bestKey is not null)
+        {
+            anyAlternative = true;
+            altSum += best; altN++;
+            if (best > altBest) { altBest = best; altLabel = bestKey[PatternKeyPrefix.Length..]; }
+        }
+        else if (chosenAlpha is { } keep) { altSum += keep; altN++; }
+    }
+
+    /// <summary>🌊 현재 탐색 서지 수준 0~1(7일 반감기 시간 감쇠 반영).</summary>
+    public double GetExplorationSurge(DateTime? asOfUtc = null)
+    {
+        var now = asOfUtc ?? PatternNow();
+        lock (_sync) return _entries.TryGetValue(PlutoContextualBaseline.DriftStateKey, out var e) ? PlutoRegimeDriftDetector.EffectiveSurge(e.Surge, e.LastUtc, now) : 0.0;
+    }
+
+    /// <summary>🌊 레짐 드리프트 현황(이력 없음 → <see cref="PlutoRegimeDriftStatus.Stable"/>).</summary>
+    public PlutoRegimeDriftStatus GetRegimeDriftStatus(DateTime? asOfUtc = null)
+    {
+        var now = asOfUtc ?? PatternNow();
+        lock (_sync)
+        {
+            if (!_entries.TryGetValue(PlutoContextualBaseline.DriftStateKey, out var e)) return PlutoRegimeDriftStatus.Stable;
+            var surge = PlutoRegimeDriftDetector.EffectiveSurge(e.Surge, e.LastUtc, now);
+            return new PlutoRegimeDriftStatus(surge > 0, surge, PlutoRegimeDriftDetector.ExplorationTemperature(surge), Math.Max(0.0, e.PhSum - e.PhMin),
+                PlutoRegimeDriftDetector.Threshold, e.Drifts, e.Samples, e.DriftUtc == default ? null : e.DriftUtc);
+        }
     }
 
     /// <summary>🔥 활성 바이럴 트렌드 풀 —가중치 ≥ <see cref="ViralActiveThreshold"/> · 내림차순(동점 태그 사전순) 상위 <paramref name="max"/>건. 미적재 → 빈 목록.</summary>
