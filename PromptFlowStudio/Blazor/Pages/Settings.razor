@@ -89,6 +89,21 @@ else
                 </div>
                 <button class="dh-btn" disabled="@_driveBusy" @onclick="VerifyDriveAsync">@(_driveBusy ? "⏳ 검증 중…" : "🔄 지금 전체 드라이브 백업 검증")</button>
             </div>
+            @* ⚔️ 두 PC 분기 충돌 — 덮이기 전에 보관된 오프라인 사본 · 병합/복원은 다음 실행 때 해당 기록이 적재되기 직전에 적용 *@
+            <div class="dh-conflicts" data-drive-conflicts="@(_conflicts.Count.ToString(CultureInfo.InvariantCulture))">
+                <div class="dh-sum @(_conflicts.Count == 0 ? "ok" : "warn")">⚔️ 동기화 충돌 @(_conflicts.Count.ToString(CultureInfo.InvariantCulture))건@(_pendingResolutions > 0 ? " · 📥 적용 대기 " + _pendingResolutions.ToString(CultureInfo.InvariantCulture) + "건(다음 실행 시 반영)" : "")</div>
+                @foreach (var c in _conflicts)
+                {
+                    var cRef = c;
+                    <div class="dh-conflict" data-drive-conflict="@(c.FileName)">
+                        <span>@(c.HubFileName) · @(c.CapturedUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture)) · @(FormatSize(c.SizeBytes))@(c.IsValidJson ? "" : " · ❌ 손상")</span>
+                        @if (c.IsMergeable && c.IsValidJson) { <button class="dh-btn" data-conflict-merge="1" disabled="@_driveBusy" @onclick="() => ResolveConflict(cRef, 1)" title="두 PC 의 기록을 키 단위로 합칩니다(어느 쪽 항목도 버리지 않음)">🔀 병합</button> }
+                        @if (c.IsValidJson) { <button class="dh-btn" data-conflict-restore="1" disabled="@_driveBusy" @onclick="() => ResolveConflict(cRef, 2)" title="현재 기록 대신 이 오프라인 사본을 사용합니다">↩️ 이 사본으로 복원</button> }
+                        <button class="dh-btn" data-conflict-dismiss="1" disabled="@_driveBusy" @onclick="() => ResolveConflict(cRef, 3)" title="사본을 지우고 현재 기록을 유지합니다">🗑️ 무시</button>
+                    </div>
+                }
+                @if (_conflictToast is { } ct) { <div class="dh-err" role="status" data-conflict-toast="1">@(ct)</div> }
+            </div>
             @if (_drive is { } r2)
             {
                 @if (!string.IsNullOrEmpty(r2.SettingsMirrorError))
@@ -179,6 +194,8 @@ else
     .dh-sum.ok{color:#34d399}.dh-sum.warn{color:#fbbf24}
     .dh-btn{border:0;border-radius:10px;padding:9px 14px;cursor:pointer;font-family:inherit;font-size:13px;font-weight:700;color:#fff;background:linear-gradient(135deg,#3b82f6,#2563eb)}
     .dh-btn:disabled{opacity:.6;cursor:wait}
+    .dh-conflicts{margin-top:8px;display:flex;flex-direction:column;gap:6px}
+    .dh-conflict{display:flex;flex-wrap:wrap;gap:6px;align-items:center;font-size:12.5px}
     .dh-err{margin:6px 0;padding:8px 11px;border-radius:9px;font-size:12.5px;color:#fbbf24;background:color-mix(in srgb,#f59e0b 12%,transparent);border:1px solid color-mix(in srgb,#f59e0b 38%,transparent)}
     .dh-list{display:flex;flex-direction:column;gap:4px}
     .dh-row{display:grid;grid-template-columns:96px 1fr 104px 72px 120px;gap:8px;align-items:center;font-size:12.5px;padding:6px 8px;border-radius:8px;background:rgba(8,13,24,.35)}
@@ -214,6 +231,27 @@ else
     // ── ☁️ Drive 백업 헬스(Pluto 9종 + 계정·설정 2종) ──
     private PlutoDriveHealthReport? _drive;
     private bool _driveBusy;
+    private IReadOnlyList<PlutoConflictCopy> _conflicts = Array.Empty<PlutoConflictCopy>();
+    private int _pendingResolutions;
+    private string? _conflictToast;
+
+    private void RefreshConflicts()
+    {
+        try { _conflicts = DriveHealth.ListConflicts(); _pendingResolutions = DriveHealth.PendingConflictResolutions; }
+        catch (Exception ex) { Program.Log("Settings.Conflicts", ex); _conflicts = Array.Empty<PlutoConflictCopy>(); }
+    }
+
+    /// <summary>⚔️ 1 = 병합 · 2 = 이 사본으로 복원 · 3 = 무시(예외 전파 금지).</summary>
+    private void ResolveConflict(PlutoConflictCopy c, int action)
+    {
+        try
+        {
+            var r = action == 1 ? DriveHealth.MergeConflict(c.FullPath) : action == 2 ? DriveHealth.RestoreConflict(c.FullPath) : DriveHealth.DismissConflict(c.FullPath);
+            _conflictToast = r.MessageKorean;
+        }
+        catch (Exception ex) { Program.Log("Settings.ConflictResolve", ex); _conflictToast = "⚠ 처리 실패: " + ex.Message; }
+        RefreshConflicts();
+    }
 
     private async Task VerifyDriveAsync()
     {
@@ -222,6 +260,7 @@ else
         try { _drive = await DriveHealth.ForceSyncAndVerifyAsync(); }
         catch (Exception ex) { Program.Log("Settings.DriveHealth", ex); _drive = DriveHealth.CheckHealth(); }
         finally { _driveBusy = false; }
+        RefreshConflicts();
     }
 
     private static string BadgeText(PlutoDriveFileStatus s) => s switch
@@ -242,6 +281,7 @@ else
         if (!Session.IsAuthenticated) { Nav.NavigateTo("login"); return; }
         try { _drive = DriveHealth.CheckHealth(); }
         catch (Exception ex) { Program.Log("Settings.DriveHealth", ex); }
+        RefreshConflicts();
     }
 
     // v5.3.2: 쿼리(?tab=) 값이 바뀔 때만 초기 활성 탭을 반영한다(사용자의 이후 탭 클릭은 보존).

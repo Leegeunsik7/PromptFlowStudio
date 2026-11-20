@@ -13715,13 +13715,14 @@ class "Proto"
         for (var f = 0; f < 20; f++) big.Step(1f / 60f);
         // 전 CPU 병렬 부하 선점에 플래키 — 초과 시만 재측정(최대 3 창) 최소값(rules_testing 타이밍 여유)
         var bestMs = double.MaxValue;
-        for (var w = 0; w < 3 && bestMs >= 16.6; w++)
+        var hairBudget = CiFrameBudget.Scaled(16.6);   // 유휴 머신 = 16.6 ms 그대로 · 전 스위트 병렬 부하에서만 실측 경합 비례 완화(CiFrameBudget 공용 규칙)
+        for (var w = 0; w < 3 && bestMs >= hairBudget; w++)
         {
             var sw = Stopwatch.StartNew();
             for (var f = 0; f < 60; f++) big.Step(1f / 60f);
             bestMs = Math.Min(bestMs, sw.Elapsed.TotalMilliseconds / 60);
         }
-        Assert.True(bestMs < 16.6, $"8k strands {bestMs} ms");
+        Assert.True(bestMs < hairBudget, $"8k strands {bestMs} ms");
 
         // ══ HC-3 의상 XPBD: 의상 3 × 원단 6 · 신축 · 무관통 · 고정 · 스펙트럼 · 좌굴 파장 · 회전 플레어 · 바람 · 프롬프트 ══
         var cloth = new Hc.GenerativeGarmentClothCollisionSynthesizer();

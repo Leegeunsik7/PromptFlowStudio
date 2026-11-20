@@ -57,6 +57,10 @@ public sealed record PlutoExperimentReinforcementRequest(string ExperimentId, Pl
     public string? LoserFailureDimension { get; init; }
     /// <summary>📐 패자 최대 정규화 결손(0~1 · 장부 산출) — null → <see cref="Loser"/> 지표로 A/B 기준 재계산.</summary>
     public double? LoserSteepestDeficit { get; init; }
+    /// <summary>🧬 실험 컨텍스트(테마 분류 도메인) — 지정 시 차이 나는 BGM · 태그의 짝 상대 컨텍스트 알파를 기록(미지정 → 생략 · 기존 동작).</summary>
+    public string? ContextDomain { get; init; }
+    /// <summary>🧬 실험 렌더 포맷(미지정 → <see cref="PlutoContextAlphaBackfill.DefaultRenderMode"/>).</summary>
+    public string? ContextRenderMode { get; init; }
 }
 
 /// <summary>📈 Pluto 폐루프 성과 강화 — 게시 후 지표 → 학습 메모리(패턴 가중치 · XP) / 오답 노트(약한 훅 회피).</summary>
@@ -304,6 +308,20 @@ public sealed class PlutoClosedLoopReinforcementService : IPlutoClosedLoopReinfo
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.ClosedLoop] objectives: " + ex.Message); }
+    }
+
+    /// <summary>🧬 A/B 짝 컨텍스트 알파(BGM · 태그) — 실패 격리([부분 구제] 판정 · 강화 결과 유지 · 취소만 전파).</summary>
+    private async Task RecordExperimentContextAlphaSafeAsync(PlutoExperimentReinforcementRequest r, CancellationToken ct)
+    {
+        if (_learning is null || string.IsNullOrWhiteSpace(r.ContextDomain)) return;
+        try
+        {
+            var samples = PlutoContextAlphaBackfill.PairSamples(r.ExperimentId, r.ContextDomain, string.IsNullOrWhiteSpace(r.ContextRenderMode) ? PlutoContextAlphaBackfill.DefaultRenderMode : r.ContextRenderMode,
+                PlutoContextualBaseline.CompositeScore(r.Winner), PlutoContextualBaseline.CompositeScore(r.Loser), ModalityObjectiveTokens(r.Winner), ModalityObjectiveTokens(r.Loser), DateTimeOffset.UtcNow);
+            if (samples.Count > 0) await _learning.RecordContextAlphaSamplesAsync(samples, historical: false, null, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.ClosedLoop] context alpha: " + ex.Message); }
     }
 
     /// <summary>오답 노트 기록 토큰 — 훅 스타일 + 스타일 태그(원문 · 중복 제외).</summary>
@@ -648,6 +666,7 @@ public sealed class PlutoClosedLoopReinforcementService : IPlutoClosedLoopReinfo
             // ⚖️ 변형별 다목적 성과(훅 · 완주 · CTR) — 파레토 프런티어 근거
             await RecordObjectivesSafeAsync(request.Winner, ct).ConfigureAwait(false);
             await RecordObjectivesSafeAsync(request.Loser, ct).ConfigureAwait(false);
+            await RecordExperimentContextAlphaSafeAsync(request, ct).ConfigureAwait(false);   // 🧬 소급과 같은 공식(짝 평균 기준) · 실험 ID 단위 1회
             PlutoCalibrationObservation? loserCalibration = null;
             if (MetaCalibration is not null)
             {

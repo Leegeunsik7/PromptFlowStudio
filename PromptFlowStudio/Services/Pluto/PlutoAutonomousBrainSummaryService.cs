@@ -74,6 +74,14 @@ public sealed record PlutoBrainSummarySnapshot(int TotalEvaluatedExperiments, in
     public PlutoColdStartTransferStatus ColdStartTransfer { get; init; } = PlutoColdStartTransferStatus.Empty;
     /// <summary>🧬 콜드스타트 전이 1줄(결정론 한국어).</summary>
     public string ColdStartTransferLabel { get; init; } = PlutoAutonomousBrainSummaryService.NoneLabel;
+    /// <summary>⚔️ 미해결 Drive 분기 충돌 사본 수.</summary>
+    public int UnresolvedConflictCount { get; init; }
+    /// <summary>📥 다음 적재 때 적용될 충돌 해결 수.</summary>
+    public int PendingConflictResolutions { get; init; }
+    /// <summary>⚔️ 동기화 충돌 1줄(결정론 한국어).</summary>
+    public string ConflictLabel { get; init; } = PlutoAutonomousBrainSummaryService.NoneLabel;
+    /// <summary>🧬 BGM · 태그 과거 이력 소급 결과(미연결 → null).</summary>
+    public PlutoContextBackfillReport? Backfill { get; init; }
 }
 
 /// <summary>🧠 Pluto 4.6 자율 두뇌 텔레메트리 요약 — 실험 장부 × 적응형 랭커 × 오답 노트 집계.</summary>
@@ -101,6 +109,20 @@ public sealed class PlutoAutonomousBrainSummaryService : IPlutoAutonomousBrainSu
     /// <summary>📺 시리즈 아크 메모리(미연결 → '기록 없음').</summary>
     public IPlutoSeriesArcMemoryService? SeriesArc { get; init; }
 
+    /// <summary>⚔️ Drive 분기 충돌 현황(미연결 → 0).</summary>
+    public IPlutoDriveHealthService? DriveHealth { get; init; }
+
+    /// <summary>🧬 BGM · 태그 컨텍스트 알파 과거 이력 소급(미연결 → 생략) — 랭커 집계 '이전'에 1회 보장.</summary>
+    public IPlutoContextAlphaBackfillService? Backfill { get; init; }
+
+    /// <summary>⚔️ 충돌 1줄(결정론).</summary>
+    public static string BuildConflictLabel(int unresolved, int pending)
+    {
+        if (unresolved <= 0 && pending <= 0) return "없음 · 두 PC 의 오프라인 기록이 갈라지면 덮기 전에 사본을 보관해요";
+        var s = unresolved > 0 ? "미해결 " + unresolved.ToString(Inv) + "건 — 환경설정 › Drive 백업에서 병합/복원/무시" : "미해결 없음";
+        return pending > 0 ? s + " · 적용 대기 " + pending.ToString(Inv) + "건(다음 실행 시 반영)" : s;
+    }
+
     public PlutoAutonomousBrainSummaryService(IPlutoExperimentLedgerService? ledger, IPlutoAdaptivePatternRanker? ranker, IPlutoMistakeNotebookService? notebook)
     {
         _ledger = ledger;
@@ -125,6 +147,20 @@ public sealed class PlutoAutonomousBrainSummaryService : IPlutoAutonomousBrainSu
         IReadOnlyList<PlutoParetoModalityStatus> modalities = Array.Empty<PlutoParetoModalityStatus>();
         var seriesArc = PlutoSeriesArcStatus.Empty;
         var coldStart = PlutoColdStartTransferStatus.Empty;
+        PlutoContextBackfillReport? backfill = null;
+        int conflicts = 0, pendingResolutions = 0;
+
+        if (Backfill is not null)
+        {
+            try { backfill = await Backfill.EnsureBackfilledAsync(ct).ConfigureAwait(false); }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) { Program.Log("Pluto.BrainSummary.Backfill", ex); }   // [부분 구제]
+        }
+        if (DriveHealth is not null)
+        {
+            try { conflicts = DriveHealth.ListConflicts().Count; pendingResolutions = DriveHealth.PendingConflictResolutions; }
+            catch (Exception ex) { Program.Log("Pluto.BrainSummary.Conflicts", ex); }
+        }
 
         if (_ledger is not null)
         {
@@ -220,6 +256,10 @@ public sealed class PlutoAutonomousBrainSummaryService : IPlutoAutonomousBrainSu
             SeriesArcLabel = PlutoSeriesArcMemoryService.BuildArcLabel(seriesArc),
             ColdStartTransfer = coldStart,
             ColdStartTransferLabel = PlutoEmpiricalBayes.BuildLabel(coldStart),
+            UnresolvedConflictCount = conflicts,
+            PendingConflictResolutions = pendingResolutions,
+            ConflictLabel = BuildConflictLabel(conflicts, pendingResolutions),
+            Backfill = backfill,
         };
     }
 

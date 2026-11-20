@@ -20,6 +20,17 @@ public interface IPlutoDriveHealthService
 {
     PlutoDriveHealthReport CheckHealth(string? plutoDriveDir = null, string? studioDriveDir = null);
     Task<PlutoDriveHealthReport> ForceSyncAndVerifyAsync(CancellationToken ct = default);
+
+    /// <summary>⚔️ 미해결 분기 충돌 사본(최신순 · 저장소 미연결 → 빈 목록).</summary>
+    IReadOnlyList<PlutoConflictCopy> ListConflicts() => Array.Empty<PlutoConflictCopy>();
+    /// <summary>📥 다음 적재 때 적용될 해결 수.</summary>
+    int PendingConflictResolutions => 0;
+    /// <summary>🔀 의미 병합 예약.</summary>
+    PlutoConflictResolution MergeConflict(string conflictPath) => new(PlutoConflictAction.None, "", "⚠ 저장소 미연결");
+    /// <summary>↩️ 충돌 사본으로 복원 예약.</summary>
+    PlutoConflictResolution RestoreConflict(string conflictPath) => new(PlutoConflictAction.None, "", "⚠ 저장소 미연결");
+    /// <summary>🗑️ 충돌 사본 무시(삭제).</summary>
+    PlutoConflictResolution DismissConflict(string conflictPath) => new(PlutoConflictAction.None, "", "⚠ 저장소 미연결");
 }
 
 /// <summary>
@@ -53,12 +64,21 @@ public sealed class PlutoDriveHealthService : IPlutoDriveHealthService
     private readonly MemberRegistryService? _members;
     private readonly IPlutoStorageManager? _storage;
 
+    private readonly PlutoConflictMergeService? _conflicts;
+
     public PlutoDriveHealthService(AppSettingsManager? settings = null, MemberRegistryService? members = null, IPlutoStorageManager? storage = null)
     {
         _settings = settings;
         _members = members;
         _storage = storage;
+        _conflicts = storage is PlutoDriveStorageManager dm ? new PlutoConflictMergeService(dm) : null;
     }
+
+    public IReadOnlyList<PlutoConflictCopy> ListConflicts() => _conflicts?.ListConflicts() ?? Array.Empty<PlutoConflictCopy>();
+    public int PendingConflictResolutions => _conflicts?.PendingCount ?? 0;
+    public PlutoConflictResolution MergeConflict(string conflictPath) => _conflicts?.StageMerge(conflictPath) ?? new(PlutoConflictAction.None, "", "⚠ 저장소 미연결");
+    public PlutoConflictResolution RestoreConflict(string conflictPath) => _conflicts?.StageRestore(conflictPath) ?? new(PlutoConflictAction.None, "", "⚠ 저장소 미연결");
+    public PlutoConflictResolution DismissConflict(string conflictPath) => _conflicts?.Dismiss(conflictPath) ?? new(PlutoConflictAction.None, "", "⚠ 저장소 미연결");
 
     /// <summary>Pluto 볼트 Drive 경로 — 저장소 관리자 Primary → 기본 상수(Windows 전용).</summary>
     public string? DefaultPlutoDir()
@@ -101,7 +121,8 @@ public sealed class PlutoDriveHealthService : IPlutoDriveHealthService
             try { _members?.FlushMirror(); }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.DriveHealth] members flush: " + ex.Message); }
             ct.ThrowIfCancellationRequested();
-            // ☁️⬆️ 오프라인 쓰기 반환 — 더 새로운 유효 로컬 사본(또는 Drive 부재)을 먼저 Drive 로(더 새로운 Drive 사본은 보호)
+            // 🧾 기준선 부트스트랩(내용이 같은 파일만) → ☁️⬆️ 오프라인 쓰기 반환(더 새로운 Drive 사본은 보호)
+            (_storage as PlutoDriveStorageManager)?.BootstrapSyncManifest(PlutoFiles);
             (_storage as PlutoDriveStorageManager)?.WriteBackNewerLocalToDrive(PlutoFiles);
             ct.ThrowIfCancellationRequested();
             // Drive 활성 시 ResolveDataPath 가 부재 파일을 로컬 폴백/레거시 사본에서 시드(기존 Drive 파일 덮어쓰기 없음).

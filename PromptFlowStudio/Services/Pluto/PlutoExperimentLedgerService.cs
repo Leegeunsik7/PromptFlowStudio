@@ -211,6 +211,8 @@ public sealed class PlutoExperimentLedgerService : IPlutoExperimentLedgerService
             {
                 LoserFailureDimension = loseDim,   // 🩺 훅 고정 대신 최대 결손 차원
                 LoserSteepestDeficit = loseDeficit,   // 📐 결손 > 0 → 벌점 · 크기 비례
+                ContextDomain = PromptDomainClassifier.Classify(plan.ThemeHint).ToString(),   // 🧬 A/B 생성기와 같은 분류
+                ContextRenderMode = plan.ContextRenderMode ?? PlutoContextAlphaBackfill.DefaultRenderMode,
             };
             PlutoReinforcementOutcome? outcome = null;
             var warn = "";

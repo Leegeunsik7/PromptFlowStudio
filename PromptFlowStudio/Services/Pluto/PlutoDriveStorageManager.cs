@@ -63,6 +63,18 @@ public sealed class PlutoDriveStorageManager : IPlutoStorageManager
     /// <summary>⚔️ 분기 충돌 시 덮이기 직전 로컬 사본 보관 폴더(로컬 폴백 하위).</summary>
     public const string ConflictFolderName = "conflicts";
     public const int MaxConflictCopiesPerFile = 3;
+    /// <summary>📥 사용자가 고른 충돌 해결(병합 · 사본 복원) 대기 폴더(로컬 폴백 하위) — 그 허브를 서비스가 적재하기 '직전'에 적용.</summary>
+    public const string PendingFolderName = "sync_pending";
+    public const string PendingMergeExt = ".merge", PendingReplaceExt = ".replace";
+
+    /// <summary>🔒 Drive 데스크톱 동기화 데몬의 일시 잠금 재시도 — 최대 시도 수(1 = 재시도 없음).</summary>
+    public int LockRetryAttempts { get; init; } = 5;
+    /// <summary>🔒 첫 재시도 지연(이후 ×2 · 지터 ×0.5~1.5).</summary>
+    public TimeSpan LockRetryBaseDelay { get; init; } = TimeSpan.FromMilliseconds(25);
+    private int _lockRetries;
+    /// <summary>🔒 이번 세션에 일시 잠금으로 재시도한 횟수.</summary>
+    public int LockRetryCount => Volatile.Read(ref _lockRetries);
+    private readonly HashSet<string> _pendingChecked = new(StringComparer.OrdinalIgnoreCase);   // 📥 세션당 1회 — 이미 적재된 서비스의 메모리 상태를 덮지 않도록
 
     public PlutoDriveStorageManager() : this(DefaultPrimaryRoot(), null, DefaultLegacyRoot()) { }
 
@@ -106,9 +118,15 @@ public sealed class PlutoDriveStorageManager : IPlutoStorageManager
         ValidateName(filename);
         var root = ActiveRoot;
         var path = Path.Combine(root, filename);
+        if (MarkPendingChecked(filename)) ApplyPendingResolution(filename, path, root);   // 📥 적재 직전 — 충돌 병합/복원 적용
         if (!File.Exists(path)) Seed(path, filename, root);
         else if (!string.Equals(root, _fallback, StringComparison.OrdinalIgnoreCase) && MarkReconciled(filename)) TryWriteBack(filename);   // ⚡ 서비스 적재 '이전'에 오프라인 학습분을 Drive 로
         return path;
+    }
+
+    private bool MarkPendingChecked(string filename)
+    {
+        lock (_sync) return _pendingChecked.Add(filename);
     }
 
     /// <summary>이번 온라인 구간에서 처음 해석하는 파일이면 true(재연결 시 초기화).</summary>
@@ -247,12 +265,12 @@ public sealed class PlutoDriveStorageManager : IPlutoStorageManager
         if (_legacy is not null) TryCopy(Path.Combine(_legacy, filename), target);
     }
 
-    private static bool TryCopy(string src, string dst)
+    private bool TryCopy(string src, string dst)
     {
         try
         {
             if (!File.Exists(src)) return false;
-            File.Copy(src, dst, overwrite: false);
+            WithLockRetry(() => { File.Copy(src, dst, overwrite: false); return true; });
             return true;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -264,6 +282,8 @@ public sealed class PlutoDriveStorageManager : IPlutoStorageManager
 
     /// <summary>
     /// 🔁 핵심 허브 복원 — Drive 활성 시 Drive 에 있고 로컬 폴백에 없는 파일을 로컬로 복사(실패 무시).
+    /// 🛡️ Step 19: 첫 복원(로컬 부재)도 비어 있지 않은 유효 JSON 만 · 임시 파일 → 원자 교체 · #️⃣ 내용이 같으면 mtime 이 흔들려도 쓰기/충돌 사본 없이 장부만 갱신 ·
+    /// ⚔️ 분기 판정은 장부 해시(내용) 기준 · 🔒 Drive 데몬의 일시 잠금은 유한 재시도.
     /// 🪞 Step 17: 로컬 사본이 이미 있어도 Drive 사본이 확실히 더 새로우면(<see cref="IsMirrorStale"/>) 로컬 미러를 갱신한다 —
     /// 첫 복원 이후 미러가 그 시점에 얼어붙어, 오프라인 전환 시 몇 주 전 학습 상태로 조용히 되돌아가던 문제 차단. 더 새로운 로컬 사본은 절대 덮어쓰지 않는다.
     /// ⚔️ Step 18: 동기화 장부 기준 분기(오프라인 로컬 변경 + 더 새로운 Drive)면 덮기 직전 로컬 사본을 <c>conflicts/</c> 에 보관.
@@ -289,13 +309,19 @@ public sealed class PlutoDriveStorageManager : IPlutoStorageManager
             {
                 if (!File.Exists(dst))
                 {
-                    if (TryCopy(src, dst)) { restored++; RecordSynced(f, SafeUtc(dst)); }
+                    // 🛡️ 새 PC 첫 복원도 검증 + 원자(임시 → 교체) — Drive 클라이언트가 내려받는 중인 반쪽/자리표시 파일을 로컬 미러로 굳히지 않는다
+                    if (!File.Exists(src) || !IsNonEmptyValidJson(src)) continue;
+                    if (TryRefreshMirror(src, dst)) { restored++; RecordSynced(f, SafeUtc(dst), SafeUtc(src), Sha256Of(dst)); }
                     continue;
                 }
+                EnsureBaselineLocked(f, dst, src);
                 if (!IsMirrorStale(src, dst)) continue;
+                // #️⃣ 내용 동일(Drive 데스크톱의 mtime 흔들림) → 쓰기 · 충돌 사본 없이 장부만 갱신
+                var localHash = Sha256Of(dst);
+                if (localHash is not null && localHash == Sha256Of(src)) { RecordSynced(f, SafeUtc(dst), SafeUtc(src), localHash); continue; }
                 // ⚔️ 분기 — 마지막 동기화 이후 오프라인으로 바뀐 로컬 사본이 더 새로운 Drive 사본(다른 PC)에 덮이기 전에 보관
-                if (IsDiverged(LoadManifest().TryGetValue(f, out var synced) ? synced : null, SafeUtc(dst)) && PreserveConflictCopy(f, dst) is not null) ConflictCopyCount++;
-                if (TryRefreshMirror(src, dst)) { restored++; RecordSynced(f, SafeUtc(dst)); }
+                if (IsDivergedLocked(f, dst, localHash) && PreserveConflictCopy(f, dst, localHash) is not null) ConflictCopyCount++;
+                if (TryRefreshMirror(src, dst)) { restored++; RecordSynced(f, SafeUtc(dst), SafeUtc(src), Sha256Of(dst)); }
             }
         }
         return restored;
@@ -374,17 +400,24 @@ public sealed class PlutoDriveStorageManager : IPlutoStorageManager
         var dst = Path.Combine(_primary, filename);
         lock (_ioLock)
         {
+            EnsureBaselineLocked(filename, src, dst);
             if (!IsLocalNewerForWriteBack(src, dst)) return false;
             var before = Snapshot(dst);
+            var localHash = Sha256Of(src);
+            if (before.Exists && localHash is not null && localHash == Sha256Of(dst))
+            {
+                RecordSynced(filename, SafeUtc(src), before.Utc, localHash);   // #️⃣ 내용 동일 — mtime 흔들림일 뿐 → 반환 쓰기 생략
+                return false;
+            }
             var tmp = dst + ".writeback.tmp";
             try
             {
                 var srcTime = File.GetLastWriteTimeUtc(src);
-                File.Copy(src, tmp, overwrite: true);
+                WithLockRetry(() => { File.Copy(src, tmp, overwrite: true); return true; });
                 File.SetLastWriteTimeUtc(tmp, srcTime);
                 if (Snapshot(dst) != before) { TryDelete(tmp); return false; }   // 비교 후 교체 — 그 사이 Drive 가 갱신됨
-                File.Move(tmp, dst, overwrite: true);
-                RecordSynced(filename, srcTime);
+                WithLockRetry(() => { File.Move(tmp, dst, overwrite: true); return true; });
+                RecordSynced(filename, srcTime, srcTime, localHash);
                 return true;
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -419,42 +452,238 @@ public sealed class PlutoDriveStorageManager : IPlutoStorageManager
 
     private string ManifestPath => Path.Combine(_fallback, SyncManifestFileName);
 
-    private Dictionary<string, DateTime> LoadManifest()
+    /// <summary>🧾 동기화 장부 1건 — 동기화 직후 로컬 · Drive 수정 시각 + 내용 SHA-256(Step 18 장부 = 시각만 · 해시 null).</summary>
+    public sealed record PlutoSyncRecord(DateTime LocalUtc, DateTime DriveUtc, string? Sha256);
+
+    private sealed class SyncRecordDto
     {
-        try
-        {
-            if (!File.Exists(ManifestPath)) return new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
-            var map = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, DateTime>>(File.ReadAllText(ManifestPath));
-            return map is null ? new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase) : new Dictionary<string, DateTime>(map, StringComparer.OrdinalIgnoreCase);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Text.Json.JsonException or NotSupportedException)
-        {
-            System.Diagnostics.Debug.WriteLine("[Pluto.Drive] manifest read: " + ex.Message);
-            return new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
-        }
+        public DateTime LocalUtc { get; set; }
+        public DateTime DriveUtc { get; set; }
+        public string? Sha256 { get; set; }
     }
 
-    /// <summary>파일이 마지막으로 동기화된 내용의 수정 시각(UTC · 기록 없음 → null).</summary>
+    private Dictionary<string, PlutoSyncRecord> LoadManifest()
+    {
+        var map = new Dictionary<string, PlutoSyncRecord>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            if (!File.Exists(ManifestPath)) return map;
+            if (System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(ManifestPath)) is not System.Text.Json.Nodes.JsonObject root) return map;
+            foreach (var kv in root)
+            {
+                if (kv.Value is null) continue;
+                if (kv.Value.GetValueKind() == System.Text.Json.JsonValueKind.String)   // Step 18 형식(파일 → 시각)
+                {
+                    var t = DateTime.SpecifyKind(kv.Value.GetValue<DateTime>().ToUniversalTime(), DateTimeKind.Utc);
+                    map[kv.Key] = new PlutoSyncRecord(t, t, null);
+                }
+                else if (System.Text.Json.JsonSerializer.Deserialize<SyncRecordDto>(kv.Value) is { } dto)
+                    map[kv.Key] = new PlutoSyncRecord(DateTime.SpecifyKind(dto.LocalUtc.ToUniversalTime(), DateTimeKind.Utc), DateTime.SpecifyKind(dto.DriveUtc.ToUniversalTime(), DateTimeKind.Utc),
+                        string.IsNullOrWhiteSpace(dto.Sha256) ? null : dto.Sha256);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Text.Json.JsonException or NotSupportedException or InvalidOperationException or FormatException)
+        {
+            System.Diagnostics.Debug.WriteLine("[Pluto.Drive] manifest read: " + ex.Message);
+        }
+        return map;
+    }
+
+    /// <summary>파일이 마지막으로 동기화된 로컬 내용의 수정 시각(UTC · 기록 없음 → null).</summary>
     public DateTime? GetLastSyncedUtc(string filename)
     {
-        lock (_ioLock) return LoadManifest().TryGetValue(filename, out var t) ? DateTime.SpecifyKind(t, DateTimeKind.Utc) : null;
+        lock (_ioLock) return LoadManifest().TryGetValue(filename, out var r) ? r.LocalUtc : null;
+    }
+
+    /// <summary>🧾 동기화 장부 1건(기록 없음 → null).</summary>
+    public PlutoSyncRecord? GetSyncRecord(string filename)
+    {
+        lock (_ioLock) return LoadManifest().TryGetValue(filename, out var r) ? r : null;
     }
 
     /// <summary>동기화 장부 기록(호출자가 <c>_ioLock</c> 보유 · 실패 무시).</summary>
-    private void RecordSynced(string filename, DateTime contentUtc)
+    private void RecordSynced(string filename, DateTime localUtc, DateTime driveUtc, string? sha256)
     {
         try
         {
             var map = LoadManifest();
-            map[filename] = DateTime.SpecifyKind(contentUtc, DateTimeKind.Utc);
+            map[filename] = new PlutoSyncRecord(DateTime.SpecifyKind(localUtc, DateTimeKind.Utc), DateTime.SpecifyKind(driveUtc, DateTimeKind.Utc), sha256);
+            var keys = new List<string>(map.Keys);
+            keys.Sort(StringComparer.Ordinal);
+            var dto = new SortedDictionary<string, SyncRecordDto>(StringComparer.Ordinal);
+            for (var i = 0; i < keys.Count; i++)
+            {
+                var r = map[keys[i]];
+                dto[keys[i]] = new SyncRecordDto { LocalUtc = r.LocalUtc, DriveUtc = r.DriveUtc, Sha256 = r.Sha256 };
+            }
             var dir = EnsureDir(_fallback);
             var tmp = Path.Combine(dir, SyncManifestFileName + ".tmp");
-            File.WriteAllText(tmp, System.Text.Json.JsonSerializer.Serialize(map));
-            File.Move(tmp, ManifestPath, overwrite: true);
+            File.WriteAllText(tmp, System.Text.Json.JsonSerializer.Serialize(dto));
+            WithLockRetry(() => { File.Move(tmp, ManifestPath, overwrite: true); return true; });
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
         {
             System.Diagnostics.Debug.WriteLine("[Pluto.Drive] manifest write: " + ex.Message);
+        }
+    }
+
+    // ── #️⃣ 내용 해시 · 🧾 기준선 부트스트랩 · 🔒 잠금 재시도 ──
+
+    /// <summary>#️⃣ 파일 SHA-256(소문자 16진) — 없음 · 읽기 실패 → null(일시 잠금은 재시도).</summary>
+    public string? Sha256Of(string path)
+    {
+        try
+        {
+            if (!File.Exists(path)) return null;
+            return WithLockRetry(() =>
+            {
+                using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(fs)).ToLowerInvariant();
+            });
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or ArgumentException)
+        {
+            System.Diagnostics.Debug.WriteLine("[Pluto.Drive] hash: " + ex.Message);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// 🧾 기준선 부트스트랩 — 장부 기록이 없는 핵심 파일 중 로컬 · Drive 내용이 같은 것만 기준선(해시 · 시각)으로 기록 → 이후 '첫' 분기도 감지된다.
+    /// 내용이 이미 다르면 공통 조상을 알 수 없으므로 기록하지 않는다(추측한 기준선이 진짜 분기를 가리는 것보다 낫다). Drive 비활성 → 0.
+    /// </summary>
+    /// <returns>새로 기록한 기준선 수.</returns>
+    public int BootstrapSyncManifest(IReadOnlyList<string> files)
+    {
+        ArgumentNullException.ThrowIfNull(files);
+        if (!PrimaryAvailable() || string.Equals(_fallback, _primary, StringComparison.OrdinalIgnoreCase)) return 0;
+        var seeded = 0;
+        for (var i = 0; i < files.Count; i++)
+        {
+            var f = files[i];
+            try { ValidateName(f); }
+            catch (ArgumentException) { continue; }
+            lock (_ioLock) if (EnsureBaselineLocked(f, Path.Combine(_fallback, f), Path.Combine(_primary!, f))) seeded++;
+        }
+        return seeded;
+    }
+
+    /// <summary>기록 없음 + 양쪽 존재 + 내용 동일 → 기준선 기록(호출자가 <c>_ioLock</c> 보유).</summary>
+    private bool EnsureBaselineLocked(string filename, string localPath, string drivePath)
+    {
+        if (LoadManifest().ContainsKey(filename) || !File.Exists(localPath) || !File.Exists(drivePath)) return false;
+        var lh = Sha256Of(localPath);
+        if (lh is null || lh != Sha256Of(drivePath)) return false;
+        RecordSynced(filename, SafeUtc(localPath), SafeUtc(drivePath), lh);
+        return true;
+    }
+
+    /// <summary>⚔️ 분기 — 장부에 해시가 있으면 '마지막 동기화 이후 로컬 내용이 바뀜'(mtime 흔들림 무시) · Step 18 장부(시각만)는 시각 규칙.</summary>
+    private bool IsDivergedLocked(string filename, string localPath, string? localHash)
+    {
+        if (!LoadManifest().TryGetValue(filename, out var r)) return false;
+        return r.Sha256 is { } synced && localHash is not null ? !string.Equals(synced, localHash, StringComparison.Ordinal) : IsDiverged(r.LocalUtc, SafeUtc(localPath));
+    }
+
+    /// <summary>🔒 일시 잠금 판정 — 공유 위반(32) · 잠금 위반(33) · 접근 거부(Drive 데몬 교체 중) .</summary>
+    public static bool IsTransientLock(Exception ex)
+        => ex is UnauthorizedAccessException || (ex is IOException io && (io.HResult & 0xFFFF) is 32 or 33);
+
+    /// <summary>🔒 유한 지수 백오프 + 지터 재시도(<see cref="LockRetryAttempts"/>) — 일시 잠금이 아닌 예외 · 마지막 시도 실패는 그대로 전파.</summary>
+    private T WithLockRetry<T>(Func<T> op)
+    {
+        var attempts = Math.Max(1, LockRetryAttempts);
+        var delayMs = Math.Max(1.0, LockRetryBaseDelay.TotalMilliseconds);
+        for (var attempt = 1; ; attempt++)
+        {
+            try { return op(); }
+            catch (Exception ex) when (attempt < attempts && IsTransientLock(ex))
+            {
+                Interlocked.Increment(ref _lockRetries);
+                Thread.Sleep(TimeSpan.FromMilliseconds(delayMs * (0.5 + Random.Shared.NextDouble())));
+                delayMs *= 2.0;
+            }
+        }
+    }
+
+    private static bool IsNonEmptyValidJson(string path)
+    {
+        try { return new FileInfo(path).Length > 0 && IsValidJson(path); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or ArgumentException) { return false; }
+    }
+
+    // ── 📥 충돌 해결 대기열(병합 · 사본 복원) — 적재 직전 적용 ──
+
+    /// <summary>📥 대기 폴더 경로.</summary>
+    public string PendingRoot => Path.Combine(_fallback, PendingFolderName);
+
+    /// <summary>📥 대기 중인 해결 파일 수.</summary>
+    public int PendingResolutionCount
+    {
+        get
+        {
+            try { return Directory.Exists(PendingRoot) ? Directory.GetFiles(PendingRoot).Length : 0; }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return 0; }
+        }
+    }
+
+    /// <summary>
+    /// 📥 허브 1개의 대기 해결 적용 — 병합 = 현재 사본 ∪ 대기 사본(<see cref="PlutoConflictMergeService.MergeJson"/>) · 복원 = 대기 사본으로 교체.
+    /// 적용은 그 허브를 서비스가 이번 세션에 처음 적재하기 '직전'(<see cref="ResolveDataPath"/>)에만 일어나므로, 이미 메모리에 든 상태가 다음 기록으로 병합 결과를 되덮는 일이 없다.
+    /// 병합 불가(손상 · 비병합 허브) → <c>.rejected</c> 로 보존(현재 사본 무변경).
+    /// </summary>
+    /// <returns>적용 여부.</returns>
+    public bool ApplyPendingResolution(string filename) => ApplyPendingResolution(filename, Path.Combine(ActiveRoot, filename), ActiveRoot);
+
+    private bool ApplyPendingResolution(string filename, string path, string root)
+    {
+        string merge = Path.Combine(PendingRoot, filename + PendingMergeExt), replace = Path.Combine(PendingRoot, filename + PendingReplaceExt);
+        bool hasMerge, hasReplace;
+        try { hasMerge = File.Exists(merge); hasReplace = File.Exists(replace); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException) { return false; }
+        if (!hasMerge && !hasReplace) return false;
+        lock (_ioLock)
+        {
+            try
+            {
+                string? result;
+                string pending;
+                if (hasReplace)
+                {
+                    pending = replace;
+                    result = WithLockRetry(() => File.ReadAllText(replace));
+                    if (!PlutoConflictMergeService.IsValidJsonText(result)) result = null;
+                }
+                else
+                {
+                    pending = merge;
+                    var incoming = WithLockRetry(() => File.ReadAllText(merge));
+                    var current = File.Exists(path) ? WithLockRetry(() => File.ReadAllText(path)) : null;
+                    result = string.IsNullOrWhiteSpace(current) ? (PlutoConflictMergeService.IsValidJsonText(incoming) ? incoming : null)
+                        : PlutoConflictMergeService.MergeJson(filename, current, incoming);
+                }
+                if (result is null)
+                {
+                    WithLockRetry(() => { File.Move(pending, pending + ".rejected", overwrite: true); return true; });
+                    return false;
+                }
+                var tmp = path + ".resolve.tmp";
+                File.WriteAllText(tmp, result);
+                WithLockRetry(() => { File.Move(tmp, path, overwrite: true); return true; });
+                if (!string.Equals(root, _fallback, StringComparison.OrdinalIgnoreCase))
+                {
+                    var mirror = Path.Combine(EnsureDir(_fallback), filename);
+                    if (TryRefreshMirror(path, mirror)) RecordSynced(filename, SafeUtc(mirror), SafeUtc(path), Sha256Of(mirror));
+                }
+                TryDelete(pending);
+                if (hasReplace && hasMerge) TryDelete(merge);   // 교체가 병합보다 우선(사용자가 마지막에 '이 사본으로' 선택)
+                return true;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                System.Diagnostics.Debug.WriteLine("[Pluto.Drive] pending resolution: " + ex.Message);   // [부분 구제] 다음 실행에 재시도
+                return false;
+            }
         }
     }
 
@@ -465,7 +694,7 @@ public sealed class PlutoDriveStorageManager : IPlutoStorageManager
         => lastSyncedUtc is { } synced && localUtc - synced > MirrorStalenessTolerance;
 
     /// <summary>⚔️ 덮이기 직전 로컬 사본을 <c>conflicts/</c> 에 보관(파일당 최근 <see cref="MaxConflictCopiesPerFile"/>개) — 반환 = 보관 경로(실패 → null).</summary>
-    private string? PreserveConflictCopy(string filename, string localPath)
+    private string? PreserveConflictCopy(string filename, string localPath, string? localHash = null)
     {
         try
         {
@@ -474,7 +703,14 @@ public sealed class PlutoDriveStorageManager : IPlutoStorageManager
             var ext = Path.GetExtension(filename);
             var stamp = File.GetLastWriteTimeUtc(localPath).ToString("yyyyMMddHHmmss", System.Globalization.CultureInfo.InvariantCulture);
             var target = Path.Combine(dir, stem + ".conflict-" + stamp + ext);
-            File.Copy(localPath, target, overwrite: true);
+            localHash ??= Sha256Of(localPath);
+            // 같은 초에 생긴 서로 다른 분기는 덮지 않고 접미 번호 · 이미 같은 내용이 보관돼 있으면 중복 사본을 만들지 않는다
+            for (var n = 2; File.Exists(target); n++)
+            {
+                if (localHash is not null && Sha256Of(target) == localHash) return target;
+                target = Path.Combine(dir, stem + ".conflict-" + stamp + "-" + n.ToString(System.Globalization.CultureInfo.InvariantCulture) + ext);
+            }
+            WithLockRetry(() => { File.Copy(localPath, target, overwrite: false); return true; });
             var copies = Directory.GetFiles(dir, stem + ".conflict-*" + ext);
             if (copies.Length > MaxConflictCopiesPerFile)
             {
@@ -520,13 +756,13 @@ public sealed class PlutoDriveStorageManager : IPlutoStorageManager
     }
 
     /// <summary>🪞 Drive → 로컬 미러 갱신(임시 파일 → 원자 교체 · 수정 시각 보존 → 멱등) — 실패 시 기존 로컬 사본 유지.</summary>
-    private static bool TryRefreshMirror(string src, string dst)
+    private bool TryRefreshMirror(string src, string dst)
     {
         var tmp = dst + ".mirror.tmp";
         try
         {
-            File.Copy(src, tmp, overwrite: true);
-            File.Move(tmp, dst, overwrite: true);
+            WithLockRetry(() => { File.Copy(src, tmp, overwrite: true); return true; });
+            WithLockRetry(() => { File.Move(tmp, dst, overwrite: true); return true; });
             return true;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)

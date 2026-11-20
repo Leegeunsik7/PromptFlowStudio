@@ -748,6 +748,81 @@ public sealed class PlutoLearningService : IDisposable
         lock (_sync) return _entries.TryGetValue(PlutoEmpiricalBayes.LocalKey(domain, renderMode, patternToken), out var e) ? (e.Mean, e.Samples) : (0.0, 0.0);
     }
 
+    /// <summary>🧬 BGM · 태그 컨텍스트 알파 과거 이력 소급 완료 표식 존재(<see cref="PlutoContextAlphaBackfill.MarkerKey"/>).</summary>
+    public bool HasContextAlphaBackfill
+    {
+        get { lock (_sync) return _entries.ContainsKey(PlutoContextAlphaBackfill.MarkerKey); }
+    }
+
+    /// <summary>🧬 이 A/B 실험의 컨텍스트 알파가 이미 반영됐는지(실시간 · 소급 공통 · 실험 ID 단위 정확히 1회).</summary>
+    public bool HasContextAlphaExperiment(string experimentId)
+    {
+        if (string.IsNullOrWhiteSpace(experimentId)) return false;
+        lock (_sync) return _entries.ContainsKey(PlutoContextAlphaBackfill.ExperimentKeyPrefix + experimentId.Trim());
+    }
+
+    /// <summary>
+    /// 🧬 BGM · 태그 컨텍스트 알파 표본 반영 — 전역(<c>pattern:</c>) · 지역(<c>cpat:</c>) EWMA 만(훅 · 룩 · 컨텍스트 기준선 · 다목적 EWMA 불변 → 이중 계상 없음).
+    ///   ▸ 실험 ID 마다 <c>abctx:</c> 표식으로 정확히 1회(실시간 판정 ↔ 소급 순서와 무관).
+    ///   ▸ <paramref name="historical"/> = true(소급): 과거 표본을 별도 EWMA 로 시간순 재생한 뒤 현재 통계와 표본 가중 결합 —
+    ///     오래된 이력을 최신 관측처럼 EWMA 끝에 덧붙여 '최근성'을 왜곡하지 않는다.
+    ///   ▸ <paramref name="completionMarker"/> 지정 시 이미 있으면 −1(재실행 없음) · 없으면 같은 원자 기록으로 표식 저장.
+    /// </summary>
+    /// <returns>반영된 실험 수(이미 완료 → −1).</returns>
+    public async Task<int> RecordContextAlphaSamplesAsync(IReadOnlyList<PlutoContextAlphaSample> samples, bool historical, string? completionMarker = null, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(samples);
+        await EnsureLoadedAsync(ct).ConfigureAwait(false);
+        var applied = 0;
+        lock (_sync)
+        {
+            var now = PatternNow();
+            if (completionMarker is not null && _entries.ContainsKey(completionMarker)) return -1;
+            var done = new HashSet<string>(StringComparer.Ordinal);
+            var skipped = new HashSet<string>(StringComparer.Ordinal);
+            Dictionary<string, Entry>? replay = historical ? new Dictionary<string, Entry>(StringComparer.Ordinal) : null;
+            for (var i = 0; i < samples.Count; i++)
+            {
+                var s = samples[i];
+                if (s is null || !double.IsFinite(s.Alpha) || !PlutoContextAlphaBackfill.IsContextAlphaToken(s.Token) || string.IsNullOrWhiteSpace(s.ExperimentId)) continue;
+                var id = s.ExperimentId.Trim();
+                if (skipped.Contains(id)) continue;
+                if (!done.Contains(id) && _entries.ContainsKey(PlutoContextAlphaBackfill.ExperimentKeyPrefix + id)) { skipped.Add(id); continue; }
+                done.Add(id);
+                var token = s.Token.Trim();
+                var keys = PlutoContextualBaseline.IsExplicit(s.Domain, s.RenderMode)
+                    ? new[] { PatternKeyPrefix + token, PlutoEmpiricalBayes.LocalKey(s.Domain, s.RenderMode, token) }
+                    : new[] { PatternKeyPrefix + token };
+                for (var k = 0; k < keys.Length; k++)
+                {
+                    Entry target;
+                    if (replay is not null)
+                    {
+                        if (!replay.TryGetValue(keys[k], out target!)) { target = new Entry(); replay[keys[k]] = target; }
+                    }
+                    else if (!_entries.TryGetValue(keys[k], out target!)) { target = k == 0 ? new Entry { Weight = PatternBaseWeight } : new Entry(); _entries[keys[k]] = target; }
+                    UpdateEwma(target, s.Alpha, PlutoContextualBaseline.PatternAlpha);
+                    if (replay is null && k > 0) target.LastUtc = now;
+                }
+            }
+            if (replay is not null)
+                foreach (var kv in replay)
+                {
+                    var isLocal = kv.Key.StartsWith(PlutoEmpiricalBayes.LocalKeyPrefix, StringComparison.Ordinal);
+                    if (!_entries.TryGetValue(kv.Key, out var cur)) { cur = isLocal ? new Entry() : new Entry { Weight = PatternBaseWeight }; _entries[kv.Key] = cur; }
+                    var (m, v, n) = PlutoEmpiricalBayes.MergeVariants(cur.Mean, cur.Var, cur.Samples, kv.Value.Mean, kv.Value.Var, kv.Value.Samples);
+                    cur.Mean = m; cur.Var = v; cur.Samples = Math.Min(MaxExpectancySamples, n);
+                    if (isLocal && cur.LastUtc == default) cur.LastUtc = now;
+                }
+            foreach (var id in done) _entries[PlutoContextAlphaBackfill.ExperimentKeyPrefix + id] = new Entry { Samples = 1.0, LastUtc = now };
+            applied = done.Count;
+            if (completionMarker is not null) _entries[completionMarker] = new Entry { Samples = applied, LastUtc = now };   // Interactions 0 → XP · 누적 피드백 집계 불변
+            else if (applied == 0) return 0;
+        }
+        await PersistAsync(ct).ConfigureAwait(false);
+        return applied;
+    }
+
     /// <summary>🧬 전역 검증 패턴 사전(훅 · 룩 · BGM · 태그 중 알파 표본 ≥ <paramref name="minSamples"/>) — 토큰 사전순(결정론).</summary>
     public IReadOnlyList<(string Token, double Alpha, double Variance, double Samples)> GetProvenPatternPriors(double minSamples)
     {
