@@ -127,6 +127,7 @@ public sealed class PlutoMistakeNotebookService : IPlutoMistakeNotebookService, 
     private Dictionary<string, Entry> _entries = new(StringComparer.OrdinalIgnoreCase);
     private volatile bool _loaded;
     private volatile bool _readOnly;   // 🛡️ 적재 불가(잠금·권한) 세션 — 기존 파일 덮어쓰기 금지
+    private volatile bool _hasUnappliedDiskUpdate;   // 🚧 Step 21 — 잠긴 재적재 이후 기록 펜스(_gate 안에서만 전환)
     private int _disposed;
 
     /// <summary>☁️ <see cref="IPlutoStorageManager"/> 경유 — <c>G:\내 드라이브\DATA\Pluto</c> 우선 · 로컬 폴백.</summary>
@@ -184,10 +185,11 @@ public sealed class PlutoMistakeNotebookService : IPlutoMistakeNotebookService, 
 
     public async Task EnsureLoadedAsync(CancellationToken ct = default)
     {
-        if (_loaded) return;
+        if (_loaded && !_hasUnappliedDiskUpdate) return;
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
+            if (_hasUnappliedDiskUpdate) { await ReloadCoreAsync(ct).ConfigureAwait(false); if (_loaded) return; }   // 🚧 변경 적용 전 병합본 재적재
             if (_loaded) return;
             var (data, status) = await PlutoJsonStore.TryLoadAsync<Snapshot>(StoragePath, "Pluto.Mistake", ct).ConfigureAwait(false);
             _readOnly = status == PlutoLoadStatus.Unreadable;
@@ -227,14 +229,25 @@ public sealed class PlutoMistakeNotebookService : IPlutoMistakeNotebookService, 
         {
             if (_readOnly) return false;   // 메모리에만 있는 세션 기록을 지우지 않는다
             PlutoHotReload.PromotePending(_storage, FileName);
-            var (data, status) = await PlutoJsonStore.TryLoadAsync<Snapshot>(StoragePath, "Pluto.Mistake.Reload", ct).ConfigureAwait(false);
-            if (status != PlutoLoadStatus.Ok || data is null) return false;
-            var map = BuildMap(data);
-            lock (_sync) _entries = map;
-            _loaded = true;
+            if (!await ReloadCoreAsync(ct).ConfigureAwait(false)) return false;
         }
         finally { _gate.Release(); }
         RaiseChanged();
+        return true;
+    }
+
+    /// <summary>🚧 Step 21 재적재 대기 기록 펜스(잠긴 재적재 이후 낡은 메모리 덮어쓰기 차단).</summary>
+    public bool HasUnappliedDiskUpdate => _hasUnappliedDiskUpdate;
+
+    /// <summary>♻️ 재적재 본체(호출자가 <see cref="_gate"/> 보유) — 잠김 → 펜스 설정 · 디스크 읽힘(정상/손상/부재) → 펜스 해제.</summary>
+    private async Task<bool> ReloadCoreAsync(CancellationToken ct)
+    {
+        var (data, status) = await PlutoJsonStore.TryLoadAsync<Snapshot>(StoragePath, "Pluto.Mistake.Reload", ct).ConfigureAwait(false);
+        _hasUnappliedDiskUpdate = status == PlutoLoadStatus.Unreadable;
+        if (status != PlutoLoadStatus.Ok || data is null) return false;
+        var map = BuildMap(data);
+        lock (_sync) _entries = map;
+        _loaded = true;
         return true;
     }
 
@@ -481,6 +494,11 @@ public sealed class PlutoMistakeNotebookService : IPlutoMistakeNotebookService, 
         try
         {
             if (_readOnly) return false;
+            if (_hasUnappliedDiskUpdate)   // 🚧 펜스 — 디스크 병합본 재적재 먼저 · 여전히 잠김 → 덮어쓰기 포기
+            {
+                if (await ReloadCoreAsync(ct).ConfigureAwait(false)) return true;   // 메모리 = 디스크 병합본(재기록 불필요)
+                if (_hasUnappliedDiskUpdate) { System.Diagnostics.Debug.WriteLine("[Pluto.Mistake] save aborted — write fence"); return false; }
+            }
             string json;
             lock (_sync) json = JsonSerializer.Serialize(new Snapshot { Entries = _entries }, JsonOpts);
             return _storage is not null

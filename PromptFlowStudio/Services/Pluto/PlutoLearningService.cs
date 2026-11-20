@@ -51,6 +51,7 @@ public sealed class PlutoLearningService : IPlutoHotReloadable, IDisposable
     private Dictionary<string, Entry> _entries = new(StringComparer.Ordinal);
     private volatile bool _loaded;
     private volatile bool _readOnly;   // 🛡️ 적재 불가(잠금·권한) 세션 — 기존 파일 덮어쓰기 금지
+    private volatile bool _hasUnappliedDiskUpdate;   // 🚧 Step 21 — 잠긴 재적재 이후 기록 펜스(_gate 안에서만 전환)
     private int _disposed;
 
     public PlutoLearningService() : this((string?)null, null) { }
@@ -257,10 +258,11 @@ public sealed class PlutoLearningService : IPlutoHotReloadable, IDisposable
 
     public async Task EnsureLoadedAsync(CancellationToken ct = default)
     {
-        if (_loaded) return;
+        if (_loaded && !_hasUnappliedDiskUpdate) return;
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
+            if (_hasUnappliedDiskUpdate) { await ReloadCoreAsync(ct).ConfigureAwait(false); if (_loaded) return; }   // 🚧 변경 적용 전 병합본 재적재
             if (_loaded) return;
             // 손상 JSON → .corrupt 격리 후 빈 메모리 · 일시적 잠금 → 재시도 · 끝내 읽기 불가 → 디스크 덮어쓰기 금지(누적 XP 보호)
             var (data, status) = await PlutoJsonStore.TryLoadAsync<Dictionary<string, Entry>>(StoragePath, "Pluto", ct).ConfigureAwait(false);
@@ -298,14 +300,25 @@ public sealed class PlutoLearningService : IPlutoHotReloadable, IDisposable
         {
             if (_readOnly) return false;
             PlutoHotReload.PromotePending(_storage, FileName);
-            var (data, status) = await PlutoJsonStore.TryLoadAsync<Dictionary<string, Entry>>(StoragePath, "Pluto.Reload", ct).ConfigureAwait(false);
-            if (status != PlutoLoadStatus.Ok || data is null) return false;
-            var map = BuildEntries(data);
-            lock (_sync) _entries = map;
-            _loaded = true;
+            if (!await ReloadCoreAsync(ct).ConfigureAwait(false)) return false;
         }
         finally { _gate.Release(); }
         RaiseChanged();
+        return true;
+    }
+
+    /// <summary>🚧 Step 21 재적재 대기 기록 펜스(잠긴 재적재 이후 낡은 메모리 덮어쓰기 차단).</summary>
+    public bool HasUnappliedDiskUpdate => _hasUnappliedDiskUpdate;
+
+    /// <summary>♻️ 재적재 본체(호출자가 <see cref="_gate"/> 보유) — 잠김 → 펜스 설정 · 디스크 읽힘(정상/손상/부재) → 펜스 해제.</summary>
+    private async Task<bool> ReloadCoreAsync(CancellationToken ct)
+    {
+        var (data, status) = await PlutoJsonStore.TryLoadAsync<Dictionary<string, Entry>>(StoragePath, "Pluto.Reload", ct).ConfigureAwait(false);
+        _hasUnappliedDiskUpdate = status == PlutoLoadStatus.Unreadable;
+        if (status != PlutoLoadStatus.Ok || data is null) return false;
+        var map = BuildEntries(data);
+        lock (_sync) _entries = map;
+        _loaded = true;
         return true;
     }
 
@@ -971,6 +984,11 @@ public sealed class PlutoLearningService : IPlutoHotReloadable, IDisposable
         try
         {
             if (_readOnly) return false;
+            if (_hasUnappliedDiskUpdate)   // 🚧 펜스 — 디스크 병합본 재적재 먼저 · 여전히 잠김 → 덮어쓰기 포기
+            {
+                if (await ReloadCoreAsync(ct).ConfigureAwait(false)) return true;   // 메모리 = 디스크 병합본(재기록 불필요)
+                if (_hasUnappliedDiskUpdate) { System.Diagnostics.Debug.WriteLine("[Pluto] save aborted — write fence"); return false; }
+            }
             string json;
             lock (_sync) json = JsonSerializer.Serialize(_entries);
             return _storage is not null

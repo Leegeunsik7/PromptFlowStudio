@@ -105,6 +105,8 @@ public sealed class PlutoExperimentLedgerService : IPlutoExperimentLedgerService
     private bool _loaded;
     private Task _registerPersist = Task.CompletedTask;
     private int _disposed;
+    private volatile bool _hasUnappliedDiskUpdate;   // 🚧 Step 21 — 잠긴 재적재 이후 기록 펜스(_gate 안에서만 전환)
+    private HashSet<string>? _fenceDrained;
 
     public PlutoExperimentLedgerService(IPlutoClosedLoopReinforcementService? reinforcement, IPlutoStorageManager? storage = null, Func<DateTimeOffset>? utcNow = null)
     {
@@ -428,10 +430,38 @@ public sealed class PlutoExperimentLedgerService : IPlutoExperimentLedgerService
         try
         {
             PlutoHotReload.PromotePending(_storage, FileName);
+            if (!await ReloadCoreAsync(drained, ct).ConfigureAwait(false)) return false;
+        }
+        finally { _gate.Release(); }
+        RaiseChanged();
+        return true;
+    }
+
+    /// <summary>🚧 Step 21 재적재 대기 기록 펜스(잠긴 재적재 이후 낡은 메모리 덮어쓰기 차단).</summary>
+    public bool HasUnappliedDiskUpdate => _hasUnappliedDiskUpdate;
+
+    /// <summary>
+    /// ♻️ 재적재 본체 — 호출자가 <see cref="_gate"/> 보유. 읽기 잠김/IO 실패 → 펜스 설정(+ 그 시점 메모리 실험 ID 스냅샷) · 읽힘 → 펜스 해제.
+    /// </summary>
+    private async Task<bool> ReloadCoreAsync(HashSet<string> drained, CancellationToken ct)
+    {
+        if (_storage is null) return false;
+        {
             string json;
             try { json = await _storage.ReadAllTextAsync(FileName, ct).ConfigureAwait(false); }
-            catch (Exception ex) when (ex is System.IO.IOException or UnauthorizedAccessException) { return false; }
-            if (string.IsNullOrWhiteSpace(json)) return false;
+            catch (Exception ex) when (ex is System.IO.IOException or UnauthorizedAccessException)
+            {
+                ArmFence(drained);
+                return false;
+            }
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                if (PlutoHotReload.IsHubFileUnreadable(_storage, FileName)) ArmFence(drained);   // 저장소가 잠김을 빈 본문으로 삼킴
+                else { _hasUnappliedDiskUpdate = false; _fenceDrained = null; }
+                return false;
+            }
+            _hasUnappliedDiskUpdate = false;   // 디스크를 읽었다 — 손상이면 기존처럼 다음 기록이 자가 치유
+            _fenceDrained = null;
             LedgerDocument? doc;
             try { doc = JsonSerializer.Deserialize<LedgerDocument>(json); }
             catch (Exception ex) when (ex is JsonException or NotSupportedException)
@@ -453,9 +483,22 @@ public sealed class PlutoExperimentLedgerService : IPlutoExperimentLedgerService
             }
             _loaded = true;
         }
-        finally { _gate.Release(); }
-        RaiseChanged();
         return true;
+    }
+
+    private void ArmFence(HashSet<string> drained)
+    {
+        if (!_hasUnappliedDiskUpdate) _fenceDrained = drained;   // 최초 실패 시점 스냅샷 유지 — 이후 등록분은 재시도 재적재에서 보존
+        _hasUnappliedDiskUpdate = true;
+        System.Diagnostics.Debug.WriteLine("[Pluto.ExperimentLedger] reload locked — write fence armed");
+    }
+
+    /// <summary>🚧 펜스 재시도(게이트 보유) — 활성이면 디스크 재적재를 먼저 시도. 반환 = 펜스 해제됨(기록 허용).</summary>
+    private async Task<bool> TryClearFenceCoreAsync(CancellationToken ct)
+    {
+        if (!_hasUnappliedDiskUpdate) return true;
+        await ReloadCoreAsync(_fenceDrained ?? new HashSet<string>(StringComparer.Ordinal), ct).ConfigureAwait(false);   // Changed 는 호출 기록 경로가 게이트 밖에서 통지
+        return !_hasUnappliedDiskUpdate;
     }
 
     private static string? NormalizePath(string? p) => string.IsNullOrWhiteSpace(p) ? null : p.Trim();
@@ -475,6 +518,7 @@ public sealed class PlutoExperimentLedgerService : IPlutoExperimentLedgerService
     /// <summary>선적재 본체 — 호출자가 <see cref="_gate"/> 보유.</summary>
     private async Task EnsureLoadedCoreAsync(CancellationToken ct)
     {
+        if (_hasUnappliedDiskUpdate && _storage is not null) { await TryClearFenceCoreAsync(ct).ConfigureAwait(false); return; }   // 🚧 변경 적용 전 병합본 재적재
         if (_loaded || _storage is null) { _loaded = true; return; }
         _loaded = true;
         try
@@ -552,6 +596,11 @@ public sealed class PlutoExperimentLedgerService : IPlutoExperimentLedgerService
     private async Task PersistAsync()
     {
         if (_storage is null) return;
+        if (!await TryClearFenceCoreAsync(CancellationToken.None).ConfigureAwait(false))
+        {
+            System.Diagnostics.Debug.WriteLine("[Pluto.ExperimentLedger] save aborted — merged file still unreadable (write fence)");   // [부분 구제] 디스크 병합본 보존 · 메모리 유지
+            return;
+        }
         string json;
         lock (_sync) json = JsonSerializer.Serialize(new LedgerDocument { Version = 1, Experiments = new List<Entry>(_entries) });
         try { await _storage.WriteAllTextAtomicAsync(FileName, json, CancellationToken.None).ConfigureAwait(false); }

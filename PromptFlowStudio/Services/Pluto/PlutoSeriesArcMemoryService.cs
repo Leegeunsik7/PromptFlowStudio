@@ -210,6 +210,7 @@ public sealed class PlutoSeriesArcMemoryService : IPlutoSeriesArcMemoryService, 
     private int _persistQueued;
     private volatile bool _loaded;
     private volatile bool _readOnly;
+    private volatile bool _hasUnappliedDiskUpdate;   // 🚧 Step 21 — 잠긴 재적재 이후 기록 펜스(_gate 안에서만 전환)
     private volatile int _mode;
     private int _disposed;
 
@@ -639,10 +640,11 @@ public sealed class PlutoSeriesArcMemoryService : IPlutoSeriesArcMemoryService, 
 
     public async Task EnsureLoadedAsync(CancellationToken ct = default)
     {
-        if (_loaded) return;
+        if (_loaded && !_hasUnappliedDiskUpdate) return;
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
+            if (_hasUnappliedDiskUpdate) { await ReloadCoreAsync(replayPreLoad: true, ct).ConfigureAwait(false); if (_loaded) return; }   // 🚧 변경 적용 전 병합본 재적재
             if (_loaded) return;
             var (data, status) = await PlutoJsonStore.TryLoadAsync<Snapshot>(StoragePath, "Pluto.SeriesArc", ct).ConfigureAwait(false);
             _readOnly = status == PlutoLoadStatus.Unreadable;
@@ -716,17 +718,32 @@ public sealed class PlutoSeriesArcMemoryService : IPlutoSeriesArcMemoryService, 
         {
             if (_readOnly) return false;
             PlutoHotReload.PromotePending(_storage, FileName);
-            var (data, status) = await PlutoJsonStore.TryLoadAsync<Snapshot>(StoragePath, "Pluto.SeriesArc.Reload", ct).ConfigureAwait(false);
-            if (status != PlutoLoadStatus.Ok || data is null) return false;
-            lock (_sync)
-            {
-                ReplaceStateLocked(data);
-                _preLoadRenders.Clear();
-                _loaded = true;
-            }
+            if (!await ReloadCoreAsync(replayPreLoad: false, ct).ConfigureAwait(false)) return false;
         }
         finally { _gate.Release(); }
         RaiseChanged();
+        return true;
+    }
+
+    /// <summary>🚧 Step 21 재적재 대기 기록 펜스(잠긴 재적재 이후 낡은 메모리 덮어쓰기 차단).</summary>
+    public bool HasUnappliedDiskUpdate => _hasUnappliedDiskUpdate;
+
+    /// <summary>
+    /// ♻️ 재적재 본체(호출자가 <see cref="_gate"/> 보유) — 잠김 → 펜스 설정 · 디스크 읽힘(정상/손상/부재) → 펜스 해제.
+    /// <paramref name="replayPreLoad"/> = 펜스 재시도(최초 적재 대체) — 적재 이전 write-through 를 병합본 위에 재적용.
+    /// </summary>
+    private async Task<bool> ReloadCoreAsync(bool replayPreLoad, CancellationToken ct)
+    {
+        var (data, status) = await PlutoJsonStore.TryLoadAsync<Snapshot>(StoragePath, "Pluto.SeriesArc.Reload", ct).ConfigureAwait(false);
+        _hasUnappliedDiskUpdate = status == PlutoLoadStatus.Unreadable;
+        if (status != PlutoLoadStatus.Ok || data is null) return false;
+        lock (_sync)
+        {
+            ReplaceStateLocked(data);
+            if (replayPreLoad) for (var i = 0; i < _preLoadRenders.Count; i++) ApplyRenderLocked(_preLoadRenders[i], null);
+            _preLoadRenders.Clear();
+            _loaded = true;
+        }
         return true;
     }
 
@@ -832,6 +849,11 @@ public sealed class PlutoSeriesArcMemoryService : IPlutoSeriesArcMemoryService, 
         catch (ObjectDisposedException) { return false; }
         try
         {
+            if (_hasUnappliedDiskUpdate)   // 🚧 펜스 — 디스크 병합본 재적재 먼저 · 여전히 잠김 → 덮어쓰기 포기
+            {
+                if (await ReloadCoreAsync(replayPreLoad: true, ct).ConfigureAwait(false)) return true;   // 메모리 = 디스크 병합본(재기록 불필요)
+                if (_hasUnappliedDiskUpdate) { System.Diagnostics.Debug.WriteLine("[Pluto.SeriesArc] save aborted — write fence"); return false; }
+            }
             string json;
             lock (_sync)
             {

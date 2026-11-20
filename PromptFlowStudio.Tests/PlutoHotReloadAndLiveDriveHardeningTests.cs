@@ -458,6 +458,149 @@ public sealed class PlutoHotReloadAndLiveDriveHardeningTests : IDisposable
         Assert.Equal(12, next.GetStatus().TotalRecords);
     }
 
+    // ── 🚧 Step 21 — 재적재 대기 기록 펜스(잠긴 핫 리로드 이후 낡은 메모리가 병합본을 덮지 못함) ──
+
+    /// <summary>실제 파일 저장소 — 읽기는 공유 스트림(잠금 시 IOException), 기록은 제자리(읽기 전용 잠금 아래서도 성공 → 펜스가 없으면 실제로 덮어씀).</summary>
+    private sealed class InPlaceStorage : IPlutoStorageManager
+    {
+        private readonly string _root;
+        private int _writes;
+
+        public InPlaceStorage(string root)
+        {
+            _root = root;
+            Directory.CreateDirectory(root);
+        }
+
+        public int Writes => Volatile.Read(ref _writes);
+        public string ResolveDataPath(string filename) => Path.Combine(_root, filename);
+
+        public async Task<string> ReadAllTextAsync(string filename, CancellationToken ct = default)
+        {
+            var path = ResolveDataPath(filename);
+            if (!File.Exists(path)) return string.Empty;
+            await using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);   // 잠김 → IOException 전파(펜스 경로)
+            using var sr = new StreamReader(fs);
+            return await sr.ReadToEndAsync(ct);
+        }
+
+        public Task<bool> WriteAllTextAtomicAsync(string filename, string content, CancellationToken ct = default)
+        {
+            Interlocked.Increment(ref _writes);
+            File.WriteAllText(ResolveDataPath(filename), content);
+            return Task.FromResult(true);
+        }
+
+        public bool IsCloudSynced => false;
+        public string ActiveRoot => _root;
+        public string StatusLabel => "test";
+        public event Action? Changed { add { } remove { } }
+    }
+
+    /// <summary>🔒 읽기만 막는 잠금(공유 = Write) — 다른 리더는 공유 위반, 제자리 기록은 허용.</summary>
+    private static FileStream ReadLock(string path) => new(path, FileMode.Open, FileAccess.Read, FileShare.Write);
+
+    private sealed record FenceCase(string Name, IPlutoHotReloadable Hub, string Path, string MergedJson, string MergedMarker, string NewMarker, Func<Task> Write);
+
+    private static PlutoRenderedClipRecord Clip(string id) => new(id, id, "몽타주", "h", "l", "b", Array.Empty<string>(), "", DateTimeOffset.UtcNow, false);
+
+    /// <summary>6대 허브 — 각자 시드 기록 후 디스크에 '병합본'(타 PC 마커 포함)을 깔고, 펜스 검증용 기록 동작을 돌려준다.</summary>
+    private async Task<(List<FenceCase> Cases, InPlaceStorage Storage, List<IDisposable> Owned)> FenceHubsAsync(string name)
+    {
+        var st = new InPlaceStorage(Path.Combine(_dir, name));
+        var owned = new List<IDisposable>(6);
+        var cases = new List<FenceCase>(6);
+
+        var catalog = new PlutoRenderCatalogService(st); owned.Add(catalog);
+        await catalog.RecordRenderedClipAsync(Clip("clip-old"));
+        cases.Add(new FenceCase("catalog", catalog, st.ResolveDataPath(PlutoRenderCatalogService.FileName), Catalog("clip-merged-pc", "clip-old"), "clip-merged-pc", "clip-new",
+            () => catalog.RecordRenderedClipAsync(Clip("clip-new"))));
+
+        var learning = new PlutoLearningService(st); owned.Add(learning);
+        await learning.RecordInteractionAsync("trend-old", InteractionType.Adopted);
+        cases.Add(new FenceCase("learning", learning, st.ResolveDataPath(PlutoLearningService.FileName),
+            "{\"trend-old\":{\"Weight\":1,\"Interactions\":1},\"trend-merged-pc\":{\"Weight\":2,\"Interactions\":3}}", "trend-merged-pc", "trend-new",
+            () => learning.RecordInteractionAsync("trend-new", InteractionType.Adopted)));
+
+        var notebook = new PlutoMistakeNotebookService(st); owned.Add(notebook);
+        await notebook.RecordNegativeFeedbackAsync(new[] { "tok-old" });
+        cases.Add(new FenceCase("notebook", notebook, st.ResolveDataPath(PlutoMistakeNotebookService.FileName),
+            "{\"Entries\":{\"tok-old\":{\"Label\":\"tok-old\",\"RawPenalty\":1,\"LastUtc\":\"2026-11-01T00:00:00Z\"},\"tok-merged-pc\":{\"Label\":\"tok-merged-pc\",\"RawPenalty\":2,\"LastUtc\":\"2026-11-01T00:00:00Z\"}}}",
+            "tok-merged-pc", "tok-new", () => notebook.RecordNegativeFeedbackAsync(new[] { "tok-new" })));
+
+        var ledger = new PlutoExperimentLedgerService(null, st); owned.Add(ledger);
+        ledger.RegisterExperiment(Plan("exp-old"));
+        await ledger.WhenRegisteredPersistedAsync();
+        cases.Add(new FenceCase("ledger", ledger, st.ResolveDataPath(PlutoExperimentLedgerService.FileName), Ledger(Exp("exp-old", Stamp, false), Exp("exp-merged-pc", Stamp.AddHours(1), true)),
+            "exp-merged-pc", "exp-new", async () => { ledger.RegisterExperiment(Plan("exp-new")); await ledger.WhenRegisteredPersistedAsync(); }));
+
+        var arc = new PlutoSeriesArcMemoryService(st); owned.Add(arc);
+        await arc.EnsureLoadedAsync();
+        cases.Add(new FenceCase("arc", arc, st.ResolveDataPath(PlutoSeriesArcMemoryService.FileName),
+            "{\"Version\":1,\"Mode\":0,\"Series\":[{\"Key\":\"s-merged-pc\",\"Title\":\"봄\",\"Total\":3,\"UpdatedUtc\":\"2026-11-01T00:00:00Z\",\"Episodes\":[{\"N\":1,\"VideoId\":\"v1\"}]}]}",
+            "s-merged-pc", "\"Mode\":1", () => arc.SetEscalationModeAsync(PlutoSeriesEscalationMode.RecommendOnly)));
+
+        var calib = new PlutoMetaCalibrationService(st); owned.Add(calib);
+        await calib.EnsureLoadedAsync();
+        cases.Add(new FenceCase("calibration", calib, st.ResolveDataPath(PlutoMetaCalibrationService.FileName),
+            Calib(40, 1.25, Rec(Stamp, 0.6, 0.5, null, "merged-pc"), ""), "merged-pc", "\"TotalRecords\":41",
+            async () => await calib.RecordOutcomeAsync(new PlutoCalibrationObservation(0.6, 0.5, double.NaN))));
+
+        return (cases, st, owned);
+    }
+
+    [Fact]
+    public async Task WriteFence_LockedHotReloadAfterMerge_NextSaveReloadsDiskFirst_AllSixHubs()
+    {
+        var (cases, _, owned) = await FenceHubsAsync("fence_retry");
+        try
+        {
+            foreach (var c in cases)
+            {
+                File.WriteAllText(c.Path, c.MergedJson);                       // 병합/복원이 디스크에 커밋됨
+                using (ReadLock(c.Path))
+                {
+                    Assert.False(await c.Hub.ReloadFromDiskAsync());            // 일시 잠금 → 재적재 실패
+                    Assert.True(c.Hub.HasUnappliedDiskUpdate, c.Name + ": fence armed");
+                }
+                await c.Write();                                                // 잠금 해제 후 기록 → 디스크 재적재 먼저
+                Assert.False(c.Hub.HasUnappliedDiskUpdate, c.Name + ": fence cleared");
+                var disk = File.ReadAllText(c.Path);
+                Assert.True(disk.Contains(c.MergedMarker, StringComparison.Ordinal), c.Name + ": merged data survived → " + disk);
+                Assert.True(disk.Contains(c.NewMarker, StringComparison.Ordinal), c.Name + ": new write applied on top of merge → " + disk);
+            }
+        }
+        finally { foreach (var d in owned) d.Dispose(); }
+    }
+
+    [Fact]
+    public async Task WriteFence_DiskStillLocked_AbortsOverwrite_MergedFileIntact_ThenSelfHeals()
+    {
+        var (cases, st, owned) = await FenceHubsAsync("fence_abort");
+        try
+        {
+            foreach (var c in cases)
+            {
+                File.WriteAllText(c.Path, c.MergedJson);
+                var writesBefore = st.Writes;
+                using (ReadLock(c.Path))
+                {
+                    Assert.False(await c.Hub.ReloadFromDiskAsync());
+                    Assert.True(c.Hub.HasUnappliedDiskUpdate, c.Name + ": fence armed");
+                    await c.Write();                                            // 여전히 잠김 → 재적재 재시도 실패 → 덮어쓰기 포기(예외 없음)
+                    Assert.True(c.Hub.HasUnappliedDiskUpdate, c.Name + ": fence still armed");
+                }
+                Assert.Equal(c.MergedJson, File.ReadAllText(c.Path));          // 제자리 기록이 가능했는데도 병합본 그대로
+                Assert.Equal(writesBefore, st.Writes);                           // 저장소 기록 자체가 없었다
+
+                await c.Write();                                                // 잠금 해제 → 자가 치유: 병합본 위에 새 기록
+                Assert.False(c.Hub.HasUnappliedDiskUpdate, c.Name + ": fence cleared");
+                Assert.True(File.ReadAllText(c.Path).Contains(c.MergedMarker, StringComparison.Ordinal), c.Name + ": merged data survived");
+            }
+        }
+        finally { foreach (var d in owned) d.Dispose(); }
+    }
+
     private static string RepoRoot()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);

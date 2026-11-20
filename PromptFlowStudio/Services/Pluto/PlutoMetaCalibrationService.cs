@@ -157,6 +157,7 @@ public sealed class PlutoMetaCalibrationService : IPlutoMetaCalibrationService, 
     private int _totalRecords;
     private volatile bool _loaded;
     private volatile bool _readOnly;
+    private volatile bool _hasUnappliedDiskUpdate;   // 🚧 Step 21 — 잠긴 재적재 이후 기록 펜스(_gate 안에서만 전환)
     private volatile bool _recoveredFromBackup;
     private int _healedSessions;
     private readonly List<(PlutoCalibrationObservation Obs, DateTime Utc)> _readOnlyPending = new();
@@ -315,6 +316,7 @@ public sealed class PlutoMetaCalibrationService : IPlutoMetaCalibrationService, 
 
     private async Task EnsureLoadedLockedAsync(CancellationToken ct)
     {
+        if (_hasUnappliedDiskUpdate) { await ReloadCoreAsync(ct).ConfigureAwait(false); if (_loaded) return; }   // 🚧 변경 적용 전 병합본 재적재
         if (_loaded) return;
         var (data, status) = await LoadSnapshotAsync(ct).ConfigureAwait(false);
         _readOnly = status == PlutoLoadStatus.Unreadable;
@@ -339,7 +341,22 @@ public sealed class PlutoMetaCalibrationService : IPlutoMetaCalibrationService, 
         {
             if (_readOnly) return false;
             PlutoHotReload.PromotePending(_storage, FileName);
+            if (!await ReloadCoreAsync(ct).ConfigureAwait(false)) return false;
+        }
+        finally { _gate.Release(); }
+        RaiseChanged();
+        return true;
+    }
+
+    /// <summary>🚧 Step 21 재적재 대기 기록 펜스(잠긴 재적재 이후 낡은 메모리 덮어쓰기 차단).</summary>
+    public bool HasUnappliedDiskUpdate => _hasUnappliedDiskUpdate;
+
+    /// <summary>♻️ 재적재 본체(호출자가 <see cref="_gate"/> 보유) — 잠김 → 펜스 설정 · 디스크 읽힘(정상/손상/부재) → 펜스 해제 · 성공 → <c>.bak</c> 갱신.</summary>
+    private async Task<bool> ReloadCoreAsync(CancellationToken ct)
+    {
+        {
             var (data, status) = await PlutoJsonStore.TryLoadAsync<Snapshot>(StoragePath, "Pluto.MetaCalibration.Reload", ct).ConfigureAwait(false);
+            _hasUnappliedDiskUpdate = status == PlutoLoadStatus.Unreadable;
             if (status != PlutoLoadStatus.Ok || data is null) return false;
             string json;
             lock (_sync)
@@ -355,8 +372,6 @@ public sealed class PlutoMetaCalibrationService : IPlutoMetaCalibrationService, 
             if (_storage is not null) await _storage.WriteAllTextAtomicAsync(FileName + BackupSuffix, json, CancellationToken.None).ConfigureAwait(false);
             else await PlutoJsonStore.WriteAtomicAsync(_path + BackupSuffix, json, "Pluto.MetaCalibration.Backup", CancellationToken.None).ConfigureAwait(false);
         }
-        finally { _gate.Release(); }
-        RaiseChanged();
         return true;
     }
 
@@ -464,7 +479,9 @@ public sealed class PlutoMetaCalibrationService : IPlutoMetaCalibrationService, 
                 }
             }
             if (json is null) return GetStatus();   // 보정 근거도 · 소거할 회복 사전도 없음 → 무변경
-            if (!_readOnly)
+            if (!_readOnly && _hasUnappliedDiskUpdate)   // 🚧 펜스 — 적용 전 재적재도 실패(여전히 잠김) → 병합본 덮어쓰기 포기([부분 구제] 메모리 유지)
+                System.Diagnostics.Debug.WriteLine("[Pluto.MetaCalibration] save aborted — write fence");
+            else if (!_readOnly)
             {
                 // 호출자 취소가 기록 도중 끼어들어도 상태는 이미 메모리에 반영됨 → 영속은 끝까지 수행
                 // 🛡️ 본 파일 기록 성공 뒤에만 마지막 정상본(.bak) 갱신 — 본 파일이 깨져도 직전 정상 상태가 남는다
