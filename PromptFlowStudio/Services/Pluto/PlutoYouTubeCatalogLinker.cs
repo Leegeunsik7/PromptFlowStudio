@@ -148,6 +148,7 @@ public sealed class PlutoYouTubeCatalogLinker
             if (c.YouTubeVideoId is not null) continue;   // 이미 다른 영상에 연결됨
             if (excludedClipIds is not null && excludedClipIds.Contains(c.VideoId)) continue;
             if (!InPublishWindow(c.RenderedAtUtc, published)) continue;
+            if (EpisodeConflict(row.Title, c)) continue;   // 🛡️ Step 24 — 편 번호가 카탈로그 RenderMode(시리즈 n/N편)에만 있는 경우
             var sim = TitleSimilarity(row.Title, c.Title);
             if (sim < MinFuzzyScore) continue;
             var days = Math.Max(0.0, (published - c.RenderedAtUtc).TotalDays);
@@ -158,6 +159,58 @@ public sealed class PlutoYouTubeCatalogLinker
         if (best is null) return (null, 0, "유사 제목/게시 창 후보 없음");
         if (second > 0 && bestScore - second < AmbiguityMargin) return (null, bestScore, "모호(후보 2개 이상)");
         return (best, bestScore, null);
+    }
+
+    /// <summary>
+    /// 🎬 Step 24 — 카탈로그 클립의 편 번호. 제목의 편 표기가 우선이고, 없으면 RenderMode(<c>시리즈 2/3편</c>)에서 읽는다(시리즈 아님 → 0).
+    /// 시리즈 편의 카탈로그 제목은 편 제목만 담으므로, RenderMode를 보지 않으면 같은 시리즈의 다른 편이 편 가드를 통과한다.
+    /// </summary>
+    public static int CatalogEpisode(PlutoRenderedClipRecord clip)
+    {
+        ArgumentNullException.ThrowIfNull(clip);
+        var e = ExtractEpisode(clip.Title);
+        if (e > 0) return e;
+        return PlutoSeriesArcMemoryService.TryParseEpisodeMode(clip.RenderMode, out var n, out _) ? n : 0;
+    }
+
+    /// <summary>YouTube 제목의 편 번호와 카탈로그 편 번호가 둘 다 있고 서로 다르면 true.</summary>
+    public static bool EpisodeConflict(string? youTubeTitle, PlutoRenderedClipRecord clip)
+    {
+        var a = ExtractEpisode(youTubeTitle);
+        if (a <= 0) return false;
+        var b = CatalogEpisode(clip);
+        return b > 0 && a != b;
+    }
+
+    /// <summary>
+    /// 📌 Step 24 — 미매칭 행 수동 페어링 후보(순수 · 결정론). 아직 YouTube ID가 없는 클립만, 편 충돌 제외.
+    /// 점수 = 제목 유사도 + 게시 창 안이면 0.1 + 근접도 최대 0.05. 유사도가 0이어도 게시 전 렌더 클립은 최근순 후보로 남긴다
+    /// (YouTube에서 제목을 완전히 바꾼 경우). 같은 점수는 최근 렌더 우선.
+    /// </summary>
+    public static IReadOnlyList<(PlutoRenderedClipRecord Clip, double Score)> RankPairSuggestions(YouTubeAnalyticsRow row, IReadOnlyList<PlutoRenderedClipRecord> clips, int maxCount = 3)
+    {
+        ArgumentNullException.ThrowIfNull(row);
+        ArgumentNullException.ThrowIfNull(clips);
+        var list = new List<(PlutoRenderedClipRecord Clip, double Score, int Order)>();
+        for (var i = 0; i < clips.Count; i++)
+        {
+            var c = clips[i];
+            if (c.YouTubeVideoId is not null || EpisodeConflict(row.Title, c)) continue;
+            var sim = TitleSimilarity(row.Title, c.Title);
+            var score = sim;
+            if (row.PublishedAtUtc is { } p)
+            {
+                if (InPublishWindow(c.RenderedAtUtc, p))
+                    score += 0.1 + 0.05 * (1.0 - Math.Min(1.0, Math.Max(0.0, (p - c.RenderedAtUtc).TotalDays) / PublishWindowDays));
+                else if ((p - c.RenderedAtUtc).TotalHours < -PublishSkewToleranceHours) continue;   // 게시보다 나중에 렌더된 클립은 원본일 수 없음
+            }
+            list.Add((c, score, i));
+        }
+        list.Sort(static (x, y) => { var d = y.Score.CompareTo(x.Score); return d != 0 ? d : x.Order.CompareTo(y.Order); });
+        var n = Math.Min(Math.Max(0, maxCount), list.Count);
+        var result = new (PlutoRenderedClipRecord Clip, double Score)[n];
+        for (var i = 0; i < n; i++) result[i] = (list[i].Clip, list[i].Score);
+        return result;
     }
 
     /// <summary>

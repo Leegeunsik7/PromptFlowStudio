@@ -22,6 +22,9 @@ public sealed record PlutoTelemetryBatchImportResult(int TotalRows, int MatchedA
     /// <summary>📺 Step 22 — 이번 반영에서 카탈로그에 새로 영속한 YouTube ID 연결 수.</summary>
     public int NewlyLinkedCount { get; init; }
 
+    /// <summary>📌 Step 24 — 페어링 대기열에 새로 보존(또는 더 성숙한 스냅샷으로 갱신)한 미매칭 행 수.</summary>
+    public int QueuedUnmatchedCount { get; init; }
+
     /// <summary>📊 YouTube Studio 보고서 경로로 처리됨.</summary>
     public bool IsYouTubeStudioReport { get; init; }
 
@@ -38,6 +41,7 @@ public sealed record PlutoTelemetryBatchImportResult(int TotalRows, int MatchedA
             if (AlreadyRegisteredCount > 0) s += " · ⏭ 기반영 " + AlreadyRegisteredCount.ToString(CultureInfo.InvariantCulture) + "건";
             if (MaturityDeltaCount > 0) s += " · 📈 성숙 증분 " + MaturityDeltaCount.ToString(CultureInfo.InvariantCulture) + "건";
             if (NewlyLinkedCount > 0) s += " · 📺 새 연결 " + NewlyLinkedCount.ToString(CultureInfo.InvariantCulture) + "건";
+            if (QueuedUnmatchedCount > 0) s += " · 📌 페어링 대기 " + QueuedUnmatchedCount.ToString(CultureInfo.InvariantCulture) + "건";
             if (SkippedNoiseCount > 0) s += " · 🔇 저조회 노이즈 " + SkippedNoiseCount.ToString(CultureInfo.InvariantCulture) + "건 제외";
             if (MistakeGuardsTriggered > 0) s += " · 🛡️ 오답 가드 " + MistakeGuardsTriggered.ToString(CultureInfo.InvariantCulture) + "건 발동";
             return s;
@@ -76,11 +80,14 @@ public sealed class PlutoTelemetryBatchImporter : IPlutoTelemetryBatchImporter
 
     private readonly IPlutoRenderCatalogService _catalog;
     private readonly IPlutoClosedLoopReinforcementService _loop;
+    private readonly IPlutoYouTubeUnmatchedQueueService? _unmatchedQueue;
 
-    public PlutoTelemetryBatchImporter(IPlutoRenderCatalogService catalog, IPlutoClosedLoopReinforcementService loop)
+    /// <param name="unmatchedQueue">📌 Step 24 — 미매칭 YouTube 행 보존 대기열(null → 기존 동작: 보고만).</param>
+    public PlutoTelemetryBatchImporter(IPlutoRenderCatalogService catalog, IPlutoClosedLoopReinforcementService loop, IPlutoYouTubeUnmatchedQueueService? unmatchedQueue = null)
     {
         _catalog = catalog ?? throw new ArgumentNullException(nameof(catalog));
         _loop = loop ?? throw new ArgumentNullException(nameof(loop));
+        _unmatchedQueue = unmatchedQueue;
     }
 
     /// <summary>파싱된 성과 행(Hook 미제공 → 완주율 기반 보수 추정 · <see cref="HookEstimated"/>).</summary>
@@ -306,7 +313,7 @@ public sealed class PlutoTelemetryBatchImporter : IPlutoTelemetryBatchImporter
         return new PlutoTelemetryBatchImportResult(learned + dup + unmatched.Count, learned, unmatched.Count, guards, unmatched.ToArray()) { AlreadyRegisteredCount = dup };
     }
 
-    private static PlutoVideoPerformanceTelemetry BuildTelemetry(PlutoRenderedClipRecord clip, string plat, double hook, double completion, double ctr)
+    public static PlutoVideoPerformanceTelemetry BuildTelemetry(PlutoRenderedClipRecord clip, string plat, double hook, double completion, double ctr)
         => new(clip.VideoId, plat, clip.HookStyle, clip.ColorLookId, clip.BgmMood, clip.Tags, hook, completion, ctr, DateTimeOffset.UtcNow)
         {
             Domain = PromptDomainClassifier.Classify(clip.Title + " " + clip.HookStyle).ToString(),   // 🧭 domain_hook 상호작용 키
@@ -343,6 +350,8 @@ public sealed class PlutoTelemetryBatchImporter : IPlutoTelemetryBatchImporter
         var unmatched = new List<string>(report.InvalidRows);
         int learned = 0, guards = 0, dup = 0, matured = 0, linked = 0;
         var links = await new PlutoYouTubeCatalogLinker(_catalog).LinkAsync(report.Rows, ct).ConfigureAwait(false);
+        List<PlutoUnmatchedYouTubeRow>? toQueue = null;
+        List<string>? linkedIds = null;
 
         for (var i = 0; i < report.Rows.Count; i++)
         {
@@ -350,28 +359,23 @@ public sealed class PlutoTelemetryBatchImporter : IPlutoTelemetryBatchImporter
             var row = report.Rows[i];
             var link = links[i];
             var label = row.YouTubeVideoId ?? row.Title ?? "?";
-            if (link.Clip is not { } clip) { unmatched.Add(label + (link.Reason is { } why ? " (" + why + ")" : "")); continue; }
+            if (link.Clip is not { } clip)
+            {
+                unmatched.Add(label + (link.Reason is { } why ? " (" + why + ")" : ""));
+                // 📌 Step 24 — 페어링 가능한 행(YouTube ID · 제목)은 텔레메트리를 버리지 않고 대기열에 보존
+                if (_unmatchedQueue is not null && row.YouTubeVideoId is not null && !string.IsNullOrWhiteSpace(row.Title))
+                    (toQueue ??= new List<PlutoUnmatchedYouTubeRow>()).Add(new PlutoUnmatchedYouTubeRow(row, link.Reason, report.SourceEntryName, DateTimeOffset.UtcNow));
+                continue;
+            }
             if (link.NewlyBound) linked++;
+            if (_unmatchedQueue is not null && clip.YouTubeVideoId is { } boundYt) (linkedIds ??= new List<string>()).Add(boundYt);
             try
             {
-                var telemetry = BuildTelemetry(clip, plat, row.Hook3sRetention, row.CompletionRate, row.Ctr);
-                var now = DateTimeOffset.UtcNow;
-                if (clip.YouTubeWatermark is not { } wm)
-                {
-                    var outcome = await _loop.IngestPerformanceAsync(telemetry, ct).ConfigureAwait(false);
-                    if (outcome.AlreadyRegistered) dup++;   // 수동/압축 CSV로 이미 반영 → 이 스냅샷을 성숙도 기준점(0단계)으로 채택
-                    else { learned++; if (outcome.GuardActivated) guards++; }
-                    await _catalog.MarkTelemetryLoggedAsync(clip.VideoId, ct).ConfigureAwait(false);
-                    await _catalog.UpdateYouTubeWatermarkAsync(clip.VideoId, new PlutoYouTubeIngestWatermark(row.Views, 0, row.Hook3sRetention, row.CompletionRate, row.Ctr, now), ct).ConfigureAwait(false);
-                    continue;
-                }
-                var nextStage = wm.Stage + 1;
-                if (!IsMaterialMaturity(wm.Views, row.Views) || nextStage > PlutoClosedLoopReinforcementService.MaxMaturityStages) { dup++; continue; }   // ⏭ 같은/덜 성숙한 스냅샷 → 0건 강화
-                var previous = BuildTelemetry(clip, plat, wm.HookPct, wm.CompletionPct, wm.CtrPct);
-                var delta = await _loop.IngestMaturityDeltaAsync(telemetry, previous, nextStage, PlutoClosedLoopReinforcementService.MaturityWeightForStage(nextStage), ct).ConfigureAwait(false);
-                if (delta.AlreadyRegistered) dup++;
-                else { matured++; if (delta.GuardActivated) guards++; }
-                await _catalog.UpdateYouTubeWatermarkAsync(clip.VideoId, new PlutoYouTubeIngestWatermark(row.Views, nextStage, row.Hook3sRetention, row.CompletionRate, row.Ctr, now), ct).ConfigureAwait(false);
+                var applied = await ApplyYouTubeRowAsync(_catalog, _loop, clip, row, plat, ct).ConfigureAwait(false);
+                if (applied.Kind == PlutoYouTubeRowApplyKind.Learned) learned++;
+                else if (applied.Kind == PlutoYouTubeRowApplyKind.Matured) matured++;
+                else dup++;
+                if (applied.GuardActivated) guards++;
             }
             catch (OperationCanceledException) { throw; }
             catch (Exception ex)
@@ -381,14 +385,61 @@ public sealed class PlutoTelemetryBatchImporter : IPlutoTelemetryBatchImporter
             }
         }
 
+        var queued = 0;
+        if (_unmatchedQueue is not null)
+        {
+            try
+            {
+                if (linkedIds is not null) await _unmatchedQueue.ResolveLinkedAsync(linkedIds, ct).ConfigureAwait(false);   // 🧹 이번 내보내기에서 연결된 ID → 대기열 정리
+                if (toQueue is not null) queued = await _unmatchedQueue.EnqueueAsync(toQueue, ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.BatchImport] unmatched queue: " + ex.Message); }   // [부분 구제] 학습 결과는 유지
+        }
+
         return new PlutoTelemetryBatchImportResult(learned + matured + dup + unmatched.Count, learned, unmatched.Count, guards, unmatched.ToArray())
         {
             AlreadyRegisteredCount = dup,
             MaturityDeltaCount = matured,
             SkippedNoiseCount = report.SkippedNoiseCount,
             NewlyLinkedCount = linked,
+            QueuedUnmatchedCount = queued,
             IsYouTubeStudioReport = true,
             SourceName = report.SourceEntryName,
         };
+    }
+
+    /// <summary>
+    /// 📊 연결된 YouTube 행 1개 반영(자동 연결 · Step 24 수동 페어링 공용). 워터마크 없음 → 최초 학습(기반영이면 기준점 채택) ·
+    /// 있으면 실질 성숙일 때만 성숙 증분 · 그 밖은 0건 강화(멱등). 취소 · 서비스 예외는 호출자에게 전파.
+    /// </summary>
+    public static async Task<PlutoYouTubeRowApplyResult> ApplyYouTubeRowAsync(IPlutoRenderCatalogService catalog, IPlutoClosedLoopReinforcementService loop,
+        PlutoRenderedClipRecord clip, YouTubeAnalyticsRow row, string plat, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(catalog);
+        ArgumentNullException.ThrowIfNull(loop);
+        ArgumentNullException.ThrowIfNull(clip);
+        ArgumentNullException.ThrowIfNull(row);
+        var telemetry = BuildTelemetry(clip, plat, row.Hook3sRetention, row.CompletionRate, row.Ctr);
+        var now = DateTimeOffset.UtcNow;
+        if (clip.YouTubeWatermark is not { } wm)
+        {
+            var outcome = await loop.IngestPerformanceAsync(telemetry, ct).ConfigureAwait(false);
+            await catalog.MarkTelemetryLoggedAsync(clip.VideoId, ct).ConfigureAwait(false);
+            await catalog.UpdateYouTubeWatermarkAsync(clip.VideoId, new PlutoYouTubeIngestWatermark(row.Views, 0, row.Hook3sRetention, row.CompletionRate, row.Ctr, now), ct).ConfigureAwait(false);
+            // 수동/압축 CSV로 이미 반영 → 이 스냅샷을 성숙도 기준점(0단계)으로 채택
+            return outcome.AlreadyRegistered
+                ? new PlutoYouTubeRowApplyResult(PlutoYouTubeRowApplyKind.AlreadyRegistered, false, outcome)
+                : new PlutoYouTubeRowApplyResult(PlutoYouTubeRowApplyKind.Learned, outcome.GuardActivated, outcome);
+        }
+        var nextStage = wm.Stage + 1;
+        if (!IsMaterialMaturity(wm.Views, row.Views) || nextStage > PlutoClosedLoopReinforcementService.MaxMaturityStages)
+            return new PlutoYouTubeRowApplyResult(PlutoYouTubeRowApplyKind.AlreadyRegistered, false, null);   // ⏭ 같은/덜 성숙한 스냅샷 → 0건 강화
+        var previous = BuildTelemetry(clip, plat, wm.HookPct, wm.CompletionPct, wm.CtrPct);
+        var delta = await loop.IngestMaturityDeltaAsync(telemetry, previous, nextStage, PlutoClosedLoopReinforcementService.MaturityWeightForStage(nextStage), ct).ConfigureAwait(false);
+        await catalog.UpdateYouTubeWatermarkAsync(clip.VideoId, new PlutoYouTubeIngestWatermark(row.Views, nextStage, row.Hook3sRetention, row.CompletionRate, row.Ctr, now), ct).ConfigureAwait(false);
+        return delta.AlreadyRegistered
+            ? new PlutoYouTubeRowApplyResult(PlutoYouTubeRowApplyKind.AlreadyRegistered, false, delta)
+            : new PlutoYouTubeRowApplyResult(PlutoYouTubeRowApplyKind.Matured, delta.GuardActivated, delta);
     }
 }

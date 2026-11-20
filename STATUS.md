@@ -1,18 +1,15 @@
 # Current Project Status
-- Active Milestone: ✅ Step 23 — Downloads 자동 감시 · 디바운스 수집 · SHA-256 영속 중복 차단 · Workspace 실시간 토스트 완료
+- Active Milestone: ✅ Step 24 — 미매칭 YouTube 행 원클릭 페어링 · 게시 전 업로드 패키지(A/B 제목) · 감시 장부 유계 정리 완료
 - Build: ✅ Desktop Release `-warnaserror` 0W/0E · ✅ Tests Release 0W/0E · ⚠ Mobile net8.0-ios — `ios` 워크로드 미설치(미검증)
-- Tests: ✅ 1277/1277 — 전체 단일 실행 통과(19분 1초 · 종료 코드 0 · 기존 1269 + Step 23 8)
-- Updated: 2026-11-20 (KST) · 기준 `4cc8eda`
+- Tests: ✅ 1285/1285 — 전체 단일 실행 통과(14분 7초 · 종료 코드 0 · Step 24 신규 `PlutoUnmatchedPairingAndPublishPackTests.cs` 7건)
+- Updated: 2026-11-21 (KST) · 기준 `467d028`
 
-## Completed — Step 23
-- 📥 `YouTubeDownloadsAutoWatcherService` — FileSystemWatcher(Created/Renamed/Changed) + 60초 재조정 스윕 이중 탐지 · DI 데스크톱/모바일 Singleton
-- ⏳ 준비 게이트 — `.crdownload/.part/.tmp`·숨김·0바이트 제외 · 파일별 디바운스 1.3초 · 크기/mtime 안정 · `FileShare.Read` 유계 재시도
-- 🔇 비 YouTube 무시 — 이름 서명 또는 CSV 헤더 스키마 엿보기(ZIP은 이름 필수) · 무소음 거부 장부
-- ♻️ SHA-256 장부 — `AppDataPaths/PromptFlowStudio/Pluto/downloads_watcher.json` 원자적 교체 · 4096 유계 · 재시작 후 재수집/재토스트 0 · 새 해시 → Step 22 성숙 증분
-- 🔒 격리 — `PROMPTFLOW_PLUTO_DRIVE=off` · `PROMPTFLOW_DISABLE_DOWNLOADS_WATCHER=1` → 실 Downloads 경로 미해석·미기동(명시 폴더만 허용)
-- 🖥️ Workspace — [👁️ 다운로드 자동 감시 ON/OFF] 토글(영속 · 기본 ON) · `📥 유튜브 자동 수집 완료: 신규 N건 · 성숙 보정 M건 (파일명)` · 두뇌 리포트/추천 즉시 갱신 · 0건 학습 토스트 생략
-- 🧠 자체 추가 — ① FSW 버퍼 오버플로 → 즉시 재스캔 · 기타 오류 → 감시기 재구성 ② 수동 가져오기·이벤트·스윕 단일 게이트 + in-flight 해시 + 게이트 내 재확인(이중 반영/재토스트 차단) ③ 구독자별 예외 격리 + 회로 폐기 안전 `SafeUiUpdate` ④ 일시 실패 3회 후 격리(스윕 재시도 폭주 차단)
-- 🧪 `PlutoDownloadsAutoWatcherTests.cs` 8건
+## Completed — Step 24
+- 📌 `PlutoYouTubeUnmatchedQueueService` — 미매칭 행 텔레메트리 보존(`pluto_youtube_unmatched.json` · 50건 · YouTube ID 중복 제거 · 더 성숙한 스냅샷 우선) · 원클릭 `PairAsync` → ID 1:1 영속 → 폐루프 반영 → 대기열 제거
+- 📋 `PlutoYouTubePublishPackService` — A/B 제목(`n/N편` 보존 · 100자 · 토큰 비절단) · 훅 정렬 설명 · 고정 댓글 CTA · 파레토 해시태그(≤8 · `#shorts`) · 오답 노트 차단 제외 · 아크 메모리 에스컬레이션 훅
+- 🧹 `YouTubeDownloadsAutoWatcherService` — 장부 v2(`{h,t,q}` · v1 이관) · 500건 LRU + 90일 TTL · `ClearQuarantinedAsync` · `PruneLedgerAsync` · `GetHealth`
+- 🖥️ Workspace — 연결 대기 행 + 후보 🔗 버튼 · ✕ 무시 · [📋 업로드 패키지 생성/복사] · [🧯 격리 해제] · DI 데스크톱/모바일 Singleton
+- 🧠 자체 추가 — ① 편 가드가 카탈로그 RenderMode(`시리즈 n/N편`)까지 확인(형제 편 오연결 차단) ② 업로드 제목 연결성 자가 검사(훅이 유사도 희석 시 안전 제목 복귀) ③ 대기열 정합성(기연결 ID 미보존 · 선점 충돌 정리 · 학습 실패 시 보존 후 멱등 재시도) ④ TTL 하한 = 스윕 최대 경과+1일 · 실패 카운터/판정 서명 메모리 유계
 
 ## Notes
 - ⚠️ `.git` 은 `D:\Program` — `--git-dir=D:\Program\.git --work-tree=D:\Program\PromptFlowStudio` 필요

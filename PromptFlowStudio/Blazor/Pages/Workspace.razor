@@ -369,11 +369,42 @@
                         <button class="ws-back" data-yt-studio-downloads="1" @onclick="ImportNewestStudioDownloadAsync" disabled="@(_batchBusy || _perfBusy)" title="다운로드 폴더에서 가장 최근 YouTube Studio 내보내기(.zip/.csv)를 찾아 바로 학습">[📂 다운로드 폴더 최신 내보내기 학습]</button>
                         @if (_ytWatcher is not null)
                         {
-                            <button class="@(_ytWatchOn ? "ws-pcore on" : "ws-back")" data-yt-autowatch="@(_ytWatchOn ? "on" : "off")" @onclick="ToggleYouTubeAutoWatchAsync" aria-pressed="@(_ytWatchOn ? "true" : "false")" title="다운로드 폴더에 새로 저장되는 YouTube Studio 내보내기(.csv/.zip)를 자동 감지 → 받는 중 파일 대기 · 같은 파일(SHA-256) 재학습 차단 · 무관한 파일은 조용히 무시">@(_ytWatchOn ? "[👁️ 다운로드 자동 감시 ON]" : "[👁️ 다운로드 자동 감시 OFF]")</button>
+                            <button class="@(_ytWatchOn ? "ws-pcore on" : "ws-back")" data-yt-autowatch="@(_ytWatchOn ? "on" : "off")" @onclick="ToggleYouTubeAutoWatchAsync" aria-pressed="@(_ytWatchOn ? "true" : "false")" title="다운로드 폴더에 새로 저장되는 YouTube Studio 내보내기(.csv/.zip)를 자동 감지 → 받는 중 파일 대기 · 같은 파일(SHA-256) 재학습 차단 · 무관한 파일은 조용히 무시@(_ytWatchHealth is { } wht ? " — " + wht.StatusKorean : "")">@(_ytWatchOn ? "[👁️ 다운로드 자동 감시 ON]" : "[👁️ 다운로드 자동 감시 OFF]")</button>
+                            @if (_ytWatchHealth is { QuarantinedCount: > 0 } whq)
+                            {
+                                <button class="ws-back" data-yt-quarantine="@(whq.QuarantinedCount.ToString(CultureInfo.InvariantCulture))" @onclick="ClearYouTubeQuarantineAsync" title="@(whq.LastError ?? "형식 오류 · 반복 실패로 격리된 내보내기")">[🧯 격리 @(whq.QuarantinedCount.ToString(CultureInfo.InvariantCulture))건 해제 · 다시 시도]</button>
+                            }
                         }
                     }
                     @if (_batchToast is { } btt) { <span class="ws-retry" role="status" data-batch-toast="1">@(btt)</span> }
                     @if (_ytAutoToast is { } yat) { <span class="ws-pcore on" role="status" aria-live="polite" data-yt-auto-toast="1">@(yat)</span> }
+                    @if (_ytUnmatched.Count > 0)
+                    {
+                        <div data-yt-unmatched="@(_ytUnmatched.Count.ToString(CultureInfo.InvariantCulture))" style="display:flex;flex-direction:column;gap:4px;width:100%">
+                            <span class="ws-retry" title="자동 연결에 실패한 YouTube 영상(제목 수정 · 늦은 게시) — 렌더 영상을 골라 한 번에 연결하면 성과가 바로 학습됩니다">📌 연결 대기 YouTube @(_ytUnmatched.Count.ToString(CultureInfo.InvariantCulture))건</span>
+                            @foreach (var ur in _ytUnmatched)
+                            {
+                                <div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center">
+                                    <span class="ws-retry" data-yt-unmatched-row="@(ur.YouTubeVideoId)" title="@(ur.Reason ?? "")">@(ur.Title) · 조회 @(ur.Row.Views.ToString(CultureInfo.InvariantCulture))</span>
+                                    @if (_ytPairSuggestions.TryGetValue(ur.YouTubeVideoId, out var sugs))
+                                    {
+                                        @foreach (var sg in sugs)
+                                        {
+                                            <button class="ws-back" data-yt-pair="@(sg.Clip.VideoId)" @onclick="() => PairYouTubeRowAsync(ur.YouTubeVideoId, sg.Clip.VideoId)" disabled="@(_ytPairBusy)" title="@(sg.Clip.RenderMode) · @(sg.Clip.RenderedAtUtc.ToLocalTime().ToString("MM-dd HH:mm", CultureInfo.InvariantCulture))">🔗 @(string.IsNullOrWhiteSpace(sg.Clip.Title) ? sg.Clip.VideoId : sg.Clip.Title)</button>
+                                        }
+                                    }
+                                    <button class="ws-back" data-yt-dismiss="@(ur.YouTubeVideoId)" @onclick="() => DismissYouTubeRowAsync(ur.YouTubeVideoId)" disabled="@(_ytPairBusy)" title="이 채널 영상이 아님 · 무시">✕</button>
+                                </div>
+                            }
+                        </div>
+                    }
+                    @if (_ytPairToast is { } ypt) { <span class="ws-pcore on" role="status" data-yt-pair-toast="1">@(ypt)</span> }
+                    <button class="ws-back" data-publish-pack="1" @onclick="GeneratePublishPackAsync" disabled="@(_publishPackBusy || (_catalogClips.Count == 0 && string.IsNullOrWhiteSpace(_perfVideoId)))" title="활성 렌더의 주제 · n/N편 · 승리 훅/태그 · 시리즈 연속성 · 오답 노트 기준으로 A/B 제목 · 설명 · 고정 댓글 · 해시태그를 만들어 복사 — 편 표기를 지켜 게시 후 내보내기가 자동 연결됩니다">[📋 업로드 패키지 생성/복사]</button>
+                    @if (_publishPack is { } ppk)
+                    {
+                        <span class="ws-retry" role="status" data-publish-pack-result="@(ppk.TitleA.AutoLinkable && ppk.TitleB.AutoLinkable ? "linkable" : "weak")" style="white-space:pre-wrap">@(_publishPackToast) — @(ppk.SummaryKorean)</span>
+                    }
+                    else if (_publishPackToast is { } ppt) { <span class="ws-retry" role="status" data-publish-pack-result="error">@(ppt)</span> }
                 </div>
             }
             @if (_montageBusy) { <span class="ws-retry" role="status" data-montage-busy="1"><span class="ws-motion-spin" aria-hidden="true"></span> 🎞️ 몽타주 렌더 중… (@(_montagePhotos.Count.ToString(CultureInfo.InvariantCulture))컷 · 15초 · 60fps)</span> }
@@ -4619,6 +4650,7 @@
             _ytWatcher.StateChanged += OnYouTubeWatchStateChanged;
             _ytWatchOn = _ytWatcher.IsEnabled;
             if (_ytWatchOn) _ytWatcher.Start();   // 멱등 · 격리 env(PROMPTFLOW_PLUTO_DRIVE=off 등) → 미기동
+            _ = PruneYouTubeLedgerAsync(_ytWatcher);        // 🧹 Step 24 장부 TTL/상한 정리 영속
         }
         catch (Exception ex) { Program.Log("Workspace.YouTubeAutoWatchAttach", ex); }
     }
@@ -4635,7 +4667,149 @@
     private void OnYouTubeWatchStateChanged()
     {
         if (_disposed) return;
-        SafeUiUpdate(() => { if (_ytWatcher is { } w) _ytWatchOn = w.IsEnabled; return Task.CompletedTask; }, "Workspace.YouTubeAutoWatchState");
+        SafeUiUpdate(() => { if (_ytWatcher is { } w) { _ytWatchOn = w.IsEnabled; _ytWatchHealth = w.GetHealth(); } return Task.CompletedTask; }, "Workspace.YouTubeAutoWatchState");
+    }
+
+    // ── 🧯 Step 24 — 감시기 상태 · 격리 해제 ──
+    private async Task PruneYouTubeLedgerAsync(PromptFlowStudio.Services.Pluto.IYouTubeDownloadsAutoWatcherService w)
+    {
+        try { await w.PruneLedgerAsync(_mediaCts.Token); }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { Program.Log("Workspace.YouTubeLedgerPrune", ex); }
+    }
+
+    private PromptFlowStudio.Services.Pluto.PlutoDownloadsWatcherHealth? _ytWatchHealth;
+
+    private async Task ClearYouTubeQuarantineAsync()
+    {
+        if (_ytWatcher is not { } w) return;
+        try
+        {
+            var n = await w.ClearQuarantinedAsync(_mediaCts.Token);
+            _ytWatchHealth = w.GetHealth();
+            _batchToast = "🧯 격리 " + n.ToString(CultureInfo.InvariantCulture) + "건 해제 — 다음 감시 스윕에서 다시 시도합니다";
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { Program.Log("Workspace.YouTubeQuarantineClear", ex); }
+    }
+
+    // ── 📌 Step 24 — 미매칭 YouTube 행 원클릭 페어링 ──
+    private PromptFlowStudio.Services.Pluto.IPlutoYouTubeUnmatchedQueueService? _ytUnmatchedSvc;
+    private IReadOnlyList<PromptFlowStudio.Services.Pluto.PlutoUnmatchedYouTubeRow> _ytUnmatched = Array.Empty<PromptFlowStudio.Services.Pluto.PlutoUnmatchedYouTubeRow>();
+    private Dictionary<string, IReadOnlyList<PromptFlowStudio.Services.Pluto.PlutoUnmatchedPairSuggestion>> _ytPairSuggestions = new(StringComparer.Ordinal);
+    private bool _ytPairBusy;
+    private string? _ytPairToast;
+    private int _ytUnmatchedGen;
+    private const int YtUnmatchedVisible = 5;
+
+    private void AttachYouTubeUnmatchedQueue()
+    {
+        try
+        {
+            _ytUnmatchedSvc = EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoYouTubeUnmatchedQueueService)) as PromptFlowStudio.Services.Pluto.IPlutoYouTubeUnmatchedQueueService;
+            if (_ytUnmatchedSvc is null) return;
+            _ytUnmatchedSvc.Changed += OnYouTubeUnmatchedChanged;
+            if (_ytWatcher is { } w) _ytWatchHealth = w.GetHealth();
+            _ = RefreshYouTubeUnmatchedAsync();
+        }
+        catch (Exception ex) { Program.Log("Workspace.YouTubeUnmatchedAttach", ex); }
+    }
+
+    private void OnYouTubeUnmatchedChanged()
+    {
+        if (_disposed) return;
+        SafeUiUpdate(RefreshYouTubeUnmatchedAsync, "Workspace.YouTubeUnmatched");
+    }
+
+    /// <summary>📌 대기열 상위 5건 + 행별 후보 2개 재조회(세대 가드 · 예외 전파 금지).</summary>
+    private async Task RefreshYouTubeUnmatchedAsync()
+    {
+        if (_ytUnmatchedSvc is not { } q || _disposed) return;
+        var gen = Interlocked.Increment(ref _ytUnmatchedGen);
+        try
+        {
+            await q.EnsureLoadedAsync(_mediaCts.Token);
+            var rows = q.GetPending(YtUnmatchedVisible);
+            var map = new Dictionary<string, IReadOnlyList<PromptFlowStudio.Services.Pluto.PlutoUnmatchedPairSuggestion>>(StringComparer.Ordinal);
+            foreach (var r in rows) map[r.YouTubeVideoId] = await q.SuggestClipsAsync(r.YouTubeVideoId, 2, _mediaCts.Token);
+            if (gen != Volatile.Read(ref _ytUnmatchedGen) || _disposed) return;
+            _ytUnmatched = rows;
+            _ytPairSuggestions = map;
+        }
+        catch (OperationCanceledException) { return; }
+        catch (Exception ex) { Program.Log("Workspace.YouTubeUnmatchedRefresh", ex); return; }
+        if (_disposed) return;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    /// <summary>📌 [🔗] 1클릭 — YouTube ID 영속 연결 → 폐루프 반영 → 대기열 제거 → 추천/두뇌 리포트 갱신.</summary>
+    private async Task PairYouTubeRowAsync(string youTubeVideoId, string clipVideoId)
+    {
+        if (_ytPairBusy || _ytUnmatchedSvc is not { } q) return;
+        _ytPairBusy = true;
+        try
+        {
+            var r = await q.PairAsync(youTubeVideoId, clipVideoId, _perfPlatform, _mediaCts.Token);
+            _ytPairToast = r.MessageKorean;
+            if (r.Succeeded)
+            {
+                await RefreshCatalogClipsAsync();
+                await RefreshAdaptiveRecommendationAsync();   // 🧠 폐루프 → 순방향 랭킹
+                await RefreshBrainSummaryAsync();
+            }
+            await RefreshYouTubeUnmatchedAsync();
+        }
+        catch (OperationCanceledException) { return; }
+        catch (Exception ex) { Program.Log("Workspace.YouTubePair", ex); _ytPairToast = "⚠ 연결 실패: " + ex.Message; }
+        finally { _ytPairBusy = false; }
+        if (_disposed) return;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task DismissYouTubeRowAsync(string youTubeVideoId)
+    {
+        if (_ytPairBusy || _ytUnmatchedSvc is not { } q) return;
+        try { await q.DismissAsync(youTubeVideoId, _mediaCts.Token); await RefreshYouTubeUnmatchedAsync(); }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { Program.Log("Workspace.YouTubeDismiss", ex); }
+    }
+
+    // ── 📋 Step 24 — 게시 전 업로드 패키지 ──
+    private PromptFlowStudio.Services.Pluto.PlutoYouTubePublishPack? _publishPack;
+    private string? _publishPackToast;
+    private bool _publishPackBusy;
+
+    /// <summary>📋 활성 렌더(성과 입력 영상 ID → 최근 렌더) → A/B 제목 · 설명 · 고정 댓글 · 해시태그 생성 후 클립보드 복사.</summary>
+    private async Task GeneratePublishPackAsync()
+    {
+        if (_publishPackBusy || EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoYouTubePublishPackService)) is not PromptFlowStudio.Services.Pluto.IPlutoYouTubePublishPackService svc) return;
+        _publishPackBusy = true;
+        try
+        {
+            PromptFlowStudio.Services.Pluto.PlutoRenderedClipRecord? clip = null;
+            var vid = _perfVideoId?.Trim() ?? "";
+            foreach (var c in _catalogClips) if (vid.Length > 0 && string.Equals(c.VideoId, vid, StringComparison.OrdinalIgnoreCase)) { clip = c; break; }
+            if (clip is null && _catalogClips.Count > 0 && vid.Length == 0) clip = _catalogClips[0];
+            var title = clip is not null ? (string.IsNullOrWhiteSpace(clip.Title) ? clip.VideoId : clip.Title) : vid;
+            int n = 0, total = 0;
+            if (clip is not null) PromptFlowStudio.Services.Pluto.PlutoSeriesArcMemoryService.TryParseEpisodeMode(clip.RenderMode, out n, out total);
+            var theme = total > 0 && _series is { } ser && ser.Episodes.Count == total && !string.IsNullOrWhiteSpace(ser.SeriesTheme)
+                ? ser.SeriesTheme : PromptFlowStudio.Services.Pluto.PlutoSeriesArcMemoryService.SeriesThemeOf(title);
+            var hook = clip?.HookStyle ?? _perfHookStyle;
+            IReadOnlyList<string> tags = clip?.Tags ?? (string.IsNullOrWhiteSpace(_perfStyleTags) ? Array.Empty<string>() : SplitPerfTags(_perfStyleTags));
+            var req = new PromptFlowStudio.Services.Pluto.PlutoPublishPackRequest(theme, title, n, total, hook, tags) { IsShorts = !string.Equals(_perfPlatform, "Instagram Reels", StringComparison.Ordinal) };
+            var pack = await svc.GenerateAsync(req, _mediaCts.Token);
+            _publishPack = pack;
+            bool copied;
+            try { copied = Clipboard.SetText(pack.ToClipboardText()); }
+            catch (Exception ex) { Program.Log("Workspace.PublishPackCopy", ex); copied = false; }
+            _publishPackToast = copied ? "📋 업로드 패키지가 복사되었습니다" : "⚠ 복사 실패 — 아래 요약을 참고하세요";
+        }
+        catch (OperationCanceledException) { return; }
+        catch (Exception ex) { Program.Log("Workspace.PublishPack", ex); _publishPackToast = "⚠ 업로드 패키지 생성 실패: " + ex.Message; }
+        finally { _publishPackBusy = false; }
+        if (_disposed) return;
+        await InvokeAsync(StateHasChanged);
     }
 
     /// <summary>📥 백그라운드 스레드 → UI. 같은 해시 중복 · 0건 학습은 토스트 생략.</summary>
@@ -4646,6 +4820,7 @@
         {
             _ytAutoToastSha = e.Sha256Hex;
             _ytAutoToast = e.ToastKorean;
+            _ytWatchHealth = _ytWatcher?.GetHealth();
             await RefreshCatalogClipsAsync();
             await RefreshAdaptiveRecommendationAsync();   // 🧠 패턴 추천 즉시 갱신
             await RefreshBrainSummaryAsync();             // 🧠 두뇌 리포트 갱신
@@ -5606,6 +5781,7 @@
         PlutoHarvester.Changed += OnPlutoCoreChanged;   // 🔄 자율 수확 배지
         AttachHotReload();                              // ♻️ 충돌 병합/복원 즉시 반영
         AttachYouTubeAutoWatch();                       // 📥 Step 23 Downloads 자동 감시 토스트
+        AttachYouTubeUnmatchedQueue();                  // 📌 Step 24 미매칭 YouTube 행 페어링
         PlutoCoreMgr.StartMonitoring();   // 🪐 5초 헬스 폴링(싱글톤 · 멱등)
         StockMon.Start();   // 🟢 2초 주기 StockSuite 프로세스 폴링(싱글톤 · 멱등)
         Journal.OnChanged += OnHubChanged;
@@ -5791,6 +5967,7 @@
         PlutoHarvester.Changed -= OnPlutoCoreChanged;
         if (_hotReloadSource is not null) _hotReloadSource.HubReloaded -= OnPlutoHubReloaded;
         if (_ytWatcher is not null) { _ytWatcher.OnExportAutoIngested -= OnYouTubeExportAutoIngested; _ytWatcher.StateChanged -= OnYouTubeWatchStateChanged; }
+        if (_ytUnmatchedSvc is not null) _ytUnmatchedSvc.Changed -= OnYouTubeUnmatchedChanged;
         try { _plutoCoreCts?.Cancel(); } catch (ObjectDisposedException) { }
         Journal.OnChanged -= OnHubChanged;
         Resilience.OnRetryAttempt -= OnRetryAttempt;

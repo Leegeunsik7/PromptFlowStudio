@@ -45,6 +45,32 @@ public sealed class YouTubeDownloadsWatcherOptions
     public string Platform { get; init; } = "YouTube Shorts";
     /// <summary>FileSystemWatcher 사용(false → 스윕 전용 · 모바일/미지원 OS 폴백).</summary>
     public bool UseFileSystemWatcher { get; init; } = true;
+    /// <summary>🧹 Step 24 — 장부(수집 · 거부/격리 각각) 최대 항목 수(초과 → 가장 오래된 것부터 LRU 축출).</summary>
+    public int LedgerMaxEntries { get; init; } = YouTubeDownloadsAutoWatcherService.LedgerCapacity;
+    /// <summary>🧹 Step 24 — 장부 TTL. 실효값은 항상 <see cref="MaxFileAge"/> + 1일 이상(스윕 대상 파일의 해시를 먼저 잊어 재수집하는 일 방지).</summary>
+    public TimeSpan LedgerTtl { get; init; } = TimeSpan.FromDays(90);
+    /// <summary>시계(테스트 주입 · null → UTC 현재).</summary>
+    public Func<DateTimeOffset>? Clock { get; init; }
+}
+
+/// <summary>🩺 Step 24 — 감시기 상태 스냅샷.</summary>
+public sealed record PlutoDownloadsWatcherHealth(bool IsEnabled, bool IsRunning, bool IsIsolationBlocked, string? WatchedDirectory, int IngestedLedgerCount,
+    int IgnoredLedgerCount, int QuarantinedCount, int PendingFailureCount, long PrunedTotal, long IngestedCount, long OverflowRecoveryCount, DateTimeOffset? LastIngestUtc, string? LastError)
+{
+    /// <summary>한국어 1줄.</summary>
+    public string StatusKorean
+    {
+        get
+        {
+            var inv = CultureInfo.InvariantCulture;
+            var s = IsIsolationBlocked ? "🔒 격리(감시 안 함)" : !IsEnabled ? "⏸ 꺼짐" : IsRunning ? "👁️ 감시 중" : "⚠ 폴더 없음/미기동";
+            s += " · 장부 " + IngestedLedgerCount.ToString(inv) + "건";
+            if (QuarantinedCount > 0) s += " · 🧯 격리 " + QuarantinedCount.ToString(inv) + "건";
+            if (PendingFailureCount > 0) s += " · 재시도 대기 " + PendingFailureCount.ToString(inv) + "건";
+            if (LastIngestUtc is { } t) s += " · 최근 수집 " + t.ToLocalTime().ToString("MM-dd HH:mm", inv);
+            return s;
+        }
+    }
 }
 
 /// <summary>📥 Step 23 — Downloads 폴더 YouTube Studio 내보내기 자동 감시 · 디바운스 · SHA-256 중복 차단 · 자동 학습.</summary>
@@ -82,6 +108,15 @@ public interface IYouTubeDownloadsAutoWatcherService : IDisposable, IAsyncDispos
 
     /// <summary>감시기 오류(버퍼 오버플로 등) 처리 — 즉시 전체 재스캔 · 감시기 재구성.</summary>
     void HandleWatcherFault(Exception? error);
+
+    /// <summary>🧯 Step 24 — 격리(형식 오류 · 일시 실패 상한 초과) 해시와 재시도 카운터를 지우고 즉시 재스캔. 반환 = 해제한 격리 수.</summary>
+    Task<int> ClearQuarantinedAsync(CancellationToken ct = default);
+
+    /// <summary>🧹 Step 24 — TTL/상한 장부 정리 후 영속. 반환 = 제거 수.</summary>
+    Task<int> PruneLedgerAsync(CancellationToken ct = default);
+
+    /// <summary>🩺 Step 24 — 상태 스냅샷.</summary>
+    PlutoDownloadsWatcherHealth GetHealth();
 }
 
 /// <summary>
@@ -92,8 +127,9 @@ public interface IYouTubeDownloadsAutoWatcherService : IDisposable, IAsyncDispos
 public sealed class YouTubeDownloadsAutoWatcherService : IYouTubeDownloadsAutoWatcherService
 {
     public const string DisableEnvVar = "PROMPTFLOW_DISABLE_DOWNLOADS_WATCHER";
-    public const int LedgerCapacity = 4096;
-    public const int StateSchemaVersion = 1;
+    /// <summary>🧹 Step 24 — 장부별 기본 상한(Step 23의 4096 → 500 · 수년치 일일 사용도 수십 KB).</summary>
+    public const int LedgerCapacity = 500;
+    public const int StateSchemaVersion = 2;
 
     private readonly IPlutoTelemetryBatchImporter _importer;
     private readonly YouTubeDownloadsWatcherOptions _opt;
@@ -106,10 +142,15 @@ public sealed class YouTubeDownloadsAutoWatcherService : IYouTubeDownloadsAutoWa
     private readonly ConcurrentDictionary<string, byte> _inFlightHashes = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, string> _ignoredSignatures = new(StringComparer.OrdinalIgnoreCase);   // 경로 → 크기|mtime (비 YouTube · 기처리)
     private readonly Dictionary<string, int> _failures = new(StringComparer.Ordinal);
-    private readonly LinkedList<string> _ingestedOrder = new();
-    private readonly HashSet<string> _ingested = new(StringComparer.Ordinal);
-    private readonly LinkedList<string> _rejectedOrder = new();
-    private readonly HashSet<string> _rejected = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, LedgerEntry> _ingested = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, LedgerEntry> _rejected = new(StringComparer.Ordinal);
+    private long _prunedTotal;
+    private bool _pruneDirty;   // 정리됐으나 아직 디스크 미반영(적재 직후 정리 등)
+    private DateTimeOffset? _lastIngestUtc;
+    private string? _lastError;
+
+    /// <summary>장부 항목 — 기록 시각(UTC ticks) · 격리 여부(거부 장부만 · false = 비 YouTube 무시).</summary>
+    private readonly record struct LedgerEntry(long AtTicks, bool Quarantined);
     private readonly CancellationTokenSource _life = new();
 
     private FileSystemWatcher? _fsw;
@@ -133,6 +174,7 @@ public sealed class YouTubeDownloadsAutoWatcherService : IYouTubeDownloadsAutoWa
             ? Path.Combine(Platform.AppDataPaths.LocalAppData, "PromptFlowStudio", "Pluto", "downloads_watcher.json")
             : _opt.StatePath!;
         LoadState();
+        lock (_sync) PruneLocked();   // 🧹 적재 직후 정리(다음 기록 때 디스크에도 반영)
     }
 
     public bool IsEnabled { get { lock (_sync) return _enabled; } }
@@ -183,7 +225,7 @@ public sealed class YouTubeDownloadsAutoWatcherService : IYouTubeDownloadsAutoWa
 
     public bool IsKnownHash(string sha256Hex)
     {
-        lock (_sync) return _ingested.Contains(sha256Hex) || _rejected.Contains(sha256Hex);
+        lock (_sync) return _ingested.ContainsKey(sha256Hex) || _rejected.ContainsKey(sha256Hex);
     }
 
     // ── 수명 ──
@@ -360,15 +402,18 @@ public sealed class YouTubeDownloadsAutoWatcherService : IYouTubeDownloadsAutoWa
             lock (_sync) { if (!_running || _disposed) return; }
             if (string.IsNullOrWhiteSpace(dir) || !System.IO.Directory.Exists(dir)) return;
             var cutoff = DateTime.UtcNow - _opt.MaxFileAge;
+            var present = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var f in System.IO.Directory.EnumerateFiles(dir))
             {
                 if (!IsCandidateName(f)) continue;
+                present.Add(f);
                 FileInfo fi;
                 try { fi = new FileInfo(f); if (fi.LastWriteTimeUtc < cutoff) continue; }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { continue; }
                 if (_ignoredSignatures.TryGetValue(f, out var sig) && sig == Signature(fi)) continue;   // 이미 판정된 동일 파일 → 재열기 없음
                 if (!_pending.ContainsKey(f)) { _pending[f] = Environment.TickCount64; }
             }
+            PruneIgnoredSignatures(present);
             if (!_pending.IsEmpty) ArmDebounce(TimeSpan.Zero);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException or ObjectDisposedException)
@@ -422,9 +467,10 @@ public sealed class YouTubeDownloadsAutoWatcherService : IYouTubeDownloadsAutoWa
                 }
                 PlutoTelemetryBatchImportResult r;
                 try { r = await _importer.ImportYouTubeStudioFileAsync(bytes, name, _opt.Platform, ct).ConfigureAwait(false); }
-                catch (InvalidDataException)
+                catch (InvalidDataException ex)
                 {
-                    await RecordAsync(sha, rejected: true, ct).ConfigureAwait(false);
+                    _lastError = name + ": " + ex.Message;
+                    await RecordAsync(sha, rejected: true, ct, quarantined: true).ConfigureAwait(false);
                     Remember(path);
                     return false;
                 }
@@ -432,12 +478,14 @@ public sealed class YouTubeDownloadsAutoWatcherService : IYouTubeDownloadsAutoWa
                 catch (Exception ex)
                 {
                     System.Diagnostics.Debug.WriteLine("[Pluto.DownloadsWatcher] import " + name + ": " + ex.Message);
-                    if (CountFailure(sha) >= Math.Max(1, _opt.MaxFailuresPerFile)) { await RecordAsync(sha, rejected: true, ct).ConfigureAwait(false); Remember(path); }
+                    _lastError = name + ": " + ex.Message;
+                    if (CountFailure(sha) >= Math.Max(1, _opt.MaxFailuresPerFile)) { await RecordAsync(sha, rejected: true, ct, quarantined: true).ConfigureAwait(false); Remember(path); }
                     return false;   // 일시 실패 → 다음 스윕에서 재시도(상한 후 격리)
                 }
                 await RecordAsync(sha, rejected: false, ct).ConfigureAwait(false);
                 Remember(path);
                 Interlocked.Increment(ref _ingestedCount);
+                _lastIngestUtc = Now();
                 var evt = new PlutoDownloadsAutoIngestEvent(name, sha, r, DateTimeOffset.UtcNow);
                 if (!evt.HasImpact) { Interlocked.Increment(ref _suppressed); return false; }   // 🔕 0건 학습 → 토스트 생략
                 RaiseIngested(evt);
@@ -456,7 +504,11 @@ public sealed class YouTubeDownloadsAutoWatcherService : IYouTubeDownloadsAutoWa
 
     private int CountFailure(string sha)
     {
-        lock (_sync) { _failures.TryGetValue(sha, out var n); _failures[sha] = ++n; return n; }
+        lock (_sync)
+        {
+            if (!_failures.ContainsKey(sha) && _failures.Count >= MaxLedger) _failures.Clear();   // 🧹 유계(손상 파일 대량 유입에도 메모리 상한)
+            _failures.TryGetValue(sha, out var n); _failures[sha] = ++n; return n;
+        }
     }
 
     /// <summary>
@@ -587,22 +639,104 @@ public sealed class YouTubeDownloadsAutoWatcherService : IYouTubeDownloadsAutoWa
 
     // ── 영속 장부(원자적 교체 · 유계) ──
 
-    private async Task RecordAsync(string sha, bool rejected, CancellationToken ct)
+    private DateTimeOffset Now() => _opt.Clock?.Invoke() ?? DateTimeOffset.UtcNow;
+    private int MaxLedger => Math.Max(1, _opt.LedgerMaxEntries);
+
+    /// <summary>🧹 실효 TTL — 스윕 최대 경과(<see cref="YouTubeDownloadsWatcherOptions.MaxFileAge"/>) + 1일 미만으로 내려가지 않음.</summary>
+    public TimeSpan EffectiveLedgerTtl
+    {
+        get
+        {
+            var floor = _opt.MaxFileAge + TimeSpan.FromDays(1);
+            return _opt.LedgerTtl < floor ? floor : _opt.LedgerTtl;
+        }
+    }
+
+    private async Task RecordAsync(string sha, bool rejected, CancellationToken ct, bool quarantined = false)
     {
         lock (_sync)
         {
-            if (rejected) AddBounded(_rejected, _rejectedOrder, sha);
-            else { _rejected.Remove(sha); AddBounded(_ingested, _ingestedOrder, sha); }
+            var e = new LedgerEntry(Now().UtcTicks, quarantined);
+            if (rejected) _rejected[sha] = e;
+            else { _rejected.Remove(sha); _ingested[sha] = e; }
             _failures.Remove(sha);
+            PruneLocked();
         }
         await SaveStateAsync(ct).ConfigureAwait(false);
     }
 
-    private static void AddBounded(HashSet<string> set, LinkedList<string> order, string sha)
+    /// <summary>TTL 초과 제거 → 상한 초과분은 가장 오래된 것부터(LRU) 축출. 반환 = 제거 수.</summary>
+    private int PruneLocked()
     {
-        if (!set.Add(sha)) return;
-        order.AddLast(sha);
-        while (order.Count > LedgerCapacity) { set.Remove(order.First!.Value); order.RemoveFirst(); }
+        var cutoff = (Now() - EffectiveLedgerTtl).UtcTicks;
+        var removed = PruneOne(_ingested, cutoff, MaxLedger) + PruneOne(_rejected, cutoff, MaxLedger);
+        if (removed > 0) { _prunedTotal += removed; _pruneDirty = true; }
+        return removed;
+    }
+
+    private static int PruneOne(Dictionary<string, LedgerEntry> map, long cutoffTicks, int max)
+    {
+        List<string>? stale = null;
+        foreach (var kv in map) if (kv.Value.AtTicks < cutoffTicks) (stale ??= new List<string>()).Add(kv.Key);
+        var removed = 0;
+        if (stale is not null) foreach (var k in stale) if (map.Remove(k)) removed++;
+        if (map.Count <= max) return removed;
+        var order = SortedByAge(map);
+        for (var i = 0; i < order.Count - max; i++) if (map.Remove(order[i].Key)) removed++;
+        return removed;
+    }
+
+    private static List<KeyValuePair<string, LedgerEntry>> SortedByAge(Dictionary<string, LedgerEntry> map)
+    {
+        var order = new List<KeyValuePair<string, LedgerEntry>>(map);
+        order.Sort(static (a, b) => { var d = a.Value.AtTicks.CompareTo(b.Value.AtTicks); return d != 0 ? d : string.CompareOrdinal(a.Key, b.Key); });   // 결정론 · 오래된 순
+        return order;
+    }
+
+    /// <summary>🧹 사라진 파일의 판정 서명 제거(세션 메모리 유계).</summary>
+    private void PruneIgnoredSignatures(HashSet<string> present)
+    {
+        foreach (var k in _ignoredSignatures.Keys) if (!present.Contains(k)) _ignoredSignatures.TryRemove(k, out _);
+    }
+
+    public async Task<int> PruneLedgerAsync(CancellationToken ct = default)
+    {
+        int removed;
+        bool dirty;
+        lock (_sync) { removed = PruneLocked(); dirty = _pruneDirty; }
+        if (dirty) await SaveStateAsync(ct).ConfigureAwait(false);
+        return removed;
+    }
+
+    public async Task<int> ClearQuarantinedAsync(CancellationToken ct = default)
+    {
+        int cleared;
+        lock (_sync)
+        {
+            List<string>? q = null;
+            foreach (var kv in _rejected) if (kv.Value.Quarantined) (q ??= new List<string>()).Add(kv.Key);
+            cleared = q?.Count ?? 0;
+            if (q is not null) foreach (var k in q) _rejected.Remove(k);
+            cleared += _failures.Count;   // 격리 전 재시도 대기분도 초기화
+            _failures.Clear();
+            _lastError = null;
+        }
+        _ignoredSignatures.Clear();   // 고친 파일을 다음 스윕이 다시 연다(비 YouTube는 해시 장부로 재차단)
+        await SaveStateAsync(ct).ConfigureAwait(false);
+        RaiseStateChanged();
+        if (IsRunning) OnSweepTick();
+        return cleared;
+    }
+
+    public PlutoDownloadsWatcherHealth GetHealth()
+    {
+        lock (_sync)
+        {
+            var q = 0;
+            foreach (var kv in _rejected) if (kv.Value.Quarantined) q++;
+            return new PlutoDownloadsWatcherHealth(_enabled, _running, IsIsolationBlocked, WatchedDirectory, _ingested.Count, _rejected.Count - q, q, _failures.Count,
+                _prunedTotal, IngestedCount, OverflowRecoveryCount, _lastIngestUtc, _lastError);
+        }
     }
 
     private void LoadState()
@@ -613,19 +747,33 @@ public sealed class YouTubeDownloadsAutoWatcherService : IYouTubeDownloadsAutoWa
             var node = JsonNode.Parse(File.ReadAllText(_statePath));
             if (node is not JsonObject o) return;
             if (o["enabled"] is JsonValue ev && ev.TryGetValue<bool>(out var en)) _enabled = en;
-            Fill(o["ingested"] as JsonArray, _ingested, _ingestedOrder);
-            Fill(o["rejected"] as JsonArray, _rejected, _rejectedOrder);
+            var now = Now().UtcTicks;
+            Fill(o["ingested"] as JsonArray, _ingested, now);
+            Fill(o["rejected"] as JsonArray, _rejected, now);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException or FormatException)
         {
             System.Diagnostics.Debug.WriteLine("[Pluto.DownloadsWatcher] state load (기본값 사용): " + ex.Message);
         }
 
-        static void Fill(JsonArray? arr, HashSet<string> set, LinkedList<string> order)
+        // v1: 문자열 배열(시각 없음 → 적재 시각으로 이관) · v2: { h, t, q }
+        static void Fill(JsonArray? arr, Dictionary<string, LedgerEntry> map, long now)
         {
             if (arr is null) return;
             foreach (var n in arr)
-                if (n is JsonValue v && v.TryGetValue<string>(out var s) && s.Length == 64) AddBounded(set, order, s.ToUpperInvariant());
+            {
+                string? h = null;
+                var t = now;
+                var q = false;
+                if (n is JsonValue v && v.TryGetValue<string>(out var s1)) h = s1;
+                else if (n is JsonObject eo)
+                {
+                    if (eo["h"] is JsonValue hv && hv.TryGetValue<string>(out var s2)) h = s2;
+                    if (eo["t"] is JsonValue tv && tv.TryGetValue<long>(out var tt) && tt > 0 && tt <= DateTime.MaxValue.Ticks) t = tt;
+                    if (eo["q"] is JsonValue qv && qv.TryGetValue<bool>(out var qq)) q = qq;
+                }
+                if (h is { Length: 64 }) map[h.ToUpperInvariant()] = new LedgerEntry(t, q);
+            }
         }
     }
 
@@ -634,9 +782,8 @@ public sealed class YouTubeDownloadsAutoWatcherService : IYouTubeDownloadsAutoWa
         string json;
         lock (_sync)
         {
-            var ing = new JsonArray(); foreach (var s in _ingestedOrder) ing.Add(s);
-            var rej = new JsonArray(); foreach (var s in _rejectedOrder) rej.Add(s);
-            json = new JsonObject { ["v"] = StateSchemaVersion, ["enabled"] = _enabled, ["ingested"] = ing, ["rejected"] = rej }.ToJsonString();
+            _pruneDirty = false;
+            json = new JsonObject { ["v"] = StateSchemaVersion, ["enabled"] = _enabled, ["ingested"] = ToJson(_ingested), ["rejected"] = ToJson(_rejected) }.ToJsonString();
         }
         await _stateIo.WaitAsync(ct).ConfigureAwait(false);
         try
@@ -652,6 +799,18 @@ public sealed class YouTubeDownloadsAutoWatcherService : IYouTubeDownloadsAutoWa
             System.Diagnostics.Debug.WriteLine("[Pluto.DownloadsWatcher] state save: " + ex.Message);
         }
         finally { _stateIo.Release(); }
+
+        static JsonArray ToJson(Dictionary<string, LedgerEntry> map)
+        {
+            var arr = new JsonArray();
+            foreach (var kv in SortedByAge(map))
+            {
+                var e = new JsonObject { ["h"] = kv.Key, ["t"] = kv.Value.AtTicks };
+                if (kv.Value.Quarantined) e["q"] = true;
+                arr.Add(e);
+            }
+            return arr;
+        }
     }
 
     // ── 폐기 ──
