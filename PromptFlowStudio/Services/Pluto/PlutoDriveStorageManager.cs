@@ -204,10 +204,12 @@ public sealed class PlutoDriveStorageManager : IPlutoStorageManager
     }
 
     /// <summary>
-    /// 🔁 핵심 허브 복원 — Drive 활성 시 Drive 에 있고 로컬 폴백에 없는 파일만 로컬로 복사(덮어쓰기 없음 · 실패 무시).
+    /// 🔁 핵심 허브 복원 — Drive 활성 시 Drive 에 있고 로컬 폴백에 없는 파일을 로컬로 복사(실패 무시).
+    /// 🪞 Step 17: 로컬 사본이 이미 있어도 Drive 사본이 확실히 더 새로우면(<see cref="IsMirrorStale"/>) 로컬 미러를 갱신한다 —
+    /// 첫 복원 이후 미러가 그 시점에 얼어붙어, 오프라인 전환 시 몇 주 전 학습 상태로 조용히 되돌아가던 문제 차단. 더 새로운 로컬 사본은 절대 덮어쓰지 않는다.
     /// 새 PC 첫 실행/오프라인 전환 대비. Drive 비활성(<c>PROMPTFLOW_PLUTO_DRIVE=off</c> · 미마운트 · 비 Windows) → 0.
     /// </summary>
-    /// <returns>복원된 파일 수.</returns>
+    /// <returns>복원 + 갱신된 파일 수.</returns>
     public int RestoreCoreHubsToLocal(IReadOnlyList<string> files)
     {
         ArgumentNullException.ThrowIfNull(files);
@@ -221,9 +223,56 @@ public sealed class PlutoDriveStorageManager : IPlutoStorageManager
             try { ValidateName(f); }
             catch (ArgumentException) { continue; }
             var dst = Path.Combine(local, f);
-            if (!File.Exists(dst) && TryCopy(Path.Combine(_primary!, f), dst)) restored++;
+            var src = Path.Combine(_primary!, f);
+            if (!File.Exists(dst)) { if (TryCopy(src, dst)) restored++; continue; }
+            if (IsMirrorStale(src, dst) && TryRefreshMirror(src, dst)) restored++;
         }
         return restored;
+    }
+
+    /// <summary>🪞 로컬 미러 신선도 허용 오차 — 파일 시스템 타임스탬프 해상도(FAT 2초 · Drive 가상 FS) 흡수.</summary>
+    public static readonly TimeSpan MirrorStalenessTolerance = TimeSpan.FromSeconds(2);
+
+    /// <summary>
+    /// 🪞 로컬 미러가 낡았는지(순수 판정 · IO 실패 → false) — Drive 사본이 <see cref="MirrorStalenessTolerance"/> 넘게 더 새롭고 · 비어 있지 않고 · 유효한 JSON 일 때만 true.
+    /// 로컬이 같거나 더 새로우면(오프라인 중 기록 포함) 절대 덮어쓰지 않는다 · 동기화 도중의 손상/빈 Drive 사본도 정상 로컬 미러를 대체하지 못한다.
+    /// </summary>
+    public static bool IsMirrorStale(string drivePath, string localPath)
+    {
+        try
+        {
+            var src = new FileInfo(drivePath);
+            var dst = new FileInfo(localPath);
+            if (!src.Exists || !dst.Exists || src.Length == 0) return false;
+            if (src.LastWriteTimeUtc - dst.LastWriteTimeUtc <= MirrorStalenessTolerance) return false;
+            using var fs = new FileStream(drivePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            using var doc = System.Text.Json.JsonDocument.Parse(fs);
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or ArgumentException or System.Text.Json.JsonException)
+        {
+            System.Diagnostics.Debug.WriteLine("[Pluto.Drive] mirror probe: " + ex.Message);
+            return false;
+        }
+    }
+
+    /// <summary>🪞 Drive → 로컬 미러 갱신(임시 파일 → 원자 교체 · 수정 시각 보존 → 멱등) — 실패 시 기존 로컬 사본 유지.</summary>
+    private static bool TryRefreshMirror(string src, string dst)
+    {
+        var tmp = dst + ".mirror.tmp";
+        try
+        {
+            File.Copy(src, tmp, overwrite: true);
+            File.Move(tmp, dst, overwrite: true);
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            System.Diagnostics.Debug.WriteLine("[Pluto.Drive] mirror refresh failed: " + ex.Message);
+            try { if (File.Exists(tmp)) File.Delete(tmp); }
+            catch (Exception ex2) when (ex2 is IOException or UnauthorizedAccessException) { System.Diagnostics.Debug.WriteLine("[Pluto.Drive] mirror tmp cleanup: " + ex2.Message); }
+            return false;
+        }
     }
 
     private static async Task<string?> TryReadAsync(string path, CancellationToken ct)

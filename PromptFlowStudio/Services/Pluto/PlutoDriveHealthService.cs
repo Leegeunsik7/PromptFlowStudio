@@ -15,7 +15,7 @@ public sealed record PlutoDriveFileHealthItem(string Category, string FileName, 
 
 public sealed record PlutoDriveHealthReport(bool IsDriveMounted, int HealthyCount, int TotalCount, string? SettingsMirrorError, string? MemberMirrorError, IReadOnlyList<PlutoDriveFileHealthItem> Items, DateTimeOffset CheckedAtUtc);
 
-/// <summary>☁️ Google Drive 영구 백업 파일 헬스 점검(PC 이전 준비 · Pluto 핵심 허브 8종 + 계정·설정 2종) — 존재 · 크기 &gt; 0 · JSON 파싱 검증.</summary>
+/// <summary>☁️ Google Drive 영구 백업 파일 헬스 점검(PC 이전 준비 · Pluto 핵심 허브 9종 + 계정·설정 2종) — 존재 · 크기 &gt; 0 · JSON 파싱 검증.</summary>
 public interface IPlutoDriveHealthService
 {
     PlutoDriveHealthReport CheckHealth(string? plutoDriveDir = null, string? studioDriveDir = null);
@@ -23,7 +23,7 @@ public interface IPlutoDriveHealthService
 }
 
 /// <summary>
-/// Pluto AI 볼트 8종(<see cref="CorePlutoFileCount"/> · <c>G:\내 드라이브\DATA\Pluto</c>) + 계정·설정 2종(<c>G:\내 드라이브\DATA\PromptFlowStudio</c> · <c>PROMPTFLOW_AUTH_MIRROR</c> 우선) 점검.
+/// Pluto AI 볼트 9종(<see cref="CorePlutoFileCount"/> · <c>G:\내 드라이브\DATA\Pluto</c>) + 계정·설정 2종(<c>G:\내 드라이브\DATA\PromptFlowStudio</c> · <c>PROMPTFLOW_AUTH_MIRROR</c> 우선) 점검.
 /// 모든 IO 예외 격리(항목별 <see cref="PlutoDriveFileStatus.CorruptOrEmpty"/>) · 의존성 null 허용(모바일).
 /// </summary>
 public sealed class PlutoDriveHealthService : IPlutoDriveHealthService
@@ -41,10 +41,11 @@ public sealed class PlutoDriveHealthService : IPlutoDriveHealthService
         PlutoExperimentLedgerService.FileName,               // pluto_experiment_ledger.json (🏆 A/B 실험 장부)
         PlutoRenderCatalogService.FileName,                  // pluto_render_catalog.json (🎞️ 영속 렌더 카탈로그)
         PlutoMetaCalibrationService.FileName,                // pluto_calibration_state.json (🎯 메타 보정 · 반사실 후회)
+        PlutoSeriesArcMemoryService.FileName,                // pluto_series_arc.json (📺 시리즈 아크 · 시즌 · 편 간 유지율)
     };
 
-    /// <summary>검증 · 미러 · 새 PC 자동 복원 대상 Pluto 핵심 허브 파일 수(Step 15 = 8).</summary>
-    public const int CorePlutoFileCount = 8;
+    /// <summary>검증 · 미러 · 새 PC 자동 복원 대상 Pluto 핵심 허브 파일 수(Step 17 = 9 · 시리즈 아크 편입).</summary>
+    public const int CorePlutoFileCount = 9;
 
     public static readonly string[] StudioFiles = { "members.json", AppSettingsManager.FileName };
 

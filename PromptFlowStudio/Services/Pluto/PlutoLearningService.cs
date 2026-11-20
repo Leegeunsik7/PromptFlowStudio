@@ -567,6 +567,8 @@ public sealed class PlutoLearningService : IDisposable
                 surge = st.Surge;
             }
 
+            // 🧬 지역(컨텍스트 내) 패턴 기대치 — 명시 컨텍스트일 때만 · 전역 기대치와 같은 잔차 알파를 같은 EWMA 규칙으로 누적(계층적 경험적 베이즈의 지역 추정)
+            var localPrefix = PlutoContextualBaseline.IsExplicit(domain, renderMode) ? PlutoEmpiricalBayes.LocalPrefix(domain, renderMode) : null;
             if (expectancyTokens is not null)
                 for (var i = 0; i < expectancyTokens.Count; i++)
                 {
@@ -574,6 +576,13 @@ public sealed class PlutoLearningService : IDisposable
                     if (string.IsNullOrWhiteSpace(t)) continue;
                     var pk = PatternKeyPrefix + t.Trim();
                     if (!_entries.TryGetValue(pk, out var pe)) { pe = new Entry { Weight = PatternBaseWeight }; _entries[pk] = pe; }
+                    if (localPrefix is not null)
+                    {
+                        var lk = localPrefix + t.Trim();
+                        if (!_entries.TryGetValue(lk, out var le)) { le = new Entry(); _entries[lk] = le; }
+                        UpdateEwma(le, alpha, PlutoContextualBaseline.PatternAlpha);
+                        le.LastUtc = now;
+                    }
                     if (drift && pe.Weight > PatternBaseWeight)
                     {
                         // 🌊 표적 망각 — 레짐 전환에 연루된 낡은 승자의 초과 가중치를 즉시 절반으로(감쇠 기준 시각 재설정)
@@ -712,6 +721,36 @@ public sealed class PlutoLearningService : IDisposable
     {
         if (string.IsNullOrWhiteSpace(patternToken)) return (0.0, 0.0);
         lock (_sync) return _entries.TryGetValue(PatternKeyPrefix + patternToken, out var e) ? (e.Mean, e.Samples) : (0.0, 0.0);
+    }
+
+    /// <summary>📐 패턴 잔차 알파 통계(전역 EWMA 평균 · 분산 · 표본 — 미추적 → 전부 0).</summary>
+    public (double Alpha, double Variance, double Samples) GetPatternAlphaStats(string patternToken)
+    {
+        if (string.IsNullOrWhiteSpace(patternToken)) return (0.0, 0.0, 0.0);
+        lock (_sync) return _entries.TryGetValue(PatternKeyPrefix + patternToken, out var e) ? (e.Mean, e.Var, e.Samples) : (0.0, 0.0, 0.0);
+    }
+
+    /// <summary>🧬 (Domain, RenderMode) 컨텍스트 안에서의 패턴 잔차 알파(지역 EWMA · 미추적/비명시 컨텍스트 → (0, 0)).</summary>
+    public (double Alpha, double Samples) GetContextPatternAlpha(string? domain, string? renderMode, string patternToken)
+    {
+        if (string.IsNullOrWhiteSpace(patternToken) || !PlutoContextualBaseline.IsExplicit(domain, renderMode)) return (0.0, 0.0);
+        lock (_sync) return _entries.TryGetValue(PlutoEmpiricalBayes.LocalKey(domain, renderMode, patternToken), out var e) ? (e.Mean, e.Samples) : (0.0, 0.0);
+    }
+
+    /// <summary>🧬 전역 검증 패턴 사전(훅 · 룩 중 기대치 표본 ≥ <paramref name="minSamples"/>) — 토큰 사전순(결정론).</summary>
+    public IReadOnlyList<(string Token, double Alpha, double Variance, double Samples)> GetProvenPatternPriors(double minSamples)
+    {
+        var list = new List<(string Token, double Alpha, double Variance, double Samples)>(8);
+        const string hook = PatternKeyPrefix + "hook:", look = PatternKeyPrefix + "look:";
+        lock (_sync)
+            foreach (var kv in _entries)
+            {
+                if (kv.Value is null || kv.Value.Samples < minSamples || !double.IsFinite(kv.Value.Mean)) continue;
+                if (!kv.Key.StartsWith(hook, StringComparison.Ordinal) && !kv.Key.StartsWith(look, StringComparison.Ordinal)) continue;
+                list.Add((kv.Key[PatternKeyPrefix.Length..], kv.Value.Mean, kv.Value.Var, kv.Value.Samples));
+            }
+        list.Sort(static (a, b) => string.CompareOrdinal(a.Token, b.Token));
+        return list;
     }
 
     /// <summary>

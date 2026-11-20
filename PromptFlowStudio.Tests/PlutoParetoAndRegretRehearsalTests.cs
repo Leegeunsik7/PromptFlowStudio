@@ -47,9 +47,9 @@ public sealed class PlutoParetoAndRegretRehearsalTests : IDisposable
     [Fact]
     public async Task DriveHub_EightCoreFiles_IncludeCalibrationState_RestoreWithoutOverwritingLocal_AndHonorDriveOffIsolation()
     {
-        Assert.Equal(8, PlutoDriveHealthService.CorePlutoFileCount);
+        Assert.Equal(9, PlutoDriveHealthService.CorePlutoFileCount);                                  // Step 17 — 시리즈 아크 편입
         Assert.Equal(PlutoDriveHealthService.CorePlutoFileCount, PlutoDriveHealthService.PlutoFiles.Length);
-        Assert.Equal(8, PlutoDriveHealthService.PlutoFiles.Distinct(StringComparer.OrdinalIgnoreCase).Count());
+        Assert.Equal(9, PlutoDriveHealthService.PlutoFiles.Distinct(StringComparer.OrdinalIgnoreCase).Count());
         Assert.Equal("pluto_calibration_state.json", PlutoMetaCalibrationService.FileName);
         foreach (var f in new[]
                  {
@@ -66,7 +66,7 @@ public sealed class PlutoParetoAndRegretRehearsalTests : IDisposable
         var freshLocal = Path.Combine(_dir, "local_fresh");
         var fresh = new PlutoDriveStorageManager(drive, freshLocal);
         Assert.True(fresh.IsCloudSynced);
-        Assert.Equal(8, fresh.RestoreCoreHubsToLocal(PlutoDriveHealthService.PlutoFiles));
+        Assert.Equal(9, fresh.RestoreCoreHubsToLocal(PlutoDriveHealthService.PlutoFiles));
         Assert.Equal("{\"origin\":\"drive\"}", File.ReadAllText(Path.Combine(freshLocal, PlutoMetaCalibrationService.FileName)));
         Assert.Equal(0, fresh.RestoreCoreHubsToLocal(PlutoDriveHealthService.PlutoFiles));
 
@@ -75,14 +75,14 @@ public sealed class PlutoParetoAndRegretRehearsalTests : IDisposable
         Directory.CreateDirectory(keptLocal);
         File.WriteAllText(Path.Combine(keptLocal, PlutoMetaCalibrationService.FileName), "{\"origin\":\"local-newer\"}");
         var kept = new PlutoDriveStorageManager(drive, keptLocal);
-        Assert.Equal(7, kept.RestoreCoreHubsToLocal(PlutoDriveHealthService.PlutoFiles));
+        Assert.Equal(8, kept.RestoreCoreHubsToLocal(PlutoDriveHealthService.PlutoFiles));
         Assert.Equal("{\"origin\":\"local-newer\"}", File.ReadAllText(Path.Combine(keptLocal, PlutoMetaCalibrationService.FileName)));
 
         // 🔄 [지금 전체 드라이브 백업 검증] — Drive 에서 사라진 보정 상태를 로컬 사본으로 재시드 + 8종 전부 Healthy
         File.Delete(Path.Combine(drive, PlutoMetaCalibrationService.FileName));
         var verified = await new PlutoDriveHealthService(null, null, kept).ForceSyncAndVerifyAsync();
         var plutoItems = verified.Items.Where(i => i.Category == PlutoDriveHealthService.CategoryPluto).ToList();
-        Assert.Equal(8, plutoItems.Count);
+        Assert.Equal(9, plutoItems.Count);
         Assert.All(plutoItems, i => Assert.Equal(PlutoDriveFileStatus.Healthy, i.Status));
         Assert.Equal("{\"origin\":\"local-newer\"}", File.ReadAllText(Path.Combine(drive, PlutoMetaCalibrationService.FileName)));
 
@@ -95,7 +95,7 @@ public sealed class PlutoParetoAndRegretRehearsalTests : IDisposable
         Assert.Equal(0, off.RestoreCoreHubsToLocal(PlutoDriveHealthService.PlutoFiles));
         var offReport = await new PlutoDriveHealthService(null, null, off).ForceSyncAndVerifyAsync();
         var offPluto = offReport.Items.Where(i => i.Category == PlutoDriveHealthService.CategoryPluto).ToList();
-        Assert.Equal(8, offPluto.Count);
+        Assert.Equal(9, offPluto.Count);
         Assert.All(offPluto, i => Assert.Equal(PlutoDriveFileStatus.DriveUnavailable, i.Status));
         Assert.Contains(offPluto, i => i.FileName == PlutoMetaCalibrationService.FileName);
         Assert.False(Directory.Exists(offLocal) && Directory.EnumerateFiles(offLocal).Any());

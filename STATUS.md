@@ -1,23 +1,23 @@
 # Current Project Status
-- Active Milestone: 【Step 16 — 전 모달리티 파레토 귀속 · 시리즈 아크/편 간 유지율 연속성 · 자가 종료 회로 카운트다운 · 자율 하드닝】 ✅ 완료
-- Build: ✅ Desktop Release `-warnaserror` 0W/0E · ✅ Tests Release 0W/0E · ⏳ Mobile net8.0-ios — `ios` 워크로드 미설치(이번에도 미검증 · DI 결선은 소스 단언으로만 확인)
-- Tests: ✅ 1227/1227 — 전체 단일 실행 통과(21분 19초 · `dotnet test` 종료 코드 0 · 기존 1219 + Step 16 8)
-- Updated: 2026-11-20 (KST) · 기준 `98f08e2`
+- Active Milestone: 【Step 17 — Drive 허브 9종 · 무지연 시리즈 앵커 write-through · 시즌 분리 · 계층적 경험적 베이즈 콜드스타트 전이 · 톰슨–UCB · 자율 하드닝】 ✅ 완료
+- Build: ✅ Desktop Release `-warnaserror` 0W/0E · ✅ Tests Release 0W/0E · ⏳ Mobile net8.0-ios — `ios` 워크로드 미설치(미검증 · DI 결선은 소스 단언으로만 확인)
+- Tests: ✅ 1235/1235 — 전체 단일 실행 통과(17분 50초 · `dotnet test` 종료 코드 0 · 기존 1227 + Step 17 8)
+- Updated: 2026-11-20 (KST) · 기준 `c92d283`
 
-## Completed — Step 16
-- ⚖️ 전 모달리티 파레토: BGM 무드 · 스타일 태그도 (3초 · 완주 · CTR) EWMA 귀속(`objectiveOnlyTokens` — 기대치/드리프트 통계 불변 · A/B 변형 포함) → 훅 · 룩과 같은 비지배 티어 · 최약 축 보너스 · 클릭베이트 강등 · 태그 '#' 변형 병합 · 구버전 `pluto_trend_memory.json` 완전 호환
-- 📺 `PlutoSeriesArcMemoryService`(`pluto_series_arc.json` · MainForm + MauiProgram 싱글턴): 카탈로그 `시리즈 n/N편` + 제목 테마에서 시리즈 키 유도(스키마 변경 없음) · 유지 지수 = (3초 + 완주)/2 · 편 간 변화/기울기 · −5p 이하 이탈 → 궁금증 훅 + 클리프행어 아웃트로 Lv1~3 · 앵커 룩/BGM 유지 · 폐루프가 편 성과 자동 귀속
-- 🎬 Workspace 편 불러오기: 앵커 룩 고정 · 앵커 BGM 선택(내 BGM/수동 선택 보존) · 이탈 시 1막 훅/마지막 자막 반영 · 📺 연속성 배지
-- 🧠 두뇌 리포트 본문: ⚖️ 전 모달리티 균형 · 📺 시리즈 아크(상단 3행 헤더 불변)
-- ⏱️ `ProviderCircuitCountdown` + `ProviderCircuitBreaker.PromoteExpired()`: Open/HalfOpen 이 있을 때만 1초 `PeriodicTimer` · 냉각 만료 시 호출 없이 HalfOpen 전이 · 전부 Closed 면 즉시 정지·폐기 · HalfOpen 대기 틱은 UI 통지 생략
-- ⏳ 자율 ①: 다목적 근거 신선도(유예 14일 + 반감기 28일 · `ObjUtc`) — 클릭베이트 판정이 영구 낙인(흡수 상태)이 되지 않음 · 공백 뒤 새 관측은 재기준
-- 🧯 자율 ②: 반개방 탐침 임대(`ProbeLeaseTimeout` 10분) 회수 + 엔진 `BuildRequest` 를 회로 허가 이전으로 이동 — 보고 누락으로 회로가 영구 반개방에 갇히는 경로 차단
+## Completed — Step 17
+- ☁️ Drive 핵심 허브 9종: `pluto_series_arc.json` 편입(`CorePlutoFileCount = 9`) — 검증 · 미러 · 새 PC 자동 복원 · `PROMPTFLOW_PLUTO_DRIVE=off` 격리 유지
+- ⚡ `RecordRenderedEpisode`: 렌더 완료 즉시 메모리 아크 갱신(디스크는 병합 백그라운드 기록) → 연속 렌더 k+1편이 지연 없이 앵커 룩/BGM 상속
+- 🆕 시즌: `[🆕 새 시즌 분리]`(1시즌 키 = 기존 키 · 2시즌부터 `@sN`) — 이전 시즌 텔레메트리 보존 · 카탈로그/성과는 영상 ID → 렌더 시각으로 시즌 귀속
+- 📐 단일 편 조기 이탈: 1편이 (Domain, RenderMode) 유지율 기준선을 −5p 이상 밑돌면 3편 시리즈의 2편이 궁금증 훅 + 클리프행어 아웃트로 수령
+- 💬 `[✍️ 자동 각색 적용]` ↔ `[💡 추천만 표시]` 토글(기본 자동 각색 · 영속) — 추천만: 자막 원문 보존 + 추천 배지
+- 🧬 `PlutoEmpiricalBayes`: 지역 시행 < 3 컨텍스트는 α = n/(n + k) 로 전역 검증 사후에 수축(k = σ²/(τ₀² + σ²/n_g)) · `RankForContext` · 지역 통계 `cpat:` 키
+- 🎲 `PlutoThompsonUcbSampler`: 활용 + (1−λ)·UCB1 + λ·사후 추첨(Normal · 다목적 근거는 Beta 혼합) + 후회 회복 사전 · `Random` 주입 시에만(미주입 = 기존 결정론 UCB1) · DI 양쪽 주입
+- 🧠 두뇌 리포트 본문: 🧬 콜드스타트 전이 · 📺 시리즈 아크(시즌 · 추천만 표기) — 상단 3행 헤더 불변
+- 자율 ①: 이중 언어 자막 — 에스컬레이션이 본문만 바꿔 옛 문장의 영문 번역이 남던 문제 수정(영문 짝 교체/확장)
+- 자율 ②: 얼어붙은 로컬 미러 — Drive 사본이 2초 넘게 더 새롭고 유효 JSON 일 때만 로컬 갱신(더 새로운 로컬 · 손상/빈 Drive 사본은 불변)
+- 자율 ③: 적재 전 write-through 내구성 — 디스크 이력 위에 재적용 · 미적재 부분 스냅샷 기록 금지 · 늦게 온 오래된 카탈로그 항목 무시 · Dispose 경합 안전
 
 ## Notes
-- ⚠️ 3편 시리즈에서 에스컬레이션이 걸리는 편은 사실상 3편(완결)뿐 → 클리프행어 아웃트로는 4편 이상 시리즈에서만 실제로 붙음(완결편은 궁금증 훅만)
-- ⚠️ 같은 테마 · 같은 편수로 시리즈를 다시 만들면 같은 아크로 합쳐짐 · 연속 렌더 중 직전 편 카탈로그 기록이 늦으면 앵커가 한 편 늦게 잡힐 수 있음
-- ⚠️ `pluto_series_arc.json` 은 Drive 저장소 관리자 경유이나 핵심 허브 8종(검증·새 PC 복원 목록)에는 미포함
+- ⚠️ 오프라인 중 로컬에 쌓인 기록(로컬이 Drive 보다 새로움)은 덮이지 않지만 Drive 복귀 시 자동 병합되지도 않음(수동 검증 필요)
+- ⚠️ 컨텍스트 특화는 훅 · 룩만(BGM · 태그는 전역 순위) · A/B 는 Workspace 에서 `(도메인, "몽타주")` 컨텍스트로만 호출
 - ⚠️ `.git`은 `D:\Program` — git 명령에 `--git-dir=D:\Program\.git --work-tree=D:\Program\PromptFlowStudio` 필요
-
-## Next
-- `ios` 워크로드 설치 후 Mobile 빌드 재검증 · 시리즈 아크 Drive 허브 편입(9종) · 완결편 전용 아웃트로(정주행 유도) · 회로 차단 HUD(`gth-v`) 카드

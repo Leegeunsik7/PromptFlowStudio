@@ -40,6 +40,15 @@ public sealed record PlutoVariantABPlan(string ExperimentId, string ThemeHint, P
     public double RegretRehearsalBoost { get; init; }
     /// <summary>🔁 챌린저 B 가 '거듭 지나친 고후회 대안'의 실측 재검증에 쓰임.</summary>
     public bool IsRegretRehearsal => RegretRehearsalLabel is not null;
+    /// <summary>🎲 챌린저 탐색 정책 — <c>UCB1</c>(결정론) · <c>Thompson-UCB</c>(사후 추첨 혼합).</summary>
+    public string ExplorationPolicy { get; init; } = PlutoThompsonUcbSampler.PolicyUcb;
+    public bool IsThompsonSampled => string.Equals(ExplorationPolicy, PlutoThompsonUcbSampler.PolicyHybrid, StringComparison.Ordinal);
+    /// <summary>🧬 실험 컨텍스트의 렌더 포맷(미지정 → null · 도메인만으로 컨텍스트 구성).</summary>
+    public string? ContextRenderMode { get; init; }
+    /// <summary>🧬 챔피언 훅의 (Domain, RenderMode) 경험적 베이즈 추정(근거 없음 → None).</summary>
+    public PlutoEmpiricalBayesEstimate ChampionContextTransfer { get; init; } = PlutoEmpiricalBayesEstimate.None;
+    /// <summary>🧬 지역(컨텍스트) 근거가 전역 순위를 실제로 바꿔 챔피언/챌린저 선정에 반영됨.</summary>
+    public bool IsContextSpecialized { get; init; }
 }
 
 /// <summary>⚖️ Pluto 4.3 통제 A/B 변형 생성기.</summary>
@@ -52,6 +61,14 @@ public interface IPlutoVariantABGenerator
     /// </summary>
     Task<PlutoVariantABPlan> BuildVariantPairAsync(string themeHint, PlutoMontagePlan? montagePlan = null, IReadOnlyList<PlutoCuratedPhotoCandidate>? curatedCuts = null,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// 🧬 렌더 포맷을 명시한 컨텍스트 실험 — (테마에서 분류한 Domain, <paramref name="contextRenderMode"/>) 컨텍스트의 지역 근거를 경험적 베이즈로 수축해 반영
+    /// (기본 구현 → 컨텍스트 미사용).
+    /// </summary>
+    Task<PlutoVariantABPlan> BuildVariantPairAsync(string themeHint, string? contextRenderMode, PlutoMontagePlan? montagePlan, IReadOnlyList<PlutoCuratedPhotoCandidate>? curatedCuts,
+        CancellationToken ct)
+        => BuildVariantPairAsync(themeHint, montagePlan, curatedCuts, ct);
 }
 
 /// <summary>⚖️ <see cref="IPlutoVariantABGenerator"/> 구현 — 훅 또는 룩 차이 보장(불변식 <see cref="PlutoVariantABPlan.IsValidExperiment"/>).</summary>
@@ -72,18 +89,27 @@ public sealed class PlutoVariantABGenerator : IPlutoVariantABGenerator
     private readonly IPlutoMontageStoryGenerator? _story;
     private readonly IPlutoMistakeNotebookService? _notebook;
     private readonly Func<string> _idFactory;
+    private readonly Random? _explorationRandom;
 
+    /// <param name="explorationRandom">
+    /// 🎲 톰슨–UCB 하이브리드 탐색용 난수원(시드 주입 → 재현 가능) · null → 기존 결정론 UCB1(같은 상태 = 같은 챌린저).
+    /// </param>
     public PlutoVariantABGenerator(IPlutoAdaptivePatternRanker? ranker = null, IPlutoMontageStoryGenerator? story = null, IPlutoMistakeNotebookService? notebook = null,
-        Func<string>? experimentIdFactory = null)
+        Func<string>? experimentIdFactory = null, Random? explorationRandom = null)
     {
+        _explorationRandom = explorationRandom;
         _ranker = ranker;
         _story = story;
         _notebook = notebook;
         _idFactory = experimentIdFactory ?? (static () => "exp-" + DateTime.UtcNow.ToString("yyyyMMddHHmmss", CultureInfo.InvariantCulture) + "-" + Guid.NewGuid().ToString("N")[..6]);
     }
 
-    public async Task<PlutoVariantABPlan> BuildVariantPairAsync(string themeHint, PlutoMontagePlan? montagePlan = null, IReadOnlyList<PlutoCuratedPhotoCandidate>? curatedCuts = null,
+    public Task<PlutoVariantABPlan> BuildVariantPairAsync(string themeHint, PlutoMontagePlan? montagePlan = null, IReadOnlyList<PlutoCuratedPhotoCandidate>? curatedCuts = null,
         CancellationToken ct = default)
+        => BuildVariantPairAsync(themeHint, null, montagePlan, curatedCuts, ct);
+
+    public async Task<PlutoVariantABPlan> BuildVariantPairAsync(string themeHint, string? contextRenderMode, PlutoMontagePlan? montagePlan, IReadOnlyList<PlutoCuratedPhotoCandidate>? curatedCuts,
+        CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
         themeHint = string.IsNullOrWhiteSpace(themeHint) ? "" : themeHint.Trim();
@@ -118,6 +144,41 @@ public sealed class PlutoVariantABGenerator : IPlutoVariantABGenerator
         var themeHooks = PlutoMontageStoryGenerator.TemplateHookLines(themeHint);
         var champHook = rec?.TopHook.DisplayLabel ?? themeHooks[0];
         var champLook = rec?.TopColorLook.DisplayLabel ?? PlutoColorGradingCompiler.NaturalPastelName;
+
+        // 🧬 (Domain, RenderMode) 컨텍스트 랭킹 — 지역 근거가 전역 순위를 실제로 바꿀 때만 채택(콜드스타트는 전역 사후로 수축 → 단발 지역 관측에 휘둘리지 않음).
+        //    지역 근거 없음/배수 1.0 → 아래 전역 경로 그대로(기존 동작 불변).
+        contextRenderMode = string.IsNullOrWhiteSpace(contextRenderMode) ? null : contextRenderMode.Trim();
+        var contextual = false;
+        IReadOnlyList<PlutoRankedOption> ctxHooks = Array.Empty<PlutoRankedOption>();
+        try
+        {
+            ctxHooks = ranker.RankForContext(PlutoPatternKind.Hook, domain, contextRenderMode) ?? Array.Empty<PlutoRankedOption>();
+            var ctxLooks = ranker.RankForContext(PlutoPatternKind.Look, domain, contextRenderMode) ?? Array.Empty<PlutoRankedOption>();
+            if (IsContextSpecialized(ctxHooks) || IsContextSpecialized(ctxLooks))
+            {
+                contextual = true;
+                if (ctxHooks.Count > 0) { hooks = ctxHooks; exploreHooks = SortByUcb(ctxHooks); champHook = ctxHooks[0].DisplayLabel; }
+                if (ctxLooks.Count > 0) { looks = ctxLooks; exploreLooks = SortByUcb(ctxLooks); champLook = ctxLooks[0].DisplayLabel; }
+            }
+        }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.AB] context rank: " + ex.Message); }   // [부분 구제] 전역 순위
+
+        // 🎲 하이브리드 톰슨–UCB — 난수원이 주입됐을 때만(사후 추첨 편차 + UCB1 보너스 + 후회 회복 사전). 미주입 → 결정론 UCB1.
+        var policy = PlutoThompsonUcbSampler.PolicyUcb;
+        if (_explorationRandom is { } rng)
+        {
+            try
+            {
+                var priors = RecoveryPriors(ranker);
+                lock (rng)   // System.Random 은 스레드 안전하지 않다
+                {
+                    exploreHooks = PlutoThompsonUcbSampler.Rescore(exploreHooks, rng, priors);
+                    exploreLooks = PlutoThompsonUcbSampler.Rescore(exploreLooks, rng, priors);
+                }
+                policy = PlutoThompsonUcbSampler.PolicyHybrid;
+            }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.AB] thompson: " + ex.Message); }   // [부분 구제] UCB1 순위
+        }
         var champBgm = FirstUsable(bgms, rec?.TopBgmMood.DisplayLabel, ExcludedBgmMoods) ?? BabyBgmTrack.Lullaby.ToString();
         var promotedByConfidence = PromoteProvenChampion(hooks, ref champHook);   // 🎯 소표본 급등 1위 → 신뢰 하한이 더 높은 검증 후보
         var drift = SafeDrift(ranker);                                             // 🌊 레짐 드리프트 → 탐색 서지
@@ -143,7 +204,13 @@ public sealed class PlutoVariantABGenerator : IPlutoVariantABGenerator
         var a = new PlutoExperimentVariant(ChampionLabel, champHook, champLook, champBgm, BuildSuffix(champHook, champLook, champBgm), champTask.Result);
         var b = new PlutoExperimentVariant(ChallengerLabel, challHook, challLook, challBgm, BuildSuffix(challHook, challLook, challBgm), challTask.Result);
         var hypothesis = BuildHypothesis(a, b, rec);
-        if (challBonus > PlutoAdaptivePatternRanker.Epsilon) hypothesis += " · 🎰 UCB1 탐색 보너스 +" + challBonus.ToString("0.00", CultureInfo.InvariantCulture) + "(덜 검증된 후보)";
+        var thompson = string.Equals(policy, PlutoThompsonUcbSampler.PolicyHybrid, StringComparison.Ordinal);
+        if (thompson) hypothesis += " · 🎲 톰슨–UCB 하이브리드 탐색(챌린저 탐색 점수 " + (challBonus >= 0 ? "+" : "−") + Math.Abs(challBonus).ToString("0.00", CultureInfo.InvariantCulture) + ")";
+        else if (challBonus > PlutoAdaptivePatternRanker.Epsilon) hypothesis += " · 🎰 UCB1 탐색 보너스 +" + challBonus.ToString("0.00", CultureInfo.InvariantCulture) + "(덜 검증된 후보)";
+        var champTransfer = TransferOf(ctxHooks, champHook);
+        if (champTransfer.IsTransferActive)
+            hypothesis += " · 🧬 콜드스타트 컨텍스트 — 전역 검증 사전 이식(전역 가중 " + (champTransfer.GlobalWeight * 100.0).ToString("0", CultureInfo.InvariantCulture) + "%)";
+        else if (contextual) hypothesis += " · 🧬 컨텍스트 특화 순위 반영";
         if (champSynergy >= PlutoPairAttribution.StrongSynergyScore) hypothesis += " · 🔗 챔피언 조합 시너지 ×" + champSynergy.ToString("0.00", CultureInfo.InvariantCulture);
         var champConf = ConfidenceOf(hooks, champHook);
         var challConf = ConfidenceOf(exploreHooks, challHook);
@@ -165,7 +232,52 @@ public sealed class PlutoVariantABGenerator : IPlutoVariantABGenerator
             ExplorationTemperature = drift.ExplorationTemperature,
             RegretRehearsalLabel = rehearsal?.Label,
             RegretRehearsalBoost = rehearsal?.Boost ?? 0.0,
+            ExplorationPolicy = policy,
+            ContextRenderMode = contextRenderMode,
+            ChampionContextTransfer = champTransfer,
+            IsContextSpecialized = contextual,
         };
+    }
+
+    // ── 🧬 컨텍스트 랭킹 · 🎲 톰슨–UCB ──
+
+    private static bool IsContextSpecialized(IReadOnlyList<PlutoRankedOption> ranked)
+    {
+        for (var i = 0; i < ranked.Count; i++) if (Math.Abs(ranked[i].ContextMultiplier - 1.0) > PlutoAdaptivePatternRanker.Epsilon) return true;
+        return false;
+    }
+
+    private static PlutoEmpiricalBayesEstimate TransferOf(IReadOnlyList<PlutoRankedOption> ranked, string label)
+    {
+        for (var i = 0; i < ranked.Count; i++) if (string.Equals(ranked[i].DisplayLabel, label, StringComparison.Ordinal)) return ranked[i].ContextTransfer ?? PlutoEmpiricalBayesEstimate.None;
+        return PlutoEmpiricalBayesEstimate.None;
+    }
+
+    private static List<PlutoRankedOption> SortByUcb(IReadOnlyList<PlutoRankedOption> ranked)
+    {
+        var list = new List<PlutoRankedOption>(ranked);
+        list.Sort(static (a, b) =>
+        {
+            var c = b.UcbScore.CompareTo(a.UcbScore);
+            return c != 0 ? c : string.CompareOrdinal(a.Key, b.Key);
+        });
+        return list;
+    }
+
+    /// <summary>🔁 후회 회복 사전 → 후보 키(<c>hook:…</c> · <c>look:…</c>)별 부스트(조합 <c>pair:</c> 는 리허설 단계가 따로 처리).</summary>
+    private static Dictionary<string, double>? RecoveryPriors(IPlutoAdaptivePatternRanker ranker)
+    {
+        var boosts = SafeRecoveryBoosts(ranker);
+        if (boosts.Count == 0) return null;
+        var map = new Dictionary<string, double>(boosts.Count, StringComparer.Ordinal);
+        for (var i = 0; i < boosts.Count; i++)
+        {
+            var b = boosts[i];
+            if (b is null || string.IsNullOrWhiteSpace(b.Label) || !(b.Boost > 0)) continue;
+            if (!b.Label.StartsWith(PlutoAdaptivePatternRanker.HookPrefix, StringComparison.Ordinal) && !b.Label.StartsWith(PlutoAdaptivePatternRanker.LookPrefix, StringComparison.Ordinal)) continue;
+            if (!map.TryGetValue(b.Label, out var cur) || b.Boost > cur) map[b.Label] = b.Boost;
+        }
+        return map;
     }
 
     // ── 🔁 능동 후회 리허설 ──

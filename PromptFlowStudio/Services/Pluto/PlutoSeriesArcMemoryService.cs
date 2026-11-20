@@ -19,6 +19,26 @@ public sealed record PlutoSeriesEpisodeStat(int EpisodeNumber, string VideoId, s
 {
     /// <summary>유지 지수(0~100) = (3초 유지율 + 완주율) / 2 · 미측정 → 0.</summary>
     public double RetentionIndex => IsMeasured ? PlutoSeriesArcMemoryService.RetentionIndexOf(HookRetentionPct, CompletionPct) : 0.0;
+    /// <summary>📐 측정 시점(관측 반영 이전)의 (Domain, RenderMode) 컨텍스트 기준선 — 3초 유지율(%) · 미성립 → 표본 0.</summary>
+    public double BaselineHookPct { get; init; }
+    /// <summary>📐 컨텍스트 기준선 — 완주율(%).</summary>
+    public double BaselineCompletionPct { get; init; }
+    /// <summary>📐 기준선 유효 표본 수(0 → 기준선 없음).</summary>
+    public double BaselineSamples { get; init; }
+    public bool HasContextBaseline => IsMeasured && BaselineSamples > 0;
+    /// <summary>📐 기준선 유지 지수(0~100) — 기준선 없음 → 0.</summary>
+    public double BaselineRetentionIndex => HasContextBaseline ? PlutoSeriesArcMemoryService.RetentionIndexOf(BaselineHookPct, BaselineCompletionPct) : 0.0;
+}
+
+/// <summary>📺 시리즈 훅/아웃트로 에스컬레이션 적용 방식 — 자동 각색(기본) · 추천만 표시(자막 원문 보존).</summary>
+public enum PlutoSeriesEscalationMode { AutoRewrite = 0, RecommendOnly = 1 }
+
+/// <summary>🆕 시즌 현황 — 같은 테마 · 같은 편수 시리즈의 현재 시즌 번호(1부터) · 그 시즌에 기록된 편/측정 편 수.</summary>
+public sealed record PlutoSeriesSeasonInfo(string BaseKey, int Season, int EpisodeCount, int MeasuredCount, DateTimeOffset StartedAtUtc)
+{
+    public static readonly PlutoSeriesSeasonInfo None = new(string.Empty, 1, 0, 0, default);
+    /// <summary>현재 시즌에 기록된 편이 있음(= 새 시즌 분리 가능 · 빈 시즌 중복 생성 방지).</summary>
+    public bool HasArc => EpisodeCount > 0;
 }
 
 /// <summary>📺 연속 측정 편 사이의 유지 지수 변화(퍼센트포인트 · 음수 = 이탈).</summary>
@@ -32,6 +52,16 @@ public sealed record PlutoSeriesArcReport(string SeriesKey, string SeriesTitle, 
     PlutoSeriesDropAxis DropAxis, int EscalationLevel, bool HookOverheated, string AnchorColorLookId, string AnchorBgmMood, DateTimeOffset UpdatedAtUtc)
 {
     public bool HasAnchor => AnchorColorLookId.Length > 0 || AnchorBgmMood.Length > 0;
+    /// <summary>🆕 시즌 번호(1부터) — 같은 테마 · 편수로 다시 만든 시리즈는 시즌으로 분리.</summary>
+    public int Season { get; init; } = 1;
+    /// <summary>📐 편 간 비교(2편 이상) 없이, 단일 측정 편이 컨텍스트 기준선을 <see cref="PlutoSeriesArcMemoryService.DropThresholdPts"/> 이상 밑돌아 판정된 이탈.</summary>
+    public bool IsBaselineDropOff { get; init; }
+    /// <summary>📐 기준선 비교 대상 편 번호(없음 → 0).</summary>
+    public int BaselineEpisode { get; init; }
+    /// <summary>📐 유지 지수 − 컨텍스트 기준선(p · 음수 = 미달 · 비교 불가 → 0).</summary>
+    public double BaselineGapPts { get; init; }
+    public double BaselineHookGapPts { get; init; }
+    public double BaselineCompletionGapPts { get; init; }
 }
 
 /// <summary>
@@ -52,6 +82,8 @@ public sealed record PlutoSeriesContinuityDirective(string SeriesKey, int NextEp
 public sealed record PlutoSeriesArcStatus(int TrackedSeriesCount, int MeasuredEpisodeCount, int DropOffSeriesCount, PlutoSeriesArcReport? FocusArc)
 {
     public static readonly PlutoSeriesArcStatus Empty = new(0, 0, 0, null);
+    /// <summary>📺 에스컬레이션 적용 방식(기본 = 자동 각색).</summary>
+    public PlutoSeriesEscalationMode EscalationMode { get; init; }
 }
 
 /// <summary>📺 Step 16 시리즈 아크 · 편 간 유지율 연속성 메모리.</summary>
@@ -80,6 +112,27 @@ public interface IPlutoSeriesArcMemoryService
 
     /// <summary>아크 변경 통지(백그라운드 스레드 가능).</summary>
     event Action? Changed;
+
+    /// <summary>
+    /// ⚡ 렌더 완료 즉시 반영(동기 · 메모리 write-through) — 반환 시점에 다음 편 지시가 이 편의 룩/BGM 을 앵커로 본다(디스크 기록은 백그라운드).
+    /// 시리즈 편이 아니거나 변화 없음 → false.
+    /// </summary>
+    bool RecordRenderedEpisode(PlutoRenderedClipRecord clip) => false;
+
+    /// <summary>🆕 새 시즌 분리 — 현재 시즌에 기록된 편이 있을 때만 다음 시즌을 연다(이전 시즌 텔레메트리 보존 · 빈 시즌 → 무변경).</summary>
+    Task<PlutoSeriesSeasonInfo> StartNewSeasonAsync(string? seriesThemeOrTitle, int totalEpisodes, CancellationToken ct = default) => Task.FromResult(PlutoSeriesSeasonInfo.None);
+
+    /// <summary>🆕 현재 시즌 현황(메모리 기준 · 동기).</summary>
+    PlutoSeriesSeasonInfo GetSeasonInfo(string? seriesThemeOrTitle, int totalEpisodes) => PlutoSeriesSeasonInfo.None;
+
+    /// <summary>📺 에스컬레이션 적용 방식(기본 = 자동 각색).</summary>
+    PlutoSeriesEscalationMode EscalationMode => PlutoSeriesEscalationMode.AutoRewrite;
+
+    /// <summary>📺 적용 방식 변경(영속).</summary>
+    Task SetEscalationModeAsync(PlutoSeriesEscalationMode mode, CancellationToken ct = default) => Task.CompletedTask;
+
+    /// <summary>백그라운드 기록 완료 대기(테스트 · 종료 시).</summary>
+    Task FlushAsync() => Task.CompletedTask;
 }
 
 /// <summary>
@@ -92,6 +145,10 @@ public interface IPlutoSeriesArcMemoryService
 ///     단, 직전 편이 이미 클릭베이트(3초 ≥ 65% ∧ 완주 &lt; 20%)면 오프닝 훅은 더 올리지 않는다(과열 방지 — 아웃트로만).
 ///   ▸ 앵커 = 앞선 편들의 최빈 룩 / BGM 무드(동률 → 가장 앞선 편) — 다음 편 조립 시 그대로 유지해 시리즈 정체성을 잇는다.
 ///   ▸ 적재 불가(잠금·권한) 세션은 기존 파일 덮어쓰기 금지 · 영속 실패 → [부분 구제] 메모리 유지.
+///   ▸ ⚡ Step 17 write-through: <see cref="RecordRenderedEpisode"/> 가 렌더 완료 즉시 메모리 아크를 갱신(디스크는 백그라운드 병합 기록) → 연속 렌더의 k+1편이 지연 없이 앵커를 상속.
+///     적재 이전 기록은 적재 후 디스크 상태 위에 재적용 · 미적재 부분 스냅샷은 절대 디스크를 덮지 않음 · 더 오래된 카탈로그 항목은 새 렌더를 되돌리지 못함.
+///   ▸ 🆕 시즌: 같은 테마 · 편수로 다시 만든 시리즈는 <see cref="StartNewSeasonAsync"/> 로 분리(1시즌 키 = 기존 키 · 2시즌부터 <c>@sN</c>) — 카탈로그/성과는 영상 ID → 렌더 시각 순으로 시즌 귀속.
+///   ▸ 📐 단일 편 조기 이탈: 측정 편이 1편뿐이어도 (Domain, RenderMode) 유지율 기준선(관측 이전 스냅샷)을 −<see cref="DropThresholdPts"/>p 이상 밑돌면 에스컬레이션.
 /// </summary>
 public sealed class PlutoSeriesArcMemoryService : IPlutoSeriesArcMemoryService, IDisposable
 {
@@ -120,6 +177,22 @@ public sealed class PlutoSeriesArcMemoryService : IPlutoSeriesArcMemoryService, 
         "다음 편 첫 장면에서 답이 공개돼요",
     };
 
+    /// <summary>🌐 <see cref="CuriosityGapHooks"/> 영문 짝(같은 순서).</summary>
+    public static readonly IReadOnlyList<string> CuriosityGapHooksEnglish = new[]
+    {
+        "The story we left unfinished continues now",
+        "Wondering what came after that last scene?",
+        "Miss this one and you miss half the story",
+    };
+
+    /// <summary>🌐 <see cref="CliffhangerOutros"/> 영문 짝(같은 순서).</summary>
+    public static readonly IReadOnlyList<string> CliffhangerOutrosEnglish = new[]
+    {
+        "The story continues in the next episode",
+        "The real story begins in the next episode",
+        "The answer arrives in the next episode's first scene",
+    };
+
     private static readonly CultureInfo Inv = CultureInfo.InvariantCulture;
     private static readonly JsonSerializerOptions JsonOpts = new() { WriteIndented = false };
 
@@ -130,9 +203,21 @@ public sealed class PlutoSeriesArcMemoryService : IPlutoSeriesArcMemoryService, 
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly object _sync = new();
     private readonly Dictionary<string, SeriesDto> _series = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, BaselineDto> _baselines = new(StringComparer.Ordinal);   // 📐 (Domain, RenderMode) 유지율 기준선(시리즈 편 전용 · 전역 = ctx:*)
+    private readonly List<PlutoRenderedClipRecord> _preLoadRenders = new(4);                     // ⚡ 적재 이전 write-through — 적재 후 디스크 상태 위에 재적용
+    private readonly object _flushLock = new();
+    private Task _flushTask = Task.CompletedTask;
+    private int _persistQueued;
     private volatile bool _loaded;
     private volatile bool _readOnly;
+    private volatile int _mode;
     private int _disposed;
+
+    /// <summary>📐 컨텍스트 기준선 성립 최소 표본(<see cref="PlutoContextualBaseline"/> 과 동일 규칙).</summary>
+    public const double MinBaselineSamples = PlutoContextualBaseline.MinContextSamples;
+    public const int MaxBaselineContexts = 200;
+    public const int MaxPreLoadRenders = 64;
+    public const string SeasonKeyMarker = "@s";
 
     /// <summary>☁️ <see cref="IPlutoStorageManager"/> 경유 — Drive 우선 · 로컬 폴백.</summary>
     public PlutoSeriesArcMemoryService(IPlutoStorageManager storage, IPlutoRenderCatalogService? catalog = null, IPlutoMistakeNotebookService? notebook = null)
@@ -175,6 +260,18 @@ public sealed class PlutoSeriesArcMemoryService : IPlutoSeriesArcMemoryService, 
         public double CtrPct { get; set; }
         public DateTimeOffset RenderedUtc { get; set; }
         public DateTimeOffset MeasuredUtc { get; set; }
+        // ── Step 17(선택 필드 · 기본값 직렬화 생략 → Step 16 파일과 양방향 호환) — 📐 측정 시점 컨텍스트 기준선 ──
+        [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)] public double BaseH { get; set; }
+        [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)] public double BaseC { get; set; }
+        [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)] public double BaseN { get; set; }
+    }
+
+    /// <summary>📐 유지율 기준선 EWMA(3초 · 완주 · 표본).</summary>
+    public sealed class BaselineDto
+    {
+        public double H { get; set; }
+        public double C { get; set; }
+        public double N { get; set; }
     }
 
     public sealed class SeriesDto
@@ -184,12 +281,19 @@ public sealed class PlutoSeriesArcMemoryService : IPlutoSeriesArcMemoryService, 
         public int Total { get; set; }
         public DateTimeOffset UpdatedUtc { get; set; }
         public List<EpisodeDto>? Episodes { get; set; }
+        // ── Step 17(선택 필드) — 🆕 시즌(0/1 = 첫 시즌 · 키 = 기본 키 그대로) ──
+        [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)] public int Season { get; set; }
+        [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)] public string? BaseKey { get; set; }
+        [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)] public DateTimeOffset SeasonUtc { get; set; }
     }
 
     public sealed class Snapshot
     {
         public int Version { get; set; } = 1;
         public List<SeriesDto>? Series { get; set; }
+        [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] public Dictionary<string, BaselineDto>? Baselines { get; set; }
+        /// <summary>📺 에스컬레이션 적용 방식(0 = 자동 각색 · 1 = 추천만).</summary>
+        [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)] public int Mode { get; set; }
     }
 
     // ── 순수 함수 ──
@@ -246,6 +350,31 @@ public sealed class PlutoSeriesArcMemoryService : IPlutoSeriesArcMemoryService, 
     {
         var norm = PlutoRenderCatalogService.NormalizeKey(SeriesThemeOf(titleOrTheme));
         return (norm.Length == 0 ? "series" : norm) + "#" + Math.Max(0, totalEpisodes).ToString(Inv);
+    }
+
+    /// <summary>🆕 시즌 키 — 1시즌 = 기본 키(Step 16 파일 호환) · 2시즌부터 <c>기본키@sN</c>.</summary>
+    public static string SeasonKeyFor(string? titleOrTheme, int totalEpisodes, int season)
+        => SeasonKeyOf(SeriesKeyFor(titleOrTheme, totalEpisodes), season);
+
+    private static string SeasonKeyOf(string baseKey, int season) => season <= 1 ? baseKey : baseKey + SeasonKeyMarker + season.ToString(Inv);
+
+    /// <summary>
+    /// 📐 유효 기준선(순수 함수) — 성립한 컨텍스트(표본 ≥ <see cref="MinBaselineSamples"/>)는 자기 기준선 · 미성립이면 전역(성립 시)으로 부분 풀링
+    /// <c>(n·ctx + κ·global) / (n + κ)</c> · 둘 다 미성립 → false(기준선 없음 → 단일 편 이탈 판정 안 함).
+    /// </summary>
+    public static bool TryEffectiveBaseline(double ctxSamples, double ctxHook, double ctxCompletion, double globalSamples, double globalHook, double globalCompletion,
+        out double hookPct, out double completionPct, out double samples)
+    {
+        hookPct = completionPct = samples = 0.0;
+        var nc = double.IsFinite(ctxSamples) && ctxSamples > 0 ? ctxSamples : 0.0;
+        var ng = double.IsFinite(globalSamples) && globalSamples > 0 ? globalSamples : 0.0;
+        if (nc >= MinBaselineSamples) { hookPct = Pct(ctxHook); completionPct = Pct(ctxCompletion); samples = nc; return true; }
+        if (ng < MinBaselineSamples) return false;
+        const double k = PlutoContextualBaseline.PoolingKappa;
+        hookPct = (nc * Pct(ctxHook) + k * Pct(globalHook)) / (nc + k);
+        completionPct = (nc * Pct(ctxCompletion) + k * Pct(globalCompletion)) / (nc + k);
+        samples = nc + ng;
+        return true;
     }
 
     /// <summary>앞선 편(<paramref name="beforeEpisode"/> 미만 · ≤ 0 → 전체)의 최빈값(동률 → 가장 앞선 편) — BGM 은 <c>none</c>/<c>custom</c> 제외.</summary>
@@ -335,12 +464,36 @@ public sealed class PlutoSeriesArcMemoryService : IPlutoSeriesArcMemoryService, 
             if (deltas.Length >= 2 && deltas[^1].DeltaPts <= -DropThresholdPts && deltas[^2].DeltaPts <= -DropThresholdPts) level++;   // 연속 이탈
             level = Math.Min(MaxEscalationLevel, level);
         }
+        // 📐 단일 측정 편 조기 이탈 — 편 간 비교가 아직 불가능할 때(예: 3편 시리즈의 1편만 측정) 컨텍스트 기준선 대비 미달로 판정
+        //    → 3편 시리즈의 2편이 궁금증 훅 + (3편으로 잇는) 클리프행어 아웃트로를 실제로 받는다.
+        bool baselineDrop = false; int baselineEpisode = 0; double gap = 0.0, hookGap = 0.0, completionGap = 0.0;
+        if (deltas.Length == 0 && measured.Count == 1 && measured[0].HasContextBaseline)
+        {
+            var m = measured[0];
+            baselineEpisode = m.EpisodeNumber;
+            gap = m.RetentionIndex - m.BaselineRetentionIndex;
+            hookGap = Pct(m.HookRetentionPct) - Pct(m.BaselineHookPct);
+            completionGap = Pct(m.CompletionPct) - Pct(m.BaselineCompletionPct);
+            if (gap <= -DropThresholdPts)
+            {
+                drop = baselineDrop = true;
+                bool hookFell = hookGap <= -DropThresholdPts, completionFell = completionGap <= -DropThresholdPts;
+                axis = hookFell && completionFell ? PlutoSeriesDropAxis.Both
+                    : hookFell ? PlutoSeriesDropAxis.HookRetention
+                    : completionFell ? PlutoSeriesDropAxis.Completion
+                    : hookGap <= completionGap ? PlutoSeriesDropAxis.HookRetention : PlutoSeriesDropAxis.Completion;
+                level = -gap >= Level3DropPts ? 3 : -gap >= Level2DropPts ? 2 : 1;
+            }
+        }
         var overheated = measured.Count > 0
             && Pct(measured[^1].HookRetentionPct) >= PlutoParetoFrontier.ClickbaitHook * 100.0
             && Pct(measured[^1].CompletionPct) < PlutoParetoFrontier.ClickbaitCompletion * 100.0;
 
         return new PlutoSeriesArcReport(seriesKey ?? string.Empty, seriesTitle ?? string.Empty, totalEpisodes, sorted, deltas, slope, latest, measured.Count, drop, axis, level, overheated,
-            AnchorOf(sorted, beforeEpisode, bgm: false), AnchorOf(sorted, beforeEpisode, bgm: true), updatedAtUtc);
+            AnchorOf(sorted, beforeEpisode, bgm: false), AnchorOf(sorted, beforeEpisode, bgm: true), updatedAtUtc)
+        {
+            IsBaselineDropOff = baselineDrop, BaselineEpisode = baselineEpisode, BaselineGapPts = gap, BaselineHookGapPts = hookGap, BaselineCompletionGapPts = completionGap,
+        };
     }
 
     /// <summary>
@@ -356,13 +509,20 @@ public sealed class PlutoSeriesArcMemoryService : IPlutoSeriesArcMemoryService, 
         {
             if (!arc.HookOverheated) hook = PickLine(CuriosityGapHooks, arc.EscalationLevel, suppressed);
             if (arc.TotalEpisodes <= 0 || nextEpisodeNumber < arc.TotalEpisodes) outro = PickLine(CliffhangerOutros, arc.EscalationLevel, suppressed);   // 완결편은 다음 편 예고 없음
-            var d = arc.EpisodeRetentionDeltas[^1];
-            reason = "📉 " + d.FromEpisode.ToString(Inv) + "편→" + d.ToEpisode.ToString(Inv) + "편 유지 지수 " + Signed(d.DeltaPts) + "p(3초 " + Signed(d.HookDeltaPts) + " · 완주 " + Signed(d.CompletionDeltaPts)
-                + ") → " + (arc.HookOverheated ? "훅 과열 — 클리프행어 아웃트로만" : "궁금증 훅 + 클리프행어") + " Lv" + arc.EscalationLevel.ToString(Inv);
+            var action = (arc.HookOverheated ? "훅 과열 — 클리프행어 아웃트로만" : "궁금증 훅 + 클리프행어") + " Lv" + arc.EscalationLevel.ToString(Inv);
+            if (arc.IsBaselineDropOff || arc.EpisodeRetentionDeltas.Count == 0)
+                reason = "📉 " + arc.BaselineEpisode.ToString(Inv) + "편 유지 지수가 컨텍스트 기준선 대비 " + Signed(arc.BaselineGapPts) + "p(3초 " + Signed(arc.BaselineHookGapPts) + " · 완주 "
+                    + Signed(arc.BaselineCompletionGapPts) + ") → " + action;
+            else
+            {
+                var d = arc.EpisodeRetentionDeltas[^1];
+                reason = "📉 " + d.FromEpisode.ToString(Inv) + "편→" + d.ToEpisode.ToString(Inv) + "편 유지 지수 " + Signed(d.DeltaPts) + "p(3초 " + Signed(d.HookDeltaPts) + " · 완주 " + Signed(d.CompletionDeltaPts)
+                    + ") → " + action;
+            }
         }
         else reason = arc.MeasuredCount >= 2 ? "✅ 편 간 유지 양호(" + Signed(arc.EpisodeRetentionDelta) + "p) — 앵커 모티프 유지" : "앵커 모티프 유지(편 성과 2편부터 이탈 추적)";
         return new PlutoSeriesContinuityDirective(arc.SeriesKey, nextEpisodeNumber, arc.TotalEpisodes, arc.AnchorColorLookId, arc.AnchorBgmMood,
-            arc.HasDropOff ? arc.EscalationLevel : 0, arc.DropAxis, hook, outro, arc.EpisodeRetentionDelta, reason);
+            arc.HasDropOff ? arc.EscalationLevel : 0, arc.DropAxis, hook, outro, arc.IsBaselineDropOff ? arc.BaselineGapPts : arc.EpisodeRetentionDelta, reason);
     }
 
     private static string PickLine(IReadOnlyList<string> lines, int level, IReadOnlySet<string>? suppressed)
@@ -387,11 +547,51 @@ public sealed class PlutoSeriesArcMemoryService : IPlutoSeriesArcMemoryService, 
         if (hook.Length == 0 && outro.Length == 0) return cues;
         var arr = new SubtitleCue[cues.Count];
         for (var i = 0; i < arr.Length; i++) arr[i] = cues[i];
-        if (hook.Length > 0 && !(arr[0].Text ?? string.Empty).Contains(hook, StringComparison.Ordinal)) arr[0] = arr[0] with { Text = hook };
+        // 🌐 이중 언어 큐는 보조(영문) 줄도 함께 교체/확장 — 본문만 바꾸면 화면에 '새 한국어 훅 + 옛 문장의 영어 번역'이 같이 번인된다.
+        //    단일 언어 큐(SecondaryText 없음)는 그대로 단일 언어 유지.
+        if (hook.Length > 0 && !(arr[0].Text ?? string.Empty).Contains(hook, StringComparison.Ordinal))
+            arr[0] = arr[0] with { Text = hook, SecondaryText = string.IsNullOrWhiteSpace(arr[0].SecondaryText) ? arr[0].SecondaryText : EnglishLineOf(hook) };
         var last = arr.Length - 1;
         if (outro.Length > 0 && !(arr[last].Text ?? string.Empty).Contains(outro, StringComparison.Ordinal))
-            arr[last] = arr[last] with { Text = string.IsNullOrWhiteSpace(arr[last].Text) ? outro : arr[last].Text + OutroJoiner + outro };
+        {
+            var en = EnglishLineOf(outro);
+            var blank = string.IsNullOrWhiteSpace(arr[last].Text);
+            var secondary = arr[last].SecondaryText;
+            if (!string.IsNullOrWhiteSpace(secondary) && en is not null) secondary = blank ? en : secondary + OutroJoiner + en;
+            arr[last] = arr[last] with { Text = blank ? outro : arr[last].Text + OutroJoiner + outro, SecondaryText = secondary };
+        }
         return arr;
+    }
+
+    /// <summary>
+    /// 💬 적용 방식 반영 — <see cref="PlutoSeriesEscalationMode.RecommendOnly"/> 는 자막을 절대 바꾸지 않는다(같은 인스턴스 반환 · 추천은 <see cref="BuildRecommendationLabel"/> 로 표시).
+    /// </summary>
+    public static IReadOnlyList<SubtitleCue> ApplyDirective(IReadOnlyList<SubtitleCue> cues, PlutoSeriesContinuityDirective? directive, PlutoSeriesEscalationMode mode)
+    {
+        ArgumentNullException.ThrowIfNull(cues);
+        return mode == PlutoSeriesEscalationMode.RecommendOnly ? cues : ApplyDirective(cues, directive);
+    }
+
+    /// <summary>💡 추천만 표시용 1줄(결정론 한국어) — 권고 문구 없음 → 빈 문자열.</summary>
+    public static string BuildRecommendationLabel(PlutoSeriesContinuityDirective? directive)
+    {
+        if (directive is null || !directive.EscalateHook) return string.Empty;
+        var hook = directive.RecommendedHookLine;
+        var outro = directive.CliffhangerOutroLine;
+        if (hook.Length == 0 && outro.Length == 0) return string.Empty;
+        var sb = new StringBuilder(96).Append("💡 추천(자막 미변경): ");
+        if (hook.Length > 0) sb.Append("1막 훅 \"").Append(hook).Append('"');
+        if (outro.Length > 0) sb.Append(hook.Length > 0 ? " · " : "").Append("아웃트로 \"").Append(outro).Append('"');
+        return sb.ToString();
+    }
+
+    /// <summary>🌐 궁금증 훅/클리프행어 문구의 영문 짝(미등록 → null).</summary>
+    public static string? EnglishLineOf(string? koreanLine)
+    {
+        if (string.IsNullOrEmpty(koreanLine)) return null;
+        for (var i = 0; i < CuriosityGapHooks.Count; i++) if (string.Equals(CuriosityGapHooks[i], koreanLine, StringComparison.Ordinal)) return CuriosityGapHooksEnglish[i];
+        for (var i = 0; i < CliffhangerOutros.Count; i++) if (string.Equals(CliffhangerOutros[i], koreanLine, StringComparison.Ordinal)) return CliffhangerOutrosEnglish[i];
+        return null;
     }
 
     /// <summary>📺 두뇌 리포트 1줄(결정론 한국어).</summary>
@@ -408,7 +608,12 @@ public sealed class PlutoSeriesArcMemoryService : IPlutoSeriesArcMemoryService, 
                 ? " · 📉 이탈 → " + (arc.HookOverheated ? "아웃트로" : "훅") + " 에스컬레이션 Lv" + arc.EscalationLevel.ToString(Inv)
                 : " · ✅ 유지");
         }
+        else if (arc.IsBaselineDropOff)
+            sb.Append(" · 📉 ").Append(arc.BaselineEpisode.ToString(Inv)).Append("편 기준선 대비 ").Append(Signed(arc.BaselineGapPts)).Append("p → ")
+              .Append(arc.HookOverheated ? "아웃트로" : "훅").Append(" 에스컬레이션 Lv").Append(arc.EscalationLevel.ToString(Inv));
         else sb.Append(" · 편 간 비교 대기");
+        if (arc.Season > 1) sb.Append(" · 🆕 시즌 ").Append(arc.Season.ToString(Inv));
+        if (status.EscalationMode == PlutoSeriesEscalationMode.RecommendOnly) sb.Append(" · 추천만 표시");
         if (arc.HasAnchor) sb.Append(" · 앵커 ").Append(arc.AnchorColorLookId.Length > 0 ? arc.AnchorColorLookId : "—").Append(" / ").Append(arc.AnchorBgmMood.Length > 0 ? arc.AnchorBgmMood : "—");
         if (status.TrackedSeriesCount > 1) sb.Append(" · 추적 ").Append(status.TrackedSeriesCount.ToString(Inv)).Append("개");
         if (status.DropOffSeriesCount > 1) sb.Append("(이탈 ").Append(status.DropOffSeriesCount.ToString(Inv)).Append(')');
@@ -426,6 +631,12 @@ public sealed class PlutoSeriesArcMemoryService : IPlutoSeriesArcMemoryService, 
         return t.Length > PlutoRenderCatalogService.MaxFieldLength ? t[..PlutoRenderCatalogService.MaxFieldLength] : t;
     }
 
+    public PlutoSeriesEscalationMode EscalationMode => _mode == 1 ? PlutoSeriesEscalationMode.RecommendOnly : PlutoSeriesEscalationMode.AutoRewrite;
+
+    private static int SeasonOf(SeriesDto s) => Math.Max(1, s.Season);
+
+    private static string BaseOf(SeriesDto s) => string.IsNullOrEmpty(s.BaseKey) ? s.Key : s.BaseKey;
+
     public async Task EnsureLoadedAsync(CancellationToken ct = default)
     {
         if (_loaded) return;
@@ -438,26 +649,46 @@ public sealed class PlutoSeriesArcMemoryService : IPlutoSeriesArcMemoryService, 
             lock (_sync)
             {
                 _series.Clear();
+                _baselines.Clear();
                 if (data?.Series is { } list)
                     foreach (var s in list)
                     {
                         if (s is null || string.IsNullOrWhiteSpace(s.Key) || _series.Count >= MaxSeries) continue;
                         var clean = new SeriesDto { Key = s.Key.Trim(), Title = Clip(s.Title), Total = Math.Clamp(s.Total, 0, MaxEpisodesPerSeries), UpdatedUtc = s.UpdatedUtc, Episodes = new List<EpisodeDto>() };
+                        if (s.Season > 1 && !string.IsNullOrWhiteSpace(s.BaseKey))
+                        {
+                            clean.Season = Math.Min(s.Season, 9999);
+                            clean.BaseKey = s.BaseKey.Trim();
+                            clean.SeasonUtc = s.SeasonUtc;
+                        }
                         if (s.Episodes is not null)
                             foreach (var e in s.Episodes)
                             {
                                 if (e is null || e.N < 1 || e.N > MaxEpisodesPerSeries || FindEpisode(clean, e.N) is not null) continue;
                                 var finite = double.IsFinite(e.HookPct) && double.IsFinite(e.CompletionPct) && double.IsFinite(e.CtrPct);
+                                var baseOk = double.IsFinite(e.BaseH) && double.IsFinite(e.BaseC) && double.IsFinite(e.BaseN) && e.BaseN > 0;
                                 clean.Episodes.Add(new EpisodeDto
                                 {
                                     N = e.N, VideoId = Clip(e.VideoId), Hook = Clip(e.Hook), Look = Clip(e.Look), Bgm = Clip(e.Bgm), Measured = e.Measured && finite,
                                     HookPct = Pct(e.HookPct), CompletionPct = Pct(e.CompletionPct), CtrPct = Pct(e.CtrPct), RenderedUtc = e.RenderedUtc, MeasuredUtc = e.MeasuredUtc,
+                                    BaseH = baseOk ? Pct(e.BaseH) : 0.0, BaseC = baseOk ? Pct(e.BaseC) : 0.0, BaseN = baseOk ? e.BaseN : 0.0,
                                 });
                             }
                         _series[clean.Key] = clean;
                     }
+                if (data?.Baselines is { } baselines)
+                    foreach (var kv in baselines)
+                    {
+                        if (string.IsNullOrWhiteSpace(kv.Key) || kv.Value is not { } b || _baselines.Count >= MaxBaselineContexts) continue;
+                        if (!double.IsFinite(b.H) || !double.IsFinite(b.C) || !double.IsFinite(b.N) || b.N <= 0) continue;
+                        _baselines[kv.Key] = new BaselineDto { H = Pct(b.H), C = Pct(b.C), N = Math.Min(PlutoLearningService.MaxExpectancySamples, b.N) };
+                    }
+                _mode = data?.Mode == 1 ? 1 : 0;
+                // ⚡ 적재 이전 write-through 를 디스크 상태 위에 재적용(측정된 편 보호 · 오래된 항목 무시 규칙 그대로)
+                for (var i = 0; i < _preLoadRenders.Count; i++) ApplyRenderLocked(_preLoadRenders[i], null);
+                _preLoadRenders.Clear();
+                _loaded = true;   // _sync 안에서 전환 — RecordRenderedEpisode 의 '적재 전' 판정과 원자적
             }
-            _loaded = true;
         }
         finally { _gate.Release(); }
     }
@@ -469,8 +700,8 @@ public sealed class PlutoSeriesArcMemoryService : IPlutoSeriesArcMemoryService, 
         return null;
     }
 
-    /// <summary>시리즈 조회/생성(잠금 안) — 상한 초과 시 가장 오래된 시리즈 축출.</summary>
-    private SeriesDto GetOrAddLocked(string key, string title, int total, DateTimeOffset now)
+    /// <summary>시리즈 조회/생성(잠금 안) — 상한 초과 시 가장 오래된 시리즈 축출(<paramref name="protect"/> 제외).</summary>
+    private SeriesDto GetOrAddLocked(string key, string title, int total, DateTimeOffset now, string? protect = null)
     {
         if (_series.TryGetValue(key, out var s)) return s;
         if (_series.Count >= MaxSeries)
@@ -478,7 +709,10 @@ public sealed class PlutoSeriesArcMemoryService : IPlutoSeriesArcMemoryService, 
             string? oldest = null;
             var oldestUtc = DateTimeOffset.MaxValue;
             foreach (var kv in _series)
+            {
+                if (protect is not null && string.Equals(kv.Key, protect, StringComparison.Ordinal)) continue;
                 if (kv.Value.UpdatedUtc < oldestUtc || (kv.Value.UpdatedUtc == oldestUtc && string.CompareOrdinal(kv.Key, oldest) < 0)) { oldest = kv.Key; oldestUtc = kv.Value.UpdatedUtc; }
+            }
             if (oldest is not null) _series.Remove(oldest);
         }
         s = new SeriesDto { Key = key, Title = title, Total = total, UpdatedUtc = now, Episodes = new List<EpisodeDto>(Math.Min(total, 8)) };
@@ -486,10 +720,79 @@ public sealed class PlutoSeriesArcMemoryService : IPlutoSeriesArcMemoryService, 
         return s;
     }
 
+    /// <summary>🆕 현재(가장 큰 번호) 시즌 아크(잠금 안) — 없음 → null · season = 1.</summary>
+    private SeriesDto? CurrentSeasonLocked(string baseKey, out int season)
+    {
+        SeriesDto? best = null;
+        season = 1;
+        foreach (var kv in _series)
+        {
+            var s = kv.Value;
+            if (!string.Equals(BaseOf(s), baseKey, StringComparison.Ordinal)) continue;
+            var n = SeasonOf(s);
+            if (best is null || n > season) { best = s; season = n; }
+        }
+        return best;
+    }
+
+    /// <summary>
+    /// 🆕 시즌 귀속(잠금 안) — ① 같은 영상 ID 의 편을 가진 시즌 ② 렌더 시각 이전에 시작한 가장 최근 시즌 ③ (시각 미상) 현재 시즌.
+    /// 카탈로그에 남아 있는 이전 시즌 렌더가 새 시즌 아크로 흘러들지 않게 한다.
+    /// </summary>
+    private int ResolveSeasonLocked(string baseKey, int episode, string? videoId, DateTimeOffset at)
+    {
+        int current = 1, byTime = 0;
+        foreach (var kv in _series)
+        {
+            var s = kv.Value;
+            if (!string.Equals(BaseOf(s), baseKey, StringComparison.Ordinal)) continue;
+            var n = SeasonOf(s);
+            if (!string.IsNullOrEmpty(videoId) && FindEpisode(s, episode) is { } e && string.Equals(e.VideoId, videoId, StringComparison.OrdinalIgnoreCase)) return n;
+            if (n > current) current = n;
+            if (s.SeasonUtc <= at && n > byTime) byTime = n;
+        }
+        if (at == default) return current;
+        return byTime > 0 ? byTime : 1;
+    }
+
+    /// <summary>
+    /// 렌더 1건을 아크에 반영(잠금 안) — 반환 = 변경 여부.
+    ///   ▸ 측정된 편은 다른 영상의 재렌더로 덮지 않는다(실측 성과는 그 영상의 것).
+    ///   ▸ 더 오래된 렌더(늦게 도착한 카탈로그 항목)는 이미 반영된 더 새로운 렌더를 되돌리지 못한다.
+    /// <paramref name="seen"/> ≠ null → 같은 (시즌, 편)은 처음 본 항목만 채택(카탈로그는 최신순).
+    /// </summary>
+    private bool ApplyRenderLocked(PlutoRenderedClipRecord? c, HashSet<string>? seen)
+    {
+        if (c is null || !TryParseEpisodeMode(c.RenderMode, out var n, out var total)) return false;
+        var baseKey = SeriesKeyFor(c.Title, total);
+        var key = SeasonKeyOf(baseKey, ResolveSeasonLocked(baseKey, n, c.VideoId, c.RenderedAtUtc));
+        if (seen is not null && !seen.Add(key + "|" + n.ToString(Inv))) return false;
+        var s = GetOrAddLocked(key, SeriesThemeOf(c.Title), total, c.RenderedAtUtc);
+        var e = FindEpisode(s, n);
+        if (e is null)
+        {
+            (s.Episodes ??= new List<EpisodeDto>()).Add(new EpisodeDto { N = n, VideoId = c.VideoId, Hook = c.HookStyle, Look = c.ColorLookId, Bgm = c.BgmMood, RenderedUtc = c.RenderedAtUtc });
+            if (c.RenderedAtUtc > s.UpdatedUtc) s.UpdatedUtc = c.RenderedAtUtc;
+            return true;
+        }
+        var same = string.Equals(e.VideoId, c.VideoId, StringComparison.OrdinalIgnoreCase);
+        if (e.Measured && !same) return false;
+        if (!same && c.RenderedAtUtc < e.RenderedUtc) return false;
+        if (same && string.Equals(e.Hook, c.HookStyle, StringComparison.Ordinal) && string.Equals(e.Look, c.ColorLookId, StringComparison.Ordinal)
+            && string.Equals(e.Bgm, c.BgmMood, StringComparison.Ordinal)) return false;
+        e.VideoId = c.VideoId; e.Hook = c.HookStyle; e.Look = c.ColorLookId; e.Bgm = c.BgmMood; e.RenderedUtc = c.RenderedAtUtc;
+        if (c.RenderedAtUtc > s.UpdatedUtc) s.UpdatedUtc = c.RenderedAtUtc;
+        return true;
+    }
+
     private async Task<bool> PersistAsync(CancellationToken ct)
     {
-        if (_readOnly) return false;   // 🛡️ 적재 불가 파일 보호
-        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        if (_readOnly || Volatile.Read(ref _disposed) != 0) return false;   // 🛡️ 적재 불가 파일 보호
+        try
+        {
+            await _gate.WaitAsync(ct).ConfigureAwait(false);
+        }
+        catch (ObjectDisposedException) { return false; }
         try
         {
             string json;
@@ -498,7 +801,15 @@ public sealed class PlutoSeriesArcMemoryService : IPlutoSeriesArcMemoryService, 
                 var list = new List<SeriesDto>(_series.Count);
                 foreach (var kv in _series) list.Add(kv.Value);
                 list.Sort(static (a, b) => string.CompareOrdinal(a.Key, b.Key));   // 결정론 순서
-                json = JsonSerializer.Serialize(new Snapshot { Series = list }, JsonOpts);
+                Dictionary<string, BaselineDto>? baselines = null;
+                if (_baselines.Count > 0)
+                {
+                    var keys = new List<string>(_baselines.Keys);
+                    keys.Sort(StringComparer.Ordinal);
+                    baselines = new Dictionary<string, BaselineDto>(keys.Count, StringComparer.Ordinal);
+                    for (var i = 0; i < keys.Count; i++) baselines[keys[i]] = _baselines[keys[i]];
+                }
+                json = JsonSerializer.Serialize(new Snapshot { Series = list, Baselines = baselines, Mode = _mode }, JsonOpts);
             }
             return _storage is not null
                 ? await _storage.WriteAllTextAtomicAsync(FileName, json, ct).ConfigureAwait(false)
@@ -506,10 +817,52 @@ public sealed class PlutoSeriesArcMemoryService : IPlutoSeriesArcMemoryService, 
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.SeriesArc] persist: " + ex.Message); return false; }   // [부분 구제]
-        finally { _gate.Release(); }
+        finally
+        {
+            try { _gate.Release(); }
+            catch (ObjectDisposedException) { /* 종료 경합 — 기록은 이미 끝났거나 포기 */ }
+        }
     }
 
-    // ── 카탈로그 동기화 · 성과 귀속 ──
+    /// <summary>
+    /// ⚡ 백그라운드 기록 예약(병합) — 기록 전에 반드시 적재를 끝낸다(미적재 부분 스냅샷이 기존 파일을 덮어 이력을 지우는 경로 차단).
+    /// 예약 중 추가 변경은 같은 기록에 합쳐지고, 스냅샷 직전 이후의 변경은 새 기록을 예약한다.
+    /// </summary>
+    private void SchedulePersist()
+    {
+        if (Volatile.Read(ref _disposed) != 0) return;
+        lock (_flushLock)
+        {
+            if (Interlocked.Exchange(ref _persistQueued, 1) != 0) return;
+            _flushTask = Task.Run(async () =>
+            {
+                try
+                {
+                    await EnsureLoadedAsync(CancellationToken.None).ConfigureAwait(false);
+                    Interlocked.Exchange(ref _persistQueued, 0);
+                    await PersistAsync(CancellationToken.None).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    Interlocked.Exchange(ref _persistQueued, 0);
+                    System.Diagnostics.Debug.WriteLine("[Pluto.SeriesArc] background persist: " + ex.Message);   // [부분 구제] 메모리 유지
+                }
+            });
+        }
+    }
+
+    public async Task FlushAsync()
+    {
+        while (true)
+        {
+            Task t;
+            lock (_flushLock) t = _flushTask;
+            await t.ConfigureAwait(false);
+            lock (_flushLock) if (ReferenceEquals(t, _flushTask)) return;
+        }
+    }
+
+    // ── 카탈로그 동기화 · write-through · 성과 귀속 ──
 
     public async Task<int> SyncFromCatalogAsync(CancellationToken ct = default)
     {
@@ -519,36 +872,27 @@ public sealed class PlutoSeriesArcMemoryService : IPlutoSeriesArcMemoryService, 
         var changes = 0;
         lock (_sync)
         {
-            var seen = new HashSet<string>(StringComparer.Ordinal);   // 카탈로그는 최신순 → 편마다 가장 최근 렌더만 채택
+            var seen = new HashSet<string>(StringComparer.Ordinal);   // 카탈로그는 최신순 → (시즌, 편)마다 가장 최근 렌더만 채택
             for (var i = 0; i < clips.Count; i++)
-            {
-                var c = clips[i];
-                if (c is null || !TryParseEpisodeMode(c.RenderMode, out var n, out var total)) continue;
-                var key = SeriesKeyFor(c.Title, total);
-                if (!seen.Add(key + "|" + n.ToString(Inv))) continue;
-                var s = GetOrAddLocked(key, SeriesThemeOf(c.Title), total, c.RenderedAtUtc);
-                var e = FindEpisode(s, n);
-                if (e is null)
-                {
-                    (s.Episodes ??= new List<EpisodeDto>()).Add(new EpisodeDto { N = n, VideoId = c.VideoId, Hook = c.HookStyle, Look = c.ColorLookId, Bgm = c.BgmMood, RenderedUtc = c.RenderedAtUtc });
-                    if (c.RenderedAtUtc > s.UpdatedUtc) s.UpdatedUtc = c.RenderedAtUtc;
-                    changes++;
-                    continue;
-                }
-                // 측정된 편은 단순 재렌더로 덮지 않는다(실측 성과는 그 영상의 것) — 같은 영상이거나 미측정일 때만 구성 갱신
-                var same = string.Equals(e.VideoId, c.VideoId, StringComparison.OrdinalIgnoreCase);
-                if (e.Measured && !same) continue;
-                if (same && string.Equals(e.Hook, c.HookStyle, StringComparison.Ordinal) && string.Equals(e.Look, c.ColorLookId, StringComparison.Ordinal)
-                    && string.Equals(e.Bgm, c.BgmMood, StringComparison.Ordinal)) continue;
-                e.VideoId = c.VideoId; e.Hook = c.HookStyle; e.Look = c.ColorLookId; e.Bgm = c.BgmMood; e.RenderedUtc = c.RenderedAtUtc;
-                if (c.RenderedAtUtc > s.UpdatedUtc) s.UpdatedUtc = c.RenderedAtUtc;
-                changes++;
-            }
+                if (ApplyRenderLocked(clips[i], seen)) changes++;
         }
         if (changes == 0) return 0;
         await PersistAsync(ct).ConfigureAwait(false);
         RaiseChanged();
         return changes;
+    }
+
+    public bool RecordRenderedEpisode(PlutoRenderedClipRecord clip)
+    {
+        if (clip is null || Volatile.Read(ref _disposed) != 0 || !TryParseEpisodeMode(clip.RenderMode, out _, out _)) return false;
+        lock (_sync)
+        {
+            if (!ApplyRenderLocked(clip, null)) return false;
+            if (!_loaded && _preLoadRenders.Count < MaxPreLoadRenders) _preLoadRenders.Add(clip);
+        }
+        SchedulePersist();
+        RaiseChanged();
+        return true;
     }
 
     public async Task<bool> RecordEpisodePerformanceAsync(PlutoVideoPerformanceTelemetry telemetry, CancellationToken ct = default)
@@ -572,19 +916,36 @@ public sealed class PlutoSeriesArcMemoryService : IPlutoSeriesArcMemoryService, 
         else return false;   // 시리즈 편이 아님
 
         var videoId = Clip(clip?.VideoId is { Length: > 0 } cid ? cid : telemetry.VideoId);
+        var mode = !string.IsNullOrWhiteSpace(telemetry.RenderMode) ? telemetry.RenderMode : clip?.RenderMode;
+        var contextKey = PlutoContextualBaseline.IsExplicit(telemetry.Domain, mode) ? PlutoContextualBaseline.ContextKey(telemetry.Domain, mode) : null;
+        double hookPct = Pct(telemetry.ThreeSecondHookRetentionPct), completionPct = Pct(telemetry.AverageCompletionPct);
         var now = Now();
         lock (_sync)
         {
-            var s = GetOrAddLocked(SeriesKeyFor(titleSource, total), SeriesThemeOf(titleSource), total, now);
+            var baseKey = SeriesKeyFor(titleSource, total);
+            var s = GetOrAddLocked(SeasonKeyOf(baseKey, ResolveSeasonLocked(baseKey, n, videoId, clip?.RenderedAtUtc ?? default)), SeriesThemeOf(titleSource), total, now);
             var e = FindEpisode(s, n);
             if (e is null) { e = new EpisodeDto { N = n, RenderedUtc = clip?.RenderedAtUtc ?? default }; (s.Episodes ??= new List<EpisodeDto>()).Add(e); }
+            var remeasure = e.Measured && string.Equals(e.VideoId, videoId, StringComparison.OrdinalIgnoreCase);
+            if (!remeasure)
+            {
+                // 📐 기준선은 관측 '이전' 스냅샷(자기 자신이 기준을 오염시키지 않음) → 그 뒤 컨텍스트 · 전역 EWMA 갱신. 같은 영상 재측정은 기준선에 다시 넣지 않는다.
+                BaselineDto? cb = null;
+                if (contextKey is not null) _baselines.TryGetValue(contextKey, out cb);
+                _baselines.TryGetValue(PlutoContextualBaseline.GlobalContextKey, out var gb);
+                if (contextKey is not null && TryEffectiveBaseline(cb?.N ?? 0.0, cb?.H ?? 0.0, cb?.C ?? 0.0, gb?.N ?? 0.0, gb?.H ?? 0.0, gb?.C ?? 0.0, out var bh, out var bc, out var bn))
+                { e.BaseH = bh; e.BaseC = bc; e.BaseN = bn; }
+                else { e.BaseH = e.BaseC = e.BaseN = 0.0; }
+                if (contextKey is not null) UpdateBaselineLocked(contextKey, hookPct, completionPct);
+                UpdateBaselineLocked(PlutoContextualBaseline.GlobalContextKey, hookPct, completionPct);
+            }
             e.VideoId = videoId;
             e.Hook = FirstNonEmpty(telemetry.HookStyle, clip?.HookStyle, e.Hook);
             e.Look = FirstNonEmpty(telemetry.ColorLookId, clip?.ColorLookId, e.Look);
             e.Bgm = FirstNonEmpty(telemetry.BgmMood, clip?.BgmMood, e.Bgm);
             e.Measured = true;
-            e.HookPct = Pct(telemetry.ThreeSecondHookRetentionPct);
-            e.CompletionPct = Pct(telemetry.AverageCompletionPct);
+            e.HookPct = hookPct;
+            e.CompletionPct = completionPct;
             e.CtrPct = Pct(telemetry.ClickThroughRatePct);
             e.MeasuredUtc = now;
             s.UpdatedUtc = now;
@@ -594,8 +955,78 @@ public sealed class PlutoSeriesArcMemoryService : IPlutoSeriesArcMemoryService, 
         return true;
     }
 
+    /// <summary>📐 유지율 기준선 EWMA 갱신(잠금 안 · 초기 구간 단순 평균 → 스텝 <see cref="PlutoContextualBaseline.Alpha"/>).</summary>
+    private void UpdateBaselineLocked(string key, double hookPct, double completionPct)
+    {
+        if (!_baselines.TryGetValue(key, out var b))
+        {
+            if (_baselines.Count >= MaxBaselineContexts && !string.Equals(key, PlutoContextualBaseline.GlobalContextKey, StringComparison.Ordinal)) return;
+            b = new BaselineDto();
+            _baselines[key] = b;
+        }
+        var n = Math.Min(PlutoLearningService.MaxExpectancySamples, b.N + 1.0);
+        var step = PlutoContextualBaseline.StepFor(n, PlutoContextualBaseline.Alpha);
+        b.H += step * (hookPct - b.H);
+        b.C += step * (completionPct - b.C);
+        b.N = n;
+    }
+
     private static string FirstNonEmpty(string? a, string? b, string? c)
         => !string.IsNullOrWhiteSpace(a) ? Clip(a) : !string.IsNullOrWhiteSpace(b) ? Clip(b) : Clip(c);
+
+    // ── 🆕 시즌 · 적용 방식 ──
+
+    private PlutoSeriesSeasonInfo SeasonInfoLocked(string baseKey)
+    {
+        var cur = CurrentSeasonLocked(baseKey, out var season);
+        if (cur is null) return new PlutoSeriesSeasonInfo(baseKey, 1, 0, 0, default);
+        var measured = 0;
+        if (cur.Episodes is not null) for (var i = 0; i < cur.Episodes.Count; i++) if (cur.Episodes[i].Measured) measured++;
+        return new PlutoSeriesSeasonInfo(baseKey, season, cur.Episodes?.Count ?? 0, measured, cur.SeasonUtc);
+    }
+
+    public PlutoSeriesSeasonInfo GetSeasonInfo(string? seriesThemeOrTitle, int totalEpisodes)
+    {
+        lock (_sync) return SeasonInfoLocked(SeriesKeyFor(seriesThemeOrTitle, totalEpisodes));
+    }
+
+    public async Task<PlutoSeriesSeasonInfo> StartNewSeasonAsync(string? seriesThemeOrTitle, int totalEpisodes, CancellationToken ct = default)
+    {
+        await EnsureLoadedAsync(ct).ConfigureAwait(false);
+        var baseKey = SeriesKeyFor(seriesThemeOrTitle, totalEpisodes);
+        var now = Now();
+        var started = false;
+        PlutoSeriesSeasonInfo info;
+        lock (_sync)
+        {
+            var cur = CurrentSeasonLocked(baseKey, out var season);
+            if (cur?.Episodes is { Count: > 0 })   // 빈 시즌 위에 또 시즌을 쌓지 않는다(연타 멱등)
+            {
+                var next = season + 1;
+                var s = GetOrAddLocked(SeasonKeyOf(baseKey, next), cur.Title ?? SeriesThemeOf(seriesThemeOrTitle), cur.Total, now, protect: cur.Key);
+                s.Season = next;
+                s.BaseKey = baseKey;
+                s.SeasonUtc = now;
+                s.UpdatedUtc = now;
+                started = true;
+            }
+            info = SeasonInfoLocked(baseKey);
+        }
+        if (!started) return info;
+        await PersistAsync(ct).ConfigureAwait(false);
+        RaiseChanged();
+        return info;
+    }
+
+    public async Task SetEscalationModeAsync(PlutoSeriesEscalationMode mode, CancellationToken ct = default)
+    {
+        await EnsureLoadedAsync(ct).ConfigureAwait(false);
+        var value = mode == PlutoSeriesEscalationMode.RecommendOnly ? 1 : 0;
+        if (_mode == value) return;
+        _mode = value;
+        await PersistAsync(ct).ConfigureAwait(false);
+        RaiseChanged();
+    }
 
     // ── 조회 ──
 
@@ -605,9 +1036,13 @@ public sealed class PlutoSeriesArcMemoryService : IPlutoSeriesArcMemoryService, 
         for (var i = 0; i < eps.Length; i++)
         {
             var e = s.Episodes![i];
-            eps[i] = new PlutoSeriesEpisodeStat(e.N, e.VideoId ?? string.Empty, e.Hook ?? string.Empty, e.Look ?? string.Empty, e.Bgm ?? string.Empty, e.Measured, e.HookPct, e.CompletionPct, e.CtrPct);
+            eps[i] = new PlutoSeriesEpisodeStat(e.N, e.VideoId ?? string.Empty, e.Hook ?? string.Empty, e.Look ?? string.Empty, e.Bgm ?? string.Empty, e.Measured, e.HookPct, e.CompletionPct, e.CtrPct)
+            {
+                BaselineHookPct = e.BaseH, BaselineCompletionPct = e.BaseC, BaselineSamples = e.BaseN,
+            };
         }
-        return Analyze(s.Key, s.Title ?? string.Empty, s.Total, eps, s.UpdatedUtc, beforeEpisode);
+        var report = Analyze(s.Key, s.Title ?? string.Empty, s.Total, eps, s.UpdatedUtc, beforeEpisode);
+        return s.Season > 1 ? report with { Season = s.Season } : report;
     }
 
     public IReadOnlyList<PlutoSeriesArcReport> GetSeriesArcs(int maxCount = 8)
@@ -630,7 +1065,7 @@ public sealed class PlutoSeriesArcMemoryService : IPlutoSeriesArcMemoryService, 
         PlutoSeriesArcReport arc;
         lock (_sync)
         {
-            if (!_series.TryGetValue(SeriesKeyFor(seriesThemeOrTitle, totalEpisodes), out var s)) return PlutoSeriesContinuityDirective.None;
+            if (CurrentSeasonLocked(SeriesKeyFor(seriesThemeOrTitle, totalEpisodes), out _) is not { } s) return PlutoSeriesContinuityDirective.None;   // 🆕 항상 현재 시즌 기준
             arc = ReportLocked(s, nextEpisodeNumber);
         }
         IReadOnlySet<string>? suppressed = null;
@@ -654,7 +1089,7 @@ public sealed class PlutoSeriesArcMemoryService : IPlutoSeriesArcMemoryService, 
     public PlutoSeriesArcStatus GetStatus()
     {
         var arcs = GetSeriesArcs(MaxSeries);
-        if (arcs.Count == 0) return PlutoSeriesArcStatus.Empty;
+        if (arcs.Count == 0) return EscalationMode == PlutoSeriesEscalationMode.AutoRewrite ? PlutoSeriesArcStatus.Empty : PlutoSeriesArcStatus.Empty with { EscalationMode = EscalationMode };
         int measured = 0, drops = 0;
         PlutoSeriesArcReport? focus = null;
         for (var i = 0; i < arcs.Count; i++)
@@ -663,7 +1098,7 @@ public sealed class PlutoSeriesArcMemoryService : IPlutoSeriesArcMemoryService, 
             if (arcs[i].HasDropOff) drops++;
             if (focus is null && arcs[i].MeasuredCount >= 2) focus = arcs[i];   // 최근 갱신순 → 편 간 비교가 가능한 첫 시리즈
         }
-        return new PlutoSeriesArcStatus(arcs.Count, measured, drops, focus ?? arcs[0]);
+        return new PlutoSeriesArcStatus(arcs.Count, measured, drops, focus ?? arcs[0]) { EscalationMode = EscalationMode };
     }
 
     private void RaiseChanged()

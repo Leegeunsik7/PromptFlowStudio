@@ -44,6 +44,10 @@ public sealed record PlutoRankedOption(string Key, string DisplayLabel, double B
     public bool IsParetoFrontier => Pareto.IsFrontier && !Pareto.IsClickbaitSpike;
     /// <summary>🎣 3초 유지율만 높고 완주율이 붕괴한 클릭베이트 급등(학습 부스트 무효 + 강등).</summary>
     public bool IsClickbaitSpike => Pareto.IsClickbaitSpike;
+    /// <summary>🧬 (Domain, RenderMode) 컨텍스트 경험적 베이즈 추정(컨텍스트 랭킹 전용 · 그 외 → <see cref="PlutoEmpiricalBayesEstimate.None"/>).</summary>
+    public PlutoEmpiricalBayesEstimate ContextTransfer { get; init; } = PlutoEmpiricalBayesEstimate.None;
+    /// <summary>🧬 컨텍스트 순위 배수(전역 순위 대비 지역 특화 · 기본 1.0).</summary>
+    public double ContextMultiplier { get; init; } = 1.0;
 }
 
 /// <summary>
@@ -109,6 +113,15 @@ public interface IPlutoAdaptivePatternRanker
 
     /// <summary>⚖️ 전 모달리티(훅 · 룩 · BGM · 태그 순) 파레토 현황(기본 구현 → 없음).</summary>
     IReadOnlyList<PlutoParetoModalityStatus> GetParetoModalityStatus() => Array.Empty<PlutoParetoModalityStatus>();
+
+    /// <summary>
+    /// 🧬 (Domain, RenderMode) 컨텍스트 랭킹 — 콜드스타트(지역 시행 &lt; 3) 컨텍스트는 지역 추정을 검증된 전역 사후로 수축해 반영(기본 구현 → 전역 순위).
+    /// 지역 근거가 없으면 전역 순위와 완전히 같다(사전 100% 이식).
+    /// </summary>
+    IReadOnlyList<PlutoRankedOption> RankForContext(PlutoPatternKind kind, string? domain, string? renderMode, IEnumerable<string>? candidates = null) => RankOptions(kind, candidates);
+
+    /// <summary>🧬 콜드스타트 전이 현황(기본 구현 → 기록 없음).</summary>
+    PlutoColdStartTransferStatus GetColdStartTransferStatus() => PlutoColdStartTransferStatus.Empty;
 }
 
 /// <summary>
@@ -123,6 +136,7 @@ public interface IPlutoAdaptivePatternRanker
 ///   ▸ 🎯 후보마다 Normal–Normal 사후 신뢰 구간(<see cref="PlutoPosteriorConfidence"/>) 동봉 — '검증된 승자'와 '1회 급등' 구분.
 ///   ▸ ⚖️ 전 모달리티(훅 · 룩 · BGM 무드 · 스타일 태그): 다목적 근거(신선도 반영 표본 ≥ <see cref="PlutoParetoFrontier.MinObjectiveSamples"/>)가 있는 후보는 FinalScore × 파레토 배수(티어 · 최약 축 보너스) —
 ///     클릭베이트 급등은 학습 부스트(배수 &gt; 1)를 무효화하고 ×<see cref="PlutoParetoFrontier.ClickbaitFactor"/> 강등. 근거 없는 후보는 완전 불변.
+///   ▸ 🧬 <see cref="RankForContext"/>: 훅 · 룩을 (Domain, RenderMode) 지역 잔차 알파로 특화 — 콜드스타트는 <see cref="PlutoEmpiricalBayes"/> 수축(전역 순위 · 기존 API 는 불변).
 /// </summary>
 public sealed class PlutoAdaptivePatternRanker : IPlutoAdaptivePatternRanker
 {
@@ -364,6 +378,77 @@ public sealed class PlutoAdaptivePatternRanker : IPlutoAdaptivePatternRanker
             return (new PlutoObjectiveVector((v.Hook * n + v2.Hook * n2) / total, (v.Completion * n + v2.Completion * n2) / total, (v.Ctr * n + v2.Ctr * n2) / total), total);
         }
         catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Ranker] objectives: " + ex.Message); return (default, 0.0); }
+    }
+
+    // ── 🧬 계층적 경험적 베이즈 — 컨텍스트 랭킹 · 콜드스타트 전이 ──
+
+    public IReadOnlyList<PlutoRankedOption> RankForContext(PlutoPatternKind kind, string? domain, string? renderMode, IEnumerable<string>? candidates = null)
+    {
+        var list = Rank(kind, candidates, SafeSuppressed());
+        if (_learning is null || kind is not (PlutoPatternKind.Hook or PlutoPatternKind.Look) || !PlutoContextualBaseline.IsExplicit(domain, renderMode)) return list;
+        var prefix = PrefixOf(kind);
+        var adjusted = false;
+        for (var i = 0; i < list.Count; i++)
+        {
+            var o = list[i];
+            var est = SafeContextEstimate(prefix + o.DisplayLabel, domain, renderMode);
+            if (!est.HasEvidence) continue;
+            var mult = PlutoEmpiricalBayes.ContextMultiplier(est);
+            var changed = Math.Abs(mult - 1.0) > Epsilon;
+            list[i] = o with { ContextTransfer = est, ContextMultiplier = mult, FinalScore = changed ? o.FinalScore * mult : o.FinalScore };
+            adjusted |= changed;
+        }
+        if (adjusted)
+            list.Sort(static (a, b) =>
+            {
+                var c = b.FinalScore.CompareTo(a.FinalScore);
+                return c != 0 ? c : string.CompareOrdinal(a.Key, b.Key);
+            });
+        return list;
+    }
+
+    private PlutoEmpiricalBayesEstimate SafeContextEstimate(string token, string? domain, string? renderMode)
+    {
+        if (_learning is null) return PlutoEmpiricalBayesEstimate.None;
+        try
+        {
+            var (localMean, localN) = _learning.GetContextPatternAlpha(domain, renderMode, token);
+            var (globalMean, globalVar, globalN) = _learning.GetPatternAlphaStats(token);
+            return PlutoEmpiricalBayes.Shrink(localMean, localN, globalMean, globalN, globalVar);
+        }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Ranker] context estimate: " + ex.Message); return PlutoEmpiricalBayesEstimate.None; }
+    }
+
+    public PlutoColdStartTransferStatus GetColdStartTransferStatus()
+    {
+        if (_learning is null) return PlutoColdStartTransferStatus.Empty;
+        try
+        {
+            var contexts = _learning.GetContextBaselines();
+            if (contexts.Count == 0) return PlutoColdStartTransferStatus.Empty;
+            var priors = _learning.GetProvenPatternPriors(PlutoEmpiricalBayes.MinProvenSamples);
+            var cold = 0;
+            PlutoContextBaselineStat? focus = null;   // 표본 내림차순 목록 → 가장 덜 차가운 콜드스타트 컨텍스트(곧 독립할 후보)
+            for (var i = 0; i < contexts.Count; i++)
+            {
+                if (contexts[i].Samples >= PlutoEmpiricalBayes.ColdStartTrials) continue;
+                cold++;
+                focus ??= contexts[i];
+            }
+            var weightPct = 0.0;
+            if (focus is not null && priors.Count > 0)
+            {
+                var sum = 0.0;
+                for (var i = 0; i < priors.Count; i++)
+                {
+                    var (localMean, localN) = _learning.GetContextPatternAlpha(focus.Domain, focus.RenderMode, priors[i].Token);
+                    sum += PlutoEmpiricalBayes.Shrink(localMean, localN, priors[i].Alpha, priors[i].Samples, priors[i].Variance).GlobalWeight;
+                }
+                weightPct = Math.Round(sum / priors.Count * 100.0, 0, MidpointRounding.AwayFromZero);
+            }
+            return new PlutoColdStartTransferStatus(contexts.Count, cold, priors.Count, focus is null ? string.Empty : focus.Domain + "·" + focus.RenderMode, focus?.Samples ?? 0.0, weightPct);
+        }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Ranker] cold start: " + ex.Message); return PlutoColdStartTransferStatus.Empty; }
     }
 
     public PlutoCalibrationStatus GetCalibrationStatus()

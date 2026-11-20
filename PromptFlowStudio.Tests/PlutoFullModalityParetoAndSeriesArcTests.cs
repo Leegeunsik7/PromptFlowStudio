@@ -670,7 +670,7 @@ public sealed class PlutoFullModalityParetoAndSeriesArcTests : IDisposable
             Assert.Equal(2, CountOf(di, "SeriesArc = sp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoSeriesArcMemoryService)) as PromptFlowStudio.Services.Pluto.IPlutoSeriesArcMemoryService"));
         }
         Assert.Equal("pluto_series_arc.json", PlutoSeriesArcMemoryService.FileName);
-        Assert.Equal(8, PlutoDriveHealthService.CorePlutoFileCount);                                  // 핵심 허브 목록은 Step 15 그대로(아크는 저장소 관리자 경유)
+        Assert.Equal(9, PlutoDriveHealthService.CorePlutoFileCount);                                  // Step 17 — 아크가 핵심 허브(검증 · 미러 · 새 PC 복원)에 편입
     }
 
     /// <summary>항상 실패하는 아크 소스(두뇌 리포트 격리 검증용).</summary>

@@ -142,7 +142,8 @@
                     <span class="@(bs.RegretRehearsalTarget is not null ? "ws-pcore on" : "ws-retry")" data-brain-rehearsal="@((bs.RegretRehearsalTarget?.Boost ?? 0.0).ToString("0.00", CultureInfo.InvariantCulture))" style="white-space:normal" title="거듭 지나친 대안의 미해소 후회 잔액(14일 반감기)이 임계를 넘으면 다음 A/B 챌린저 B 로 배정해 실측 검증 — 검증되면 잔액 소거 · 오답 노트 차단 대안은 제외">🔁 후회 리허설: @(bs.RegretRehearsalLabel)</span>
                     @* ⚖️ 전 모달리티(훅 · 룩 · BGM · 태그) 균형 · 📺 시리즈 아크(편 간 유지율 연속성) *@
                     <span class="@(bs.ParetoEvidencedModalityCount > 0 ? "ws-pcore on" : "ws-retry")" data-brain-pareto-modality="@(bs.ParetoEvidencedModalityCount.ToString(CultureInfo.InvariantCulture))" style="white-space:normal" title="훅 · 룩 · BGM 무드 · 스타일 태그 각각을 (3초 유지율 · 완주율 · CTR) 로 비지배 정렬 — 프런티어/근거 후보 수 · 🎣 = 클릭베이트 강등 수 · 오래된 근거는 14일 유예 뒤 28일 반감기로 소멸">⚖️ 전 모달리티 균형: @(bs.ParetoModalityLabel)</span>
-                    <span class="@(bs.SeriesArc.DropOffSeriesCount > 0 ? "ws-pcore on" : "ws-retry")" data-brain-series-arc="@(bs.SeriesArc.TrackedSeriesCount.ToString(CultureInfo.InvariantCulture))" style="white-space:normal" title="시리즈 편별 유지 지수 = (3초 유지율 + 완주율) / 2 — 연속 편 사이 변화가 −5p 이하면 이탈로 보고 다음 편에 궁금증 훅 · 클리프행어 아웃트로를 권고 · 앞선 편의 룩/BGM 앵커는 그대로 유지">📺 시리즈 아크: @(bs.SeriesArcLabel)</span>
+                    <span class="@(bs.SeriesArc.DropOffSeriesCount > 0 ? "ws-pcore on" : "ws-retry")" data-brain-series-arc="@(bs.SeriesArc.TrackedSeriesCount.ToString(CultureInfo.InvariantCulture))" style="white-space:normal" title="시리즈 편별 유지 지수 = (3초 유지율 + 완주율) / 2 — 연속 편 사이 변화가 −5p 이하면 이탈로 보고 다음 편에 궁금증 훅 · 클리프행어 아웃트로를 권고 · 앞선 편의 룩/BGM 앵커는 그대로 유지 · 같은 테마로 다시 만든 시리즈는 시즌으로 분리">📺 시리즈 아크: @(bs.SeriesArcLabel)</span>
+                    <span class="@(bs.ColdStartTransfer.IsTransferActive ? "ws-pcore on" : "ws-retry")" data-brain-coldstart="@(bs.ColdStartTransfer.ColdStartContextCount.ToString(CultureInfo.InvariantCulture))" style="white-space:normal" title="계층적 경험적 베이즈: 표본이 적은 (도메인·포맷) 컨텍스트는 지역 추정을 검증된 전역 패턴 사후로 수축 — α = 지역 시행 / (지역 시행 + 사전 강도) · 지역 시행 3건부터는 지역 데이터만 사용 · 챌린저 B 는 톰슨–UCB 하이브리드 추첨">🧬 콜드스타트 전이: @(bs.ColdStartTransferLabel)</span>
                     @* 🛡️ 오답 노트 활성 가드 인스펙터 — 패턴 · 유효 벌점 · 진단 사유 · [해제](오탐 용서) *@
                     <div class="ws-brain-guards" data-mistake-inspector="@(_mistakeRules.Count.ToString(CultureInfo.InvariantCulture))" style="flex-basis:100%;display:flex;flex-wrap:wrap;gap:4px;align-items:center;font-size:12px">
                         <span class="ws-retry">🛡️ 오답 노트 활성 가드</span>
@@ -197,6 +198,13 @@
                 <div class="ws-retry" data-series-panel="@(ser.Episodes.Count.ToString(CultureInfo.InvariantCulture))" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;width:100%">
                     @if (_seriesDirective is { } sdir) { <span class="@(sdir.EscalateHook ? "ws-pcore on" : "ws-retry")" data-series-continuity="@(sdir.EscalationLevel.ToString(CultureInfo.InvariantCulture))" style="white-space:normal" title="앞선 편의 실측 유지율과 구성에서 유도 — 앵커 룩/BGM 은 자동 유지 · 이탈 감지 시 1막 훅과 마지막 자막에 반영">📺 @(sdir.NextEpisodeNumber.ToString(CultureInfo.InvariantCulture))편 연속성: @(sdir.ReasonKorean)@(sdir.HasAnchor ? " · 앵커 " + (sdir.AnchorColorLookId.Length > 0 ? sdir.AnchorColorLookId : "—") + " / " + (sdir.AnchorBgmMood.Length > 0 ? sdir.AnchorBgmMood : "—") : "")</span> }
                     <span class="ws-pcore on" data-series-summary="1">📚 '@(ser.SeriesTheme)' @(ser.Episodes.Count.ToString(CultureInfo.InvariantCulture))편 · @(ser.TotalInputPhotos.ToString(CultureInfo.InvariantCulture))장 중 고유 @(ser.TotalUsedUniquePhotos.ToString(CultureInfo.InvariantCulture))컷</span>
+                    @if (_seriesSeason is { } ssn && (ssn.HasArc || ssn.Season > 1))
+                    {
+                        <span class="ws-retry" data-series-season="@(ssn.Season.ToString(CultureInfo.InvariantCulture))" title="같은 테마 · 같은 편수 시리즈의 아크 기록 — 시즌마다 따로 보존">🗂️ 시즌 @(ssn.Season.ToString(CultureInfo.InvariantCulture)) · 기록 @(ssn.EpisodeCount.ToString(CultureInfo.InvariantCulture))편(측정 @(ssn.MeasuredCount.ToString(CultureInfo.InvariantCulture)))</span>
+                        @if (ssn.HasArc) { <button class="ws-back" data-series-new-season="1" @onclick="StartNewSeriesSeasonAsync" disabled="@(_montageBusy || _seriesBusy || _seriesRenderAllBusy)" title="같은 테마로 시리즈를 다시 만들 때 누르세요 — 이전 시즌의 편별 성과는 그대로 보존하고, 지금부터 렌더하는 편은 앵커 · 이탈 추적이 깨끗한 새 아크에서 시작합니다">[🆕 새 시즌 분리]</button> }
+                    }
+                    <button class="@(_seriesAutoRewrite ? "ws-back on" : "ws-back")" data-series-escalation-mode="@(_seriesAutoRewrite ? "auto" : "recommend")" @onclick="ToggleSeriesEscalationModeAsync" disabled="@(_montageBusy || _seriesBusy || _seriesRenderAllBusy)" title="편 간 이탈 감지 시 — 자동 각색 적용(Auto-Rewrite): 1막 훅과 마지막 자막을 자동으로 바꿉니다 · 추천만 표시(Recommend-Only): 자막 원문은 그대로 두고 추천 문구만 보여 줍니다">@(_seriesAutoRewrite ? "[✍️ 자동 각색 적용]" : "[💡 추천만 표시]")</button>
+                    @if (!_seriesAutoRewrite && _seriesDirective is { EscalateHook: true } rdir && PromptFlowStudio.Services.Pluto.PlutoSeriesArcMemoryService.BuildRecommendationLabel(rdir) is { Length: > 0 } rlabel) { <span class="ws-pcore on" role="status" data-series-recommendation="1" style="white-space:normal">@(rlabel)</span> }
                     @foreach (var ep in ser.Episodes)
                     {
                         var epRef = ep;
@@ -2463,7 +2471,7 @@
         try
         {
             var cuts = _curationResult?.SelectedCuts is { } sc && sc.Count == plan.Clips.Count ? sc : null;
-            var ab = await gen.BuildVariantPairAsync(MontageThemeHint(), plan, cuts, _mediaCts.Token);
+            var ab = await gen.BuildVariantPairAsync(MontageThemeHint(), "몽타주", plan, cuts, _mediaCts.Token);   // 🧬 (도메인, 몽타주) 컨텍스트 — 콜드스타트는 전역 사전으로 수축
             if (_disposed || !ReferenceEquals(plan, _activeMontagePlan)) return;   // 플랜 교체 → 폐기
             _abPlan = ab;
             _abPlanSource = plan;
@@ -2782,6 +2790,76 @@
     private string? _seriesEpisodeKey;   // 불러온 편의 사진 목록 — 일치 시 3막 자막에 "n/N편" 장식
     private PromptFlowStudio.Services.Pluto.PlutoSeriesContinuityDirective? _seriesDirective;   // 📺 불러온 편의 연속성 지시(앵커 · 훅 에스컬레이션)
     private string? _seriesAnchorLookPinned;   // 📺 시리즈 앵커로 고정한 룩(학습 최적 룩 고정과 구분해 해제)
+    private PromptFlowStudio.Services.Pluto.PlutoSeriesSeasonInfo? _seriesSeason;   // 🆕 현재 시즌(아크 기록이 있으면 [새 시즌 분리] 노출)
+    private bool _seriesAutoRewrite = true;   // 📺 이탈 에스컬레이션 적용 방식 — 자동 각색(기본) ↔ 추천만 표시
+
+    private PromptFlowStudio.Services.Pluto.IPlutoSeriesArcMemoryService? SeriesArcMemory()
+        => EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoSeriesArcMemoryService)) as PromptFlowStudio.Services.Pluto.IPlutoSeriesArcMemoryService;
+
+    /// <summary>🆕 시즌 현황 · 적용 방식 재조회(메모리 기준 · 예외 전파 금지).</summary>
+    private void RefreshSeriesSeasonInfo()
+    {
+        try
+        {
+            if (_series is { } s && SeriesArcMemory() is { } arc)
+            {
+                _seriesSeason = arc.GetSeasonInfo(s.SeriesTheme, s.Episodes.Count);
+                _seriesAutoRewrite = arc.EscalationMode == PromptFlowStudio.Services.Pluto.PlutoSeriesEscalationMode.AutoRewrite;
+            }
+            else _seriesSeason = null;
+        }
+        catch (Exception ex) { Program.Log("Workspace.SeriesSeason", ex); _seriesSeason = null; }
+    }
+
+    /// <summary>🆕 [새 시즌 분리] — 현재 시즌 기록은 보존하고 같은 테마의 새 아크를 연다 → 불러온 편을 새 시즌 기준으로 다시 조립(예외 전파 금지).</summary>
+    private async Task StartNewSeriesSeasonAsync()
+    {
+        if (_series is not { } s || _seriesBusy || _montageBusy || _seriesRenderAllBusy || SeriesArcMemory() is not { } arc) return;
+        var before = _seriesSeason?.Season ?? 1;
+        PromptFlowStudio.Services.Pluto.PlutoSeriesSeasonInfo info;
+        try { info = await arc.StartNewSeasonAsync(s.SeriesTheme, s.Episodes.Count, _mediaCts.Token); }
+        catch (OperationCanceledException) { return; }   // 페이지 이탈
+        catch (Exception ex) { Program.Log("Workspace.SeriesNewSeason", ex); _seriesToast = "⚠ 새 시즌 분리 실패: " + ex.Message; await InvokeAsync(StateHasChanged); return; }
+        if (_disposed || !ReferenceEquals(_series, s)) return;
+        _seriesSeason = info;
+        if (info.Season <= before)
+        {
+            _seriesToast = "ℹ️ 현재 시즌에 기록된 편이 없어 분리하지 않았어요";
+            await InvokeAsync(StateHasChanged);
+            return;
+        }
+        var label = "🆕 시즌 " + info.Season.ToString(CultureInfo.InvariantCulture) + " 시작 — 이전 시즌 기록은 보존";
+        PromptFlowStudio.Services.Pluto.PlutoSeriesEpisodePlan? active = null;
+        foreach (var ep in s.Episodes) if (ep.EpisodeNumber == _seriesActiveEpisode) { active = ep; break; }
+        if (active is not null && !_montageBusy && !_curationBusy)
+        {
+            await LoadSeriesEpisodeAsync(active);   // 이전 시즌의 앵커 · 에스컬레이션을 걷어내고 새 아크 기준으로 재조립
+            if (_disposed) return;
+            _seriesToast = label + " · " + _seriesToast;
+        }
+        else _seriesToast = label;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    /// <summary>📺 [자동 각색 적용 ↔ 추천만 표시] 전환(영속) — 이탈 지시가 걸린 편은 자막을 다시 조립해 즉시 반영(예외 전파 금지).</summary>
+    private async Task ToggleSeriesEscalationModeAsync()
+    {
+        if (_seriesBusy || _montageBusy || _seriesRenderAllBusy) return;
+        _seriesAutoRewrite = !_seriesAutoRewrite;
+        try
+        {
+            if (SeriesArcMemory() is { } arc)
+                await arc.SetEscalationModeAsync(_seriesAutoRewrite ? PromptFlowStudio.Services.Pluto.PlutoSeriesEscalationMode.AutoRewrite : PromptFlowStudio.Services.Pluto.PlutoSeriesEscalationMode.RecommendOnly, _mediaCts.Token);
+        }
+        catch (OperationCanceledException) { return; }   // 페이지 이탈
+        catch (Exception ex) { Program.Log("Workspace.SeriesEscalationMode", ex); }   // [부분 구제] 이번 세션에는 적용
+        if (_disposed) return;
+        PromptFlowStudio.Services.Pluto.PlutoSeriesEpisodePlan? active = null;
+        if (_series is { } s && _seriesDirective is { EscalateHook: true } && !_curationBusy)
+            foreach (var ep in s.Episodes) if (ep.EpisodeNumber == _seriesActiveEpisode) { active = ep; break; }
+        if (active is not null) await LoadSeriesEpisodeAsync(active);
+        else await InvokeAsync(StateHasChanged);
+    }
 
     /// <summary>📚 [시리즈 자동 분할] — 후보 풀 → 서로소 2~3편 → 1편 즉시 불러오기(예외 전파 금지).</summary>
     private async Task BuildSeriesAsync()
@@ -2802,6 +2880,7 @@
             _seriesActiveEpisode = 0;
             _seriesEpisodeKey = null;
             _seriesDirective = null;
+            _seriesSeason = null;
         }
         catch (OperationCanceledException) { return; }   // 페이지 이탈
         catch (InvalidOperationException ex) { _series = null; _seriesToast = "⚠ " + ex.Message; }
@@ -2836,6 +2915,7 @@
         var directive = await ResolveSeriesContinuityAsync(ep);
         if (_disposed || _seriesActiveEpisode != ep.EpisodeNumber || !string.Equals(_seriesEpisodeKey, _stagedFocalKey, StringComparison.Ordinal)) return;
         var anchorBgmChanged = ApplySeriesContinuityAnchors(directive);
+        RefreshSeriesSeasonInfo();
         if (directive.HasGuidance) _seriesToast += " · 📺 " + directive.ReasonKorean;
         if (anchorBgmChanged && _bgmOn) await SyncBgmPreviewAsync();
         RefreshMontageLook();
@@ -2849,9 +2929,14 @@
     private async Task<PromptFlowStudio.Services.Pluto.PlutoSeriesContinuityDirective> ResolveSeriesContinuityAsync(PromptFlowStudio.Services.Pluto.PlutoSeriesEpisodePlan ep)
     {
         var none = PromptFlowStudio.Services.Pluto.PlutoSeriesContinuityDirective.None;
-        if (_series is not { } s || ep.EpisodeNumber <= 1) return none;
+        if (_series is not { } s) return none;
         if (EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoSeriesArcMemoryService)) is not PromptFlowStudio.Services.Pluto.IPlutoSeriesArcMemoryService arc) return none;
-        try { return await arc.GetContinuityDirectiveAsync(s.SeriesTheme, s.Episodes.Count, ep.EpisodeNumber, _mediaCts.Token); }
+        try
+        {
+            // 1편은 이어받을 지시가 없지만 아크는 미리 적재한다 — 시즌 · 적용 방식 표시 + 렌더 write-through 가 디스크 상태 위에 바로 얹히게
+            if (ep.EpisodeNumber <= 1) { await arc.EnsureLoadedAsync(_mediaCts.Token); return none; }
+            return await arc.GetContinuityDirectiveAsync(s.SeriesTheme, s.Episodes.Count, ep.EpisodeNumber, _mediaCts.Token);
+        }
         catch (OperationCanceledException) { return none; }   // 페이지 이탈
         catch (Exception ex) { Program.Log("Workspace.SeriesContinuity", ex); return none; }
     }
@@ -2885,7 +2970,8 @@
         var tag = PromptFlowStudio.Services.Pluto.PlutoSeriesBatchPlanner.PartTag(_seriesActiveEpisode, s.Episodes.Count);
         if (cues[0].Text.StartsWith(tag, StringComparison.Ordinal)) return;
         // 📺 편 간 이탈 감지 → 1막 = 궁금증 훅 · 마지막 자막 뒤 = 클리프행어 아웃트로("n/N편" 장식 이전에 반영)
-        if (_seriesDirective is { EscalateHook: true } sdir && sdir.NextEpisodeNumber == _seriesActiveEpisode)
+        //    [추천만 표시] 모드는 자막 원문 보존(추천 문구는 시리즈 패널 배지로만 노출)
+        if (_seriesAutoRewrite && _seriesDirective is { EscalateHook: true } sdir && sdir.NextEpisodeNumber == _seriesActiveEpisode)
             cues = PromptFlowStudio.Services.Pluto.PlutoSeriesArcMemoryService.ApplyDirective(cues, sdir);
         _montageCues = PromptFlowStudio.Services.Pluto.PlutoSeriesBatchPlanner.DecorateSubtitles(cues, _seriesActiveEpisode, s.Episodes.Count);
     }
@@ -3334,6 +3420,9 @@
         }
         var record = new PromptFlowStudio.Services.Pluto.PlutoRenderedClipRecord(_perfVideoId, title, mode, _perfHookStyle, _perfLookId, _perfBgmMood,
             SplitPerfTags(_perfStyleTags), renderedPath, DateTimeOffset.UtcNow, false);
+        // ⚡ 시리즈 편은 아크 메모리에 즉시 반영(동기 write-through) — 카탈로그 기록(비동기)이 끝나기 전에 다음 편을 불러와도 이 편의 룩/BGM 이 앵커로 이어진다
+        try { if (SeriesArcMemory() is { } arcMem && arcMem.RecordRenderedEpisode(record)) RefreshSeriesSeasonInfo(); }
+        catch (Exception ex) { Program.Log("Workspace.SeriesWriteThrough", ex); }
         _ = RecordCatalogClipAsync(record);
     }
 

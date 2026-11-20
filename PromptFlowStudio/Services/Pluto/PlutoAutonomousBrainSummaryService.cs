@@ -70,6 +70,10 @@ public sealed record PlutoBrainSummarySnapshot(int TotalEvaluatedExperiments, in
     public PlutoSeriesArcStatus SeriesArc { get; init; } = PlutoSeriesArcStatus.Empty;
     /// <summary>📺 시리즈 아크 1줄(결정론 한국어).</summary>
     public string SeriesArcLabel { get; init; } = PlutoAutonomousBrainSummaryService.NoneLabel;
+    /// <summary>🧬 콜드스타트 경험적 베이즈 전이 현황.</summary>
+    public PlutoColdStartTransferStatus ColdStartTransfer { get; init; } = PlutoColdStartTransferStatus.Empty;
+    /// <summary>🧬 콜드스타트 전이 1줄(결정론 한국어).</summary>
+    public string ColdStartTransferLabel { get; init; } = PlutoAutonomousBrainSummaryService.NoneLabel;
 }
 
 /// <summary>🧠 Pluto 4.6 자율 두뇌 텔레메트리 요약 — 실험 장부 × 적응형 랭커 × 오답 노트 집계.</summary>
@@ -120,6 +124,7 @@ public sealed class PlutoAutonomousBrainSummaryService : IPlutoAutonomousBrainSu
         PlutoRegretRecoveryBoost? rehearsal = null;
         IReadOnlyList<PlutoParetoModalityStatus> modalities = Array.Empty<PlutoParetoModalityStatus>();
         var seriesArc = PlutoSeriesArcStatus.Empty;
+        var coldStart = PlutoColdStartTransferStatus.Empty;
 
         if (_ledger is not null)
         {
@@ -167,6 +172,7 @@ public sealed class PlutoAutonomousBrainSummaryService : IPlutoAutonomousBrainSu
                 pareto = _ranker.GetParetoFrontierLeader();
                 rehearsal = _ranker.GetRegretRecoveryBoosts() is { Count: > 0 } boosts ? boosts[0] : null;
                 modalities = _ranker.GetParetoModalityStatus() ?? Array.Empty<PlutoParetoModalityStatus>();
+                coldStart = _ranker.GetColdStartTransferStatus() ?? PlutoColdStartTransferStatus.Empty;
             }
             catch (OperationCanceledException) { throw; }
             catch (Exception ex) { Program.Log("Pluto.BrainSummary.Ranker", ex); }
@@ -212,6 +218,8 @@ public sealed class PlutoAutonomousBrainSummaryService : IPlutoAutonomousBrainSu
             ParetoModalityLabel = PlutoParetoFrontier.BuildModalityLabel(modalities),
             SeriesArc = seriesArc,
             SeriesArcLabel = PlutoSeriesArcMemoryService.BuildArcLabel(seriesArc),
+            ColdStartTransfer = coldStart,
+            ColdStartTransferLabel = PlutoEmpiricalBayes.BuildLabel(coldStart),
         };
     }
 
