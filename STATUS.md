@@ -1,17 +1,19 @@
 # Current Project Status
-- Active Milestone: ✅ Step 22 — YouTube Studio CSV/ZIP 자동 수집 · Shorts 정규화 · 카탈로그 연결 · 성숙도 증분 학습 완료
+- Active Milestone: ✅ Step 23 — Downloads 자동 감시 · 디바운스 수집 · SHA-256 영속 중복 차단 · Workspace 실시간 토스트 완료
 - Build: ✅ Desktop Release `-warnaserror` 0W/0E · ✅ Tests Release 0W/0E · ⚠ Mobile net8.0-ios — `ios` 워크로드 미설치(미검증)
-- Tests: ✅ 1269/1269 — 전체 단일 실행 통과(14분 21초 · 종료 코드 0 · 기존 1261 + Step 22 8)
-- Updated: 2026-11-20 (KST) · 기준 `fe7e6da`
+- Tests: ✅ 1277/1277 — 전체 단일 실행 통과(19분 1초 · 종료 코드 0 · 기존 1269 + Step 23 8)
+- Updated: 2026-11-20 (KST) · 기준 `4cc8eda`
 
-## Completed — Step 22
-- 📊 `YouTubeStudioAnalyticsNormalizer` — `.csv`/`.zip`(메모리 해제 · BOM) · 한/영 헤더 · 천 단위/`%`/로캘 날짜 · 시청 유지 → `Hook3sRetention` · 100% 초과 무릎점(70) 지수 포화 · 조회수 10 미만 노이즈 제외 · CTR 결측 중립(2.2)
-- 📺 `PlutoYouTubeCatalogLinker` — Tier 1 `YouTubeVideoId` O(1) · Tier 2 제목 Dice + `n/N편` 일치 + 게시 7일 창 → 연결 영속 · Tier 3 사유 보고
-- 📈 성숙도 증분 — 카탈로그 워터마크(조회수·단계) · 동일 스냅샷 0건 · ≥2배 & +200회 → `IngestMaturityDeltaAsync`(0.5→0.25→0.125 · 3단계 · 단계별 장부)
-- 🖥️ Workspace 일괄 패널 — `.csv/.zip` 선택 · [📂 다운로드 폴더 최신 내보내기 학습] · Studio 표 붙여넣기도 새 경로로 라우팅
-- 🧠 자체 추가 — ① 멀티 PC 워터마크 최댓값 병합(증분 재적용 차단) ② 1:1 연결 가드 · 모호 후보 거부 · 병합 중복 연결 해소 ③ ZIP 내용 기반 표 선택(차트/합계 제외) · 해제 상한
-- 🧪 `PlutoYouTubeAnalyticsIngestionTests.cs` 8건
+## Completed — Step 23
+- 📥 `YouTubeDownloadsAutoWatcherService` — FileSystemWatcher(Created/Renamed/Changed) + 60초 재조정 스윕 이중 탐지 · DI 데스크톱/모바일 Singleton
+- ⏳ 준비 게이트 — `.crdownload/.part/.tmp`·숨김·0바이트 제외 · 파일별 디바운스 1.3초 · 크기/mtime 안정 · `FileShare.Read` 유계 재시도
+- 🔇 비 YouTube 무시 — 이름 서명 또는 CSV 헤더 스키마 엿보기(ZIP은 이름 필수) · 무소음 거부 장부
+- ♻️ SHA-256 장부 — `AppDataPaths/PromptFlowStudio/Pluto/downloads_watcher.json` 원자적 교체 · 4096 유계 · 재시작 후 재수집/재토스트 0 · 새 해시 → Step 22 성숙 증분
+- 🔒 격리 — `PROMPTFLOW_PLUTO_DRIVE=off` · `PROMPTFLOW_DISABLE_DOWNLOADS_WATCHER=1` → 실 Downloads 경로 미해석·미기동(명시 폴더만 허용)
+- 🖥️ Workspace — [👁️ 다운로드 자동 감시 ON/OFF] 토글(영속 · 기본 ON) · `📥 유튜브 자동 수집 완료: 신규 N건 · 성숙 보정 M건 (파일명)` · 두뇌 리포트/추천 즉시 갱신 · 0건 학습 토스트 생략
+- 🧠 자체 추가 — ① FSW 버퍼 오버플로 → 즉시 재스캔 · 기타 오류 → 감시기 재구성 ② 수동 가져오기·이벤트·스윕 단일 게이트 + in-flight 해시 + 게이트 내 재확인(이중 반영/재토스트 차단) ③ 구독자별 예외 격리 + 회로 폐기 안전 `SafeUiUpdate` ④ 일시 실패 3회 후 격리(스윕 재시도 폭주 차단)
+- 🧪 `PlutoDownloadsAutoWatcherTests.cs` 8건
 
 ## Notes
 - ⚠️ `.git` 은 `D:\Program` — `--git-dir=D:\Program\.git --work-tree=D:\Program\PromptFlowStudio` 필요
-- ⚠️ 동시 세션의 외부 `testhost` 종료 시 전체 실행 중단(크래시 이벤트 없음) — 전체 실행은 조용한 머신에서
+- ⚠️ 동시 세션의 외부 `testhost` 종료 시 전체 실행 중단 — 전체 실행은 조용한 머신에서
