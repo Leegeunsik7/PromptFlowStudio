@@ -14,7 +14,7 @@ public sealed record PlutoConflictCopy(string HubFileName, string FullPath, Date
 }
 
 /// <summary>⚔️ 충돌 해결 결과.</summary>
-public enum PlutoConflictAction { None = 0, MergeStaged = 1, RestoreStaged = 2, Dismissed = 3 }
+public enum PlutoConflictAction { None = 0, MergeStaged = 1, RestoreStaged = 2, Dismissed = 3, MergeApplied = 4, RestoreApplied = 5 }
 
 public sealed record PlutoConflictResolution(PlutoConflictAction Action, string HubFileName, string MessageKorean)
 {
@@ -23,7 +23,9 @@ public sealed record PlutoConflictResolution(PlutoConflictAction Action, string 
 
 /// <summary>
 /// ⚔️ 분기 충돌 사본 관리 + 의미 기반 합집합 병합(순수 · 결정론) — 두 PC 의 오프라인 작업을 어느 쪽도 잃지 않고 합친다.
-///   ▸ 병합 가능 허브: 실험 장부(실험 ID) · 오답 노트(라벨) · 렌더 카탈로그(영상 ID) · 시리즈 아크(시리즈 키 → 편 번호) · 학습 메모리(키).
+///   ▸ 병합 가능 허브: 실험 장부(실험 ID) · 오답 노트(라벨) · 렌더 카탈로그(영상 ID) · 시리즈 아크(시리즈 키 → 편 번호) · 학습 메모리(키) ·
+///     메타 보정(관측 창 키 중복 제거 · 후회 귀속 라벨 최댓값 · 집계 = 공통 이력 1회 + 각 PC 고유분).
+///   ▸ Step 20 — 재적재 가능한 허브는 예약 직후 <see cref="IPlutoHotReloadable.ReloadFromDiskAsync"/> 로 실행 중 세션에 즉시 반영(재시작 불필요).
 ///   ▸ 키가 겹치면: 진행이 더 된 쪽(판정 완료 &gt; 지표 &gt; 대기 · 측정 &gt; 미측정) → 더 최근 시각 → 현재 사본. 누적 카운터는 합이 아니라 최댓값(공통 이력 이중 계상 방지).
 ///   ▸ JsonNode 로 다루므로 모르는 필드(이후 스키마 확장)도 보존 · 둘 중 하나라도 손상 → null(아무것도 쓰지 않음).
 ///   ▸ 적용은 '대기열'에 올린 뒤 그 허브가 이번 세션에 처음 적재되기 직전에 일어난다(<see cref="PlutoDriveStorageManager.ApplyPendingResolution(string)"/>) —
@@ -34,7 +36,7 @@ public sealed class PlutoConflictMergeService
     public static readonly IReadOnlyList<string> MergeableHubs = new[]
     {
         PlutoExperimentLedgerService.FileName, PlutoMistakeNotebookService.FileName, PlutoRenderCatalogService.FileName,
-        PlutoSeriesArcMemoryService.FileName, PlutoLearningService.FileName,
+        PlutoSeriesArcMemoryService.FileName, PlutoLearningService.FileName, PlutoMetaCalibrationService.FileName,   // 🎯 Step 20 — 보정 상태도 의미 병합(5 → 6)
     };
 
     private const string ConflictMarker = ".conflict-";
@@ -113,6 +115,8 @@ public sealed class PlutoConflictMergeService
     public PlutoConflictResolution StageRestore(string conflictPath)
     {
         if (Validate(conflictPath, out var hub, out var text) is { } bad) return bad;
+        // 🧩 Step 20 — 형태 검증: '{}' · 다른 허브 파일 · 배열 루트로 복원하면 즉시 재적재가 그 허브의 학습 상태 전체를 비운다
+        if (!PlutoHotReload.HasExpectedShape(hub, text)) return new(PlutoConflictAction.None, hub, "⚠ '" + hub + "' 형식이 아닌 사본이라 복원할 수 없어요(무시만 가능)");
         try
         {
             File.WriteAllText(Path.Combine(EnsurePending(), hub + PlutoDriveStorageManager.PendingReplaceExt), text);
@@ -191,6 +195,7 @@ public sealed class PlutoConflictMergeService
         else if (Eq(hubFileName, PlutoMistakeNotebookService.FileName)) merged = MergeKeyedObject(a, b, "Entries", MergeNotebookEntry);
         else if (Eq(hubFileName, PlutoRenderCatalogService.FileName)) merged = MergeCatalog(a, b);
         else if (Eq(hubFileName, PlutoSeriesArcMemoryService.FileName)) merged = MergeArc(a, b);
+        else if (Eq(hubFileName, PlutoMetaCalibrationService.FileName)) merged = MergeCalibration(a, b);
         else merged = MergeTrendMemory(a, b);
         return merged.ToJsonString(Compact);
     }
@@ -356,6 +361,95 @@ public sealed class PlutoConflictMergeService
         }
         return root;
     }
+
+    // ── 🎯 메타 보정 상태 — 관측 창(시각 · 예측 · 실현 · 대안 · 출처 키 중복 제거) · 후회 귀속(라벨 · 최댓값) · 집계는 공통 이력 이중 계상 없이 ──
+
+    private static JsonObject MergeCalibration(JsonObject a, JsonObject b)
+    {
+        var recs = new List<(DateTimeOffset T, string K, JsonObject N)>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var inA = new HashSet<string>(StringComparer.Ordinal);
+        var regretOf = new Dictionary<string, double>(StringComparer.Ordinal);
+        foreach (var r in Items(a, "Window"))
+        {
+            var k = RecordKey(r);
+            inA.Add(k);
+            regretOf[k] = RecordRegret(r);
+            if (seen.Add(k)) recs.Add((Time(r, "Utc"), k, (JsonObject)r.DeepClone()));
+        }
+        var inB = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var r in Items(b, "Window"))
+        {
+            var k = RecordKey(r);
+            inB.Add(k);
+            regretOf[k] = RecordRegret(r);
+            if (seen.Add(k)) recs.Add((Time(r, "Utc"), k, (JsonObject)r.DeepClone()));
+        }
+        // 상대 쪽에만 있는 관측 = 분기 이후 그 PC 가 새로 쌓은 것(창에 남은 범위의 하한) → 공통 이력은 한 번만
+        int onlyA = 0, onlyB = 0;
+        double regretOnlyA = 0, regretOnlyB = 0;
+        foreach (var k in inA) if (!inB.Contains(k)) { onlyA++; regretOnlyA += regretOf[k]; }
+        foreach (var k in inB) if (!inA.Contains(k)) { onlyB++; regretOnlyB += regretOf[k]; }
+        recs.Sort(static (x, y) =>
+        {
+            var c = x.T.CompareTo(y.T);
+            return c != 0 ? c : string.CompareOrdinal(x.K, y.K);
+        });
+        var window = new JsonArray();
+        for (var i = Math.Max(0, recs.Count - PlutoMetaCalibrationService.WindowCapacity); i < recs.Count; i++) window.Add(recs[i].N);
+
+        var total = Math.Max(recs.Count, Math.Max(SatAdd(Int(a, "TotalRecords"), onlyB), SatAdd(Int(b, "TotalRecords"), onlyA)));
+        var cumulative = Math.Max(Math.Max(0.0, Num(a, "CumulativeRegret")) + regretOnlyB, Math.Max(0.0, Num(b, "CumulativeRegret")) + regretOnlyA);
+
+        // 💸 후회 귀속 — 라벨 · 더 최근 Utc 쪽 기준(회복 잔액은 최근 결정이 진실: 리허설 검증으로 0 이 됐을 수 있음) · 누적 후회 · 횟수는 최댓값
+        var attrs = new Dictionary<string, JsonObject>(StringComparer.Ordinal);
+        foreach (var side in new[] { a, b })
+            if (side["Attributions"] is JsonObject o)
+                foreach (var kv in o)
+                {
+                    if (kv.Value is not JsonObject v || string.IsNullOrWhiteSpace(kv.Key)) continue;
+                    if (!attrs.TryGetValue(kv.Key, out var have)) { attrs[kv.Key] = (JsonObject)v.DeepClone(); continue; }
+                    var pick = Time(v, "Utc") > Time(have, "Utc") ? (JsonObject)v.DeepClone() : have;
+                    pick["Regret"] = Math.Max(Math.Max(0.0, Num(have, "Regret")), Math.Max(0.0, Num(v, "Regret")));
+                    pick["Count"] = Math.Max(Int(have, "Count"), Int(v, "Count"));
+                    attrs[kv.Key] = pick;
+                }
+        var keys = new List<string>(attrs.Keys);
+        while (keys.Count > PlutoMetaCalibrationService.MaxAttributions)   // 서비스 축출 규칙과 동일(누적 후회 최소 → 키 사전순)
+        {
+            var victim = 0;
+            for (var i = 1; i < keys.Count; i++)
+            {
+                double ri = Num(attrs[keys[i]], "Regret"), rv = Num(attrs[keys[victim]], "Regret");
+                if (ri < rv || (ri == rv && string.CompareOrdinal(keys[i], keys[victim]) < 0)) victim = i;
+            }
+            keys.RemoveAt(victim);
+        }
+        keys.Sort(StringComparer.Ordinal);
+        var attrObj = new JsonObject();
+        for (var i = 0; i < keys.Count; i++) attrObj[keys[i]] = attrs[keys[i]];
+
+        var root = (JsonObject)a.DeepClone();
+        root["Version"] = Math.Max(Math.Max(1, Int(a, "Version")), Int(b, "Version"));
+        root["CumulativeRegret"] = cumulative;
+        root["TotalRecords"] = total;
+        root["Window"] = window;
+        root["Attributions"] = attrObj;
+        return root;
+    }
+
+    /// <summary>관측 동일성 키 — UTC 틱 · 예측 · 실현 · 대안 · 출처(왕복 정밀도 "R").</summary>
+    private static string RecordKey(JsonObject r)
+    {
+        var inv = CultureInfo.InvariantCulture;
+        return Time(r, "Utc").UtcTicks.ToString(inv) + "|" + Opt(r, "P") + "|" + Num(r, "R").ToString("R", inv) + "|" + Opt(r, "A") + "|" + Str(r, "Src");
+    }
+
+    private static string Opt(JsonObject r, string prop) => r[prop] is JsonValue ? Num(r, prop).ToString("R", CultureInfo.InvariantCulture) : "-";
+
+    private static double RecordRegret(JsonObject r) => r["A"] is JsonValue ? Math.Max(0.0, Num(r, "A") - Num(r, "R")) : 0.0;
+
+    private static int SatAdd(int x, int y) => (long)Math.Max(0, x) + Math.Max(0, y) > int.MaxValue ? int.MaxValue : Math.Max(0, x) + Math.Max(0, y);
 
     // ── 공용 ──
 

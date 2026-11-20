@@ -61,6 +61,10 @@ public sealed record PlutoExperimentReinforcementRequest(string ExperimentId, Pl
     public string? ContextDomain { get; init; }
     /// <summary>🧬 실험 렌더 포맷(미지정 → <see cref="PlutoContextAlphaBackfill.DefaultRenderMode"/>).</summary>
     public string? ContextRenderMode { get; init; }
+    /// <summary>🏷️ Step 20 — 승자 변형의 장부 영속 스타일 태그(컨텍스트 알파 전용 · 패턴 강화 · 오답 노트에는 불참 · null → 텔레메트리 태그만).</summary>
+    public IReadOnlyList<string>? WinnerContextStyleTags { get; init; }
+    /// <summary>🏷️ Step 20 — 패자 변형의 장부 영속 스타일 태그.</summary>
+    public IReadOnlyList<string>? LoserContextStyleTags { get; init; }
 }
 
 /// <summary>📈 Pluto 폐루프 성과 강화 — 게시 후 지표 → 학습 메모리(패턴 가중치 · XP) / 오답 노트(약한 훅 회피).</summary>
@@ -317,11 +321,29 @@ public sealed class PlutoClosedLoopReinforcementService : IPlutoClosedLoopReinfo
         try
         {
             var samples = PlutoContextAlphaBackfill.PairSamples(r.ExperimentId, r.ContextDomain, string.IsNullOrWhiteSpace(r.ContextRenderMode) ? PlutoContextAlphaBackfill.DefaultRenderMode : r.ContextRenderMode,
-                PlutoContextualBaseline.CompositeScore(r.Winner), PlutoContextualBaseline.CompositeScore(r.Loser), ModalityObjectiveTokens(r.Winner), ModalityObjectiveTokens(r.Loser), DateTimeOffset.UtcNow);
+                PlutoContextualBaseline.CompositeScore(r.Winner), PlutoContextualBaseline.CompositeScore(r.Loser),
+                ContextAlphaTokens(r.Winner, r.WinnerContextStyleTags), ContextAlphaTokens(r.Loser, r.LoserContextStyleTags), DateTimeOffset.UtcNow);
             if (samples.Count > 0) await _learning.RecordContextAlphaSamplesAsync(samples, historical: false, null, ct).ConfigureAwait(false);
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.ClosedLoop] context alpha: " + ex.Message); }
+    }
+
+    /// <summary>
+    /// 🏷️ Step 20 — 컨텍스트 알파 토큰 = <see cref="ModalityObjectiveTokens"/> ∪ 장부 영속 태그(<c>style:</c> · 중복 제외).
+    /// A/B 차등 텔레메트리는 태그를 싣지 않으므로(공통 특성 제외 규칙) 이 보강이 없으면 실시간 기록이 소급(카탈로그 태그 조인)보다 근거가 적었다.
+    /// 양 변형 공통 태그는 <see cref="PlutoContextAlphaBackfill.PairSamples"/> 가 실험 변수가 아니라며 제외한다.
+    /// </summary>
+    public static IReadOnlyList<string> ContextAlphaTokens(PlutoVideoPerformanceTelemetry t, IReadOnlyList<string>? recordedTags)
+    {
+        ArgumentNullException.ThrowIfNull(t);
+        var baseTokens = ModalityObjectiveTokens(t);
+        if (recordedTags is null || recordedTags.Count == 0) return baseTokens;
+        var list = new List<string>(baseTokens.Count + recordedTags.Count);
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        for (var i = 0; i < baseTokens.Count; i++) if (seen.Add(baseTokens[i])) list.Add(baseTokens[i]);
+        for (var i = 0; i < recordedTags.Count; i++) Add(list, seen, "style:", recordedTags[i]);
+        return list;
     }
 
     /// <summary>오답 노트 기록 토큰 — 훅 스타일 + 스타일 태그(원문 · 중복 제외).</summary>

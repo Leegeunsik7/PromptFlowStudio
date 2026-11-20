@@ -19,8 +19,8 @@ public sealed record PlutoContextBackfillReport(bool Completed, bool AlreadyDone
 
 /// <summary>
 /// 🧬 BGM 무드 · 스타일 태그 컨텍스트 알파 — 과거 A/B 실험 장부 소급(1회) + 이후 판정의 같은 공식 실시간 기록(실험 ID 단위 정확히 1회).
-///   ▸ 장부 실측 사실: 실험마다 <c>ThemeHint</c> · 챔피언/챌린저 훅 · 룩 · BGM · 지표는 있지만 <c>Domain</c> · <c>StyleTags</c> · 렌더 포맷은 저장되지 않는다 →
-///     Domain = <see cref="PromptDomainClassifier"/>(테마)(A/B 생성기와 같은 분류) · 포맷 = <see cref="DefaultRenderMode"/>(A/B 는 몽타주에서만 생성) ·
+///   ▸ Step 20 장부는 <c>RenderMode</c> · <c>StyleTags</c>(공유) · <c>ChampionStyleTags</c>/<c>ChallengerStyleTags</c>(변형)를 영구 기록 → 기록이 있으면 그대로 쓴다.
+///     구 장부(필드 없음) → Domain = <see cref="PromptDomainClassifier"/>(테마)(A/B 생성기와 같은 분류) · 포맷 = <see cref="DefaultRenderMode"/>(A/B 는 몽타주에서만 생성) ·
 ///     태그 = 렌더 카탈로그에서 변형 영상(파일명 = 영상 ID)으로 조인되는 경우만.
 ///   ▸ 기준선 = 짝 평균 — A/B 두 변형은 같은 컨텍스트를 공유하는 통제 실험이므로 짝 평균이 그 실험의 편향 없는 지역 기준선이다.
 ///     변형 A 알파 = 점수A − (점수A + 점수B)/2 · 두 변형이 같은 토큰(차이가 아닌 특성)은 실험 변수가 아니므로 제외.
@@ -90,7 +90,11 @@ public static class PlutoContextAlphaBackfill
             if (id.Length == 0) continue;
             var domain = PromptDomainClassifier.Classify(Str(e, "ThemeHint")).ToString();
             var at = DateTimeOffset.TryParse(Str(ev, "EvaluatedAtUtc"), System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AssumeUniversal, out var t) ? t : DateTimeOffset.MinValue;
-            var samples = PairSamples(id, domain, DefaultRenderMode, sa, sb, Tokens(Str(e, "ChampionBgm"), Str(e, "ChampionVideoPath"), catalog), Tokens(Str(e, "ChallengerBgm"), Str(e, "ChallengerVideoPath"), catalog), at);
+            var recordedMode = Str(e, "RenderMode");   // 🧬 Step 20 장부 → 기록 포맷 · 구 장부 → 몽타주
+            var mode = recordedMode.Length > 0 ? recordedMode : DefaultRenderMode;
+            var samples = PairSamples(id, domain, mode, sa, sb,
+                Tokens(Str(e, "ChampionBgm"), Str(e, "ChampionVideoPath"), RecordedTags(e, "ChampionStyleTags"), catalog),
+                Tokens(Str(e, "ChallengerBgm"), Str(e, "ChallengerVideoPath"), RecordedTags(e, "ChallengerStyleTags"), catalog), at);
             if (samples.Count == 0) continue;
             experiments++;
             all.AddRange(samples);
@@ -105,10 +109,36 @@ public static class PlutoContextAlphaBackfill
         return all;
     }
 
-    private static List<string> Tokens(string bgm, string videoPath, IReadOnlyList<PlutoRenderedClipRecord>? catalog)
+    /// <summary>🏷️ Step 20 — 장부 영속 태그(변형 ∪ 실험 공유) · 둘 다 없음(구 장부) → null = 카탈로그 조인 폴백.</summary>
+    private static List<string>? RecordedTags(JsonObject e, string variantProp)
+    {
+        if (e[variantProp] is not JsonArray && e["StyleTags"] is not JsonArray) return null;
+        var list = new List<string>(4);
+        foreach (var prop in new[] { variantProp, "StyleTags" })
+            if (e[prop] is JsonArray arr)
+                foreach (var n in arr)
+                {
+                    string? s = null;
+                    try { if (n is JsonValue v && v.TryGetValue<string>(out var x)) s = x; }
+                    catch (InvalidOperationException) { s = null; }
+                    if (string.IsNullOrWhiteSpace(s)) continue;
+                    var t = s.Trim();
+                    var dup = false;
+                    for (var i = 0; i < list.Count && !dup; i++) dup = string.Equals(list[i], t, StringComparison.OrdinalIgnoreCase);
+                    if (!dup) list.Add(t);
+                }
+        return list;
+    }
+
+    private static List<string> Tokens(string bgm, string videoPath, List<string>? recordedTags, IReadOnlyList<PlutoRenderedClipRecord>? catalog)
     {
         var list = new List<string>(4);
         if (bgm.Length > 0) list.Add(PlutoAdaptivePatternRanker.BgmPrefix + bgm);
+        if (recordedTags is not null)   // 영속 태그가 있으면 카탈로그(최근 100건 롤오프)에 의존하지 않는다
+        {
+            for (var i = 0; i < recordedTags.Count; i++) list.Add(PlutoAdaptivePatternRanker.StylePrefix + recordedTags[i]);
+            return list;
+        }
         if (catalog is null || videoPath.Length == 0) return list;
         var stem = Path.GetFileNameWithoutExtension(videoPath);
         for (var i = 0; i < catalog.Count; i++)

@@ -89,7 +89,11 @@ else
                 </div>
                 <button class="dh-btn" disabled="@_driveBusy" @onclick="VerifyDriveAsync">@(_driveBusy ? "⏳ 검증 중…" : "🔄 지금 전체 드라이브 백업 검증")</button>
             </div>
-            @* ⚔️ 두 PC 분기 충돌 — 덮이기 전에 보관된 오프라인 사본 · 병합/복원은 다음 실행 때 해당 기록이 적재되기 직전에 적용 *@
+            @if (_drive?.LiveProbe is { } lp)
+            {
+                <div class="dh-sum @(lp.Attempted && !lp.Ok ? "warn" : "ok")" data-drive-live-probe="@(lp.Attempted ? (lp.Ok ? "ok" : "fail") : "skip")" data-drive-live-probe-ms="@(lp.RoundTripMs.ToString("0.0", CultureInfo.InvariantCulture))">🩺 @(lp.StatusKorean)</div>
+            }
+            @* ⚔️ 두 PC 분기 충돌 — 덮이기 전에 보관된 오프라인 사본 · 병합/복원은 해당 허브를 실행 중 즉시 재적재(재시작 불필요 · 재적재 불가 허브만 다음 실행 때 적용) *@
             <div class="dh-conflicts" data-drive-conflicts="@(_conflicts.Count.ToString(CultureInfo.InvariantCulture))">
                 <div class="dh-sum @(_conflicts.Count == 0 ? "ok" : "warn")">⚔️ 동기화 충돌 @(_conflicts.Count.ToString(CultureInfo.InvariantCulture))건@(_pendingResolutions > 0 ? " · 📥 적용 대기 " + _pendingResolutions.ToString(CultureInfo.InvariantCulture) + "건(다음 실행 시 반영)" : "")</div>
                 @foreach (var c in _conflicts)
@@ -241,15 +245,18 @@ else
         catch (Exception ex) { Program.Log("Settings.Conflicts", ex); _conflicts = Array.Empty<PlutoConflictCopy>(); }
     }
 
-    /// <summary>⚔️ 1 = 병합 · 2 = 이 사본으로 복원 · 3 = 무시(예외 전파 금지).</summary>
-    private void ResolveConflict(PlutoConflictCopy c, int action)
+    /// <summary>⚔️ 1 = 병합 · 2 = 이 사본으로 복원(둘 다 ♻️ 실행 중 허브 즉시 재적재 · 재시작 불필요) · 3 = 무시(예외 전파 금지).</summary>
+    private async Task ResolveConflict(PlutoConflictCopy c, int action)
     {
+        if (_driveBusy) return;
+        _driveBusy = true;
         try
         {
-            var r = action == 1 ? DriveHealth.MergeConflict(c.FullPath) : action == 2 ? DriveHealth.RestoreConflict(c.FullPath) : DriveHealth.DismissConflict(c.FullPath);
+            var r = action == 1 ? await DriveHealth.MergeConflictLiveAsync(c.FullPath) : action == 2 ? await DriveHealth.RestoreConflictLiveAsync(c.FullPath) : DriveHealth.DismissConflict(c.FullPath);
             _conflictToast = r.MessageKorean;
         }
         catch (Exception ex) { Program.Log("Settings.ConflictResolve", ex); _conflictToast = "⚠ 처리 실패: " + ex.Message; }
+        finally { _driveBusy = false; }
         RefreshConflicts();
     }
 

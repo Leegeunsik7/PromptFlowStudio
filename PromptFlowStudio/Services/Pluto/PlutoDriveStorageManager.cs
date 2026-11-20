@@ -6,6 +6,25 @@ using System.Threading.Tasks;
 
 namespace PromptFlowStudio.Services.Pluto;
 
+/// <summary>🩺 Step 20 — 라이브 Drive 마운트 프로브 결과(생략 → <see cref="Attempted"/> false · 지연은 ms).</summary>
+public sealed record PlutoLiveDriveProbe(bool Attempted, bool Ok, double WriteMs, double ReadMs, double RoundTripMs, string? Detail)
+{
+    public static PlutoLiveDriveProbe Skip(string reason) => new(false, false, 0, 0, 0, reason);
+
+    /// <summary>🩺 한국어 1줄(결정론 형식 · 수치 InvariantCulture).</summary>
+    public string StatusKorean
+    {
+        get
+        {
+            if (!Attempted) return "⏭️ 라이브 프로브 생략 · " + (Detail ?? "");
+            var ms = RoundTripMs.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture);
+            return Ok
+                ? "✅ 라이브 Drive 왕복 " + ms + " ms(쓰기 " + WriteMs.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) + " · 읽기 " + ReadMs.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) + ") · SHA-256 일치"
+                : "❌ 라이브 Drive 프로브 실패(" + ms + " ms) · " + (Detail ?? "");
+        }
+    }
+}
+
 /// <summary>☁️ Pluto 영속 JSON 저장소 — Google Drive 볼트 우선 · 로컬 폴백 · 원자적 기록.</summary>
 public interface IPlutoStorageManager
 {
@@ -610,6 +629,55 @@ public sealed class PlutoDriveStorageManager : IPlutoStorageManager
     {
         try { return new FileInfo(path).Length > 0 && IsValidJson(path); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or ArgumentException) { return false; }
+    }
+
+    // ── 🩺 Step 20 — 라이브 Drive 마운트 진단 프로브(비파괴) ──
+
+    /// <summary>🩺 프로브 파일 접두(<c>_pluto_live_probe_{guid}.tmp</c>).</summary>
+    public const string LiveProbePrefix = "_pluto_live_probe_";
+    /// <summary>🩺 프로브 페이로드 크기(바이트).</summary>
+    public const int LiveProbeBytes = 4096;
+
+    /// <summary>
+    /// 🩺 실제 Drive 마운트 왕복 진단 — 스테이징 기록 → 원자 이동 → 다시 읽어 SHA-256 고정 시간 비교 → 지연(ms) 측정 → <c>finally</c> 에서 항상 삭제.
+    /// Drive 비활성(<c>PROMPTFLOW_PLUTO_DRIVE=off</c> · 비 Windows → Primary 없음) · 루트 부재 → 디스크를 건드리지 않고 건너뜀.
+    /// 진단 전용 — 가용성 캐시 · 동기화 장부 · 핵심 허브는 건드리지 않는다.
+    /// </summary>
+    public PlutoLiveDriveProbe ProbeLiveDrive()
+    {
+        if (_primary is null) return PlutoLiveDriveProbe.Skip("Drive 비활성(PROMPTFLOW_PLUTO_DRIVE=off 또는 비 Windows) — 프로브 생략");
+        bool rootOk;
+        try { rootOk = Directory.Exists(_primary); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException) { rootOk = false; }
+        if (!rootOk) return PlutoLiveDriveProbe.Skip("Drive 루트 없음(미마운트) — 프로브 생략");
+
+        var id = Guid.NewGuid().ToString("N");
+        var path = Path.Combine(_primary, LiveProbePrefix + id + ".tmp");
+        var staging = path + ".w";
+        var payload = new byte[LiveProbeBytes];
+        System.Security.Cryptography.RandomNumberGenerator.Fill(payload);
+        var expected = System.Security.Cryptography.SHA256.HashData(payload);
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        double writeMs = 0, readMs = 0;
+        try
+        {
+            WithLockRetry(() => { File.WriteAllBytes(staging, payload); return true; });
+            WithLockRetry(() => { File.Move(staging, path, overwrite: true); return true; });   // 원자 이동 — 부분 기록이 프로브 경로에 보이지 않음
+            writeMs = sw.Elapsed.TotalMilliseconds;
+            var back = WithLockRetry(() => File.ReadAllBytes(path));
+            readMs = sw.Elapsed.TotalMilliseconds - writeMs;
+            var ok = System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(expected, System.Security.Cryptography.SHA256.HashData(back));
+            return new PlutoLiveDriveProbe(true, ok, writeMs, readMs, sw.Elapsed.TotalMilliseconds, ok ? null : "SHA-256 불일치(읽은 바이트가 쓴 바이트와 다름)");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or ArgumentException)
+        {
+            return new PlutoLiveDriveProbe(true, false, writeMs, readMs, sw.Elapsed.TotalMilliseconds, ex.Message);
+        }
+        finally
+        {
+            TryDelete(staging);
+            TryDelete(path);
+        }
     }
 
     // ── 📥 충돌 해결 대기열(병합 · 사본 복원) — 적재 직전 적용 ──

@@ -1,22 +1,20 @@
 # Current Project Status
-- Active Milestone: 【Step 19 — SHA-256 동기화 가드 · 잠금 재시도 · 기준선 부트스트랩 · 충돌 합집합 병합 UI · BGM/태그 컨텍스트 알파 소급 · 자율 하드닝】 ✅ 완료
-- Build: ✅ Desktop Release `-warnaserror` 0W/0E · ✅ Tests Release 0W/0E · ⏳ Mobile net8.0-ios — `ios` 워크로드 미설치(미검증)
-- Tests: ✅ 1251/1251 — 전체 단일 실행 통과(14분 38초 · `dotnet test` 종료 코드 0 · 기존 1243 + Step 19 8)
-- Updated: 2026-11-20 (KST) · 기준 `12d560e`
+- Active Milestone: ✅ Step 20 — 무재시작 충돌 핫 리로드 · 보정 상태 의미 병합 · 장부 RenderMode/StyleTags 영속 · 라이브 Drive 프로브 · 자율 하드닝 완료
+- Build: ✅ Desktop Release `-warnaserror` 0W/0E · ✅ Tests Release 0W/0E · ⚠ Mobile net8.0-ios — `ios` 워크로드 미설치(미검증)
+- Tests: ✅ 1259/1259 — 전체 단일 실행 통과(21분 7초 · 종료 코드 0 · 기존 1251 + Step 20 8)
+- Updated: 2026-11-20 (KST) · 기준 `4be7458`
 
-## Completed — Step 19
-- #️⃣ SHA-256 내용 동일성 가드: 시각 차(> 2초)여도 내용이 같으면 쓰기 반환 · 미러 갱신 · 충돌 사본 없이 장부만 갱신 · 장부 = {로컬/Drive 시각 · 해시}(Step 18 시각 전용 장부 그대로 읽힘)
-- 🧾 기준선 부트스트랩: 기록 없는 핵심 파일 중 내용이 같은 것만 기준선 기록(기동 · 백업 검증) → '첫' 분기도 감지 · 분기 판정은 해시 기준
-- 🔒 Drive 데몬 일시 잠금(공유/잠금 위반 · 접근 거부) 유한 지수 백오프 + 지터 재시도(기본 5회) — 쓰기 반환 · 미러 · 해시 · 장부 · 충돌 사본
-- ⚔️ `PlutoConflictMergeService`: JsonNode 합집합 병합(실험 장부 · 오답 노트 · 렌더 카탈로그 · 시리즈 아크 · 학습 메모리 · 모르는 필드 보존 · 결정론) · 병합/사본 복원/무시 · 환경설정 충돌 섹션 · 두뇌 리포트 본문 표시(상단 3행 헤더 불변)
-- 🧬 `PlutoContextAlphaBackfill`: 과거 A/B 장부 → (테마 분류 Domain, 몽타주) BGM · 태그 컨텍스트 알파 1회 소급(완료 표식 · 실험 ID 표식) · 태그는 렌더 카탈로그 조인 · 짝 평균 기준선 · 훅/룩/기준선/다목적 불변
-- 자율 ①: 해결은 '적재 직전'에만 적용(`sync_pending/`) — 실행 중 서비스의 메모리 상태가 병합 결과를 되덮는 경로 차단 · 손상 병합은 `.rejected` 보존
-- 자율 ②: 첫 복원(로컬 부재)도 검증 + 원자 — 0 B/잘린 Drive 자리표시를 미러로 굳히지 않음 · 충돌 사본 같은 초 덮어쓰기 · 같은 내용 중복 방지
-- 자율 ③: 이후 A/B 판정도 같은 공식으로 실시간 컨텍스트 알파 기록 · 소급과 실험 ID 단위 정확히 1회
-- 🧪 기존 플래키 1건: `NeuralHairCloth_And_GarmentDynamics_Check` 8k 가닥 16.6 ms 단언 → 공용 `CiFrameBudget.Scaled`(유휴 = 동일 상한 · 부하 비례 완화)
+## Completed — Step 20
+- ♻️ `IPlutoHotReloadable.ReloadFromDiskAsync` — 장부 · 오답 노트 · 렌더 카탈로그 · 시리즈 아크 · 학습 메모리 · 메타 보정 6종: 잠금 안에서 `sync_pending/` 승격 → 파싱 → 원자 교체(손상/부재/잠김/읽기 전용 → 라이브 상태 유지)
+- 🔀/↩️ 환경설정 병합·복원 → `MergeConflictLiveAsync`/`RestoreConflictLiveAsync` 즉시 반영(재시작 불필요) · `HubReloaded` → 워크스페이스 대기 실험 · 두뇌 리포트 · 추천 갱신 · 재적재 불가 허브만 다음 실행 적용
+- 🎯 `pluto_calibration_state.json` 의미 병합(병합 허브 5→6): 관측 창 키 중복 제거 · 집계 = 공통 이력 1회 + 각 PC 고유분(재병합 멱등) · 후회 귀속 최댓값 · 잔액 = 최근 · 모르는 필드 보존
+- 🏷️ 장부 `RenderMode` · `StyleTags`(공유) · `Champion/ChallengerStyleTags` 영속(null 생략 → 구 장부 호환) · 소급은 기록 우선, 구 장부만 몽타주 + 카탈로그 폴백
+- 🩺 라이브 Drive 프로브: 스테이징 → 원자 이동 → SHA-256 고정 시간 비교 → 지연(ms) → finally 삭제 · Drive off/루트 부재 → 디스크 무접촉 생략 · 환경설정 표시
+- 자율 ① 실시간 A/B 컨텍스트 알파가 영속 태그 사용(소급과 표본 완전 일치) · 재시작 후 대기 실험 RenderMode 복원(ToPlan)
+- 자율 ② 복원 형태 가드(`{}` · 다른 허브 파일 · 배열 루트 거절 → 학습 상태 전체 소거 차단)
+- 자율 ③ 재적재 전 진행 중 기록 배수(장부 체인 · 아크 플러시) + 배수 이후 등록분 보존 → 병합 되덮기 차단
+- 자율 ④ 보정 재적재 시 `.bak` 갱신 → 이후 본 파일 손상 시 병합 이전으로 롤백 방지
 
 ## Notes
-- ⚠️ 병합/복원은 다음 실행(해당 허브 첫 적재) 때 반영 · 메타 보정 · 정체성 볼트 · 소셜 레이더 · 바이럴 패턴은 의미 병합 미지원(복원/무시만)
-- ⚠️ 소급은 렌더 포맷을 '몽타주'로 가정(A/B 는 몽타주에서만 생성) · 태그는 카탈로그(최근 100건)에 남은 변형 영상만
-- ⚠️ 실제 Google Drive 클라이언트 대상 검증은 아직 없음(임시 폴더 · 파일 잠금 모사로만 검증)
-- ⚠️ `.git`은 `D:\Program` — git 명령에 `--git-dir=D:\Program\.git --work-tree=D:\Program\PromptFlowStudio` 필요
+- ⚠️ 재적재 성공 직후가 아닌 '승격 후 읽기 실패'(극히 드문 잠금) 시 해당 세션 메모리가 다음 기록에서 병합분을 덮을 수 있음
+- ⚠️ `.git` 은 `D:\Program` — `--git-dir=D:\Program\.git --work-tree=D:\Program\PromptFlowStudio` 필요

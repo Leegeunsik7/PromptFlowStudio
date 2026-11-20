@@ -76,7 +76,7 @@ public sealed record PlutoMistakeDecayStatus(int TrackedCount, int ActiveGuardCo
 /// 유효 벌점 P_eff(t) = P_raw × 0.5^(Δt_days / 21). 원시 벌점은 갱신 시점에 감쇠 반영 후 재기준(LastUtc = now).
 /// 조합 키(<c>pair:</c> · <c>domain_hook:</c>)는 같은 감쇠·히스테리시스를 따르되 단일 특성 차단 집합 · LLM 부정 제약에는 노출하지 않는다.
 /// </summary>
-public sealed class PlutoMistakeNotebookService : IPlutoMistakeNotebookService, IDisposable
+public sealed class PlutoMistakeNotebookService : IPlutoMistakeNotebookService, IPlutoHotReloadable, IDisposable
 {
     public const string FileName = "pluto_mistake_notebook.json";
     /// <summary>⏳ 벌점 반감기(일) — 재범 없으면 21일마다 절반으로 감쇠해 점진 복권.</summary>
@@ -191,21 +191,51 @@ public sealed class PlutoMistakeNotebookService : IPlutoMistakeNotebookService, 
             if (_loaded) return;
             var (data, status) = await PlutoJsonStore.TryLoadAsync<Snapshot>(StoragePath, "Pluto.Mistake", ct).ConfigureAwait(false);
             _readOnly = status == PlutoLoadStatus.Unreadable;
-            var map = new Dictionary<string, Entry>(StringComparer.OrdinalIgnoreCase);
-            if (data?.Entries is { } src)
-                foreach (var kv in src)
-                {
-                    var key = Normalize(kv.Key);
-                    if (key is null || kv.Value is not { } e || !double.IsFinite(e.RawPenalty) || e.RawPenalty < 0) continue;
-                    if (string.IsNullOrWhiteSpace(e.Label)) e.Label = key;
-                    if (e.LastUtc.Kind != DateTimeKind.Utc)
-                        e.LastUtc = e.LastUtc.Kind == DateTimeKind.Local ? e.LastUtc.ToUniversalTime() : DateTime.SpecifyKind(e.LastUtc, DateTimeKind.Utc);
-                    map[key] = e;
-                }
+            var map = BuildMap(data);
             lock (_sync) _entries = map;
             _loaded = true;
         }
         finally { _gate.Release(); }
+    }
+
+    private static Dictionary<string, Entry> BuildMap(Snapshot? data)
+    {
+        var map = new Dictionary<string, Entry>(StringComparer.OrdinalIgnoreCase);
+        if (data?.Entries is { } src)
+            foreach (var kv in src)
+            {
+                var key = Normalize(kv.Key);
+                if (key is null || kv.Value is not { } e || !double.IsFinite(e.RawPenalty) || e.RawPenalty < 0) continue;
+                if (string.IsNullOrWhiteSpace(e.Label)) e.Label = key;
+                if (e.LastUtc.Kind != DateTimeKind.Utc)
+                    e.LastUtc = e.LastUtc.Kind == DateTimeKind.Local ? e.LastUtc.ToUniversalTime() : DateTime.SpecifyKind(e.LastUtc, DateTimeKind.Utc);
+                map[key] = e;
+            }
+        return map;
+    }
+
+    // ── ♻️ Step 20 — 실행 중 재적재 ──
+
+    public string HubFileName => FileName;
+
+    /// <summary>♻️ 게이트 안에서 대기 해결 승격 → 파싱 → 원자 교체(손상 · 부재 · 잠김 · 읽기 전용 세션 → 라이브 노트 유지 + false).</summary>
+    public async Task<bool> ReloadFromDiskAsync(CancellationToken ct = default)
+    {
+        if (Volatile.Read(ref _disposed) != 0) return false;
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            if (_readOnly) return false;   // 메모리에만 있는 세션 기록을 지우지 않는다
+            PlutoHotReload.PromotePending(_storage, FileName);
+            var (data, status) = await PlutoJsonStore.TryLoadAsync<Snapshot>(StoragePath, "Pluto.Mistake.Reload", ct).ConfigureAwait(false);
+            if (status != PlutoLoadStatus.Ok || data is null) return false;
+            var map = BuildMap(data);
+            lock (_sync) _entries = map;
+            _loaded = true;
+        }
+        finally { _gate.Release(); }
+        RaiseChanged();
+        return true;
     }
 
     public Task RecordNegativeFeedbackAsync(IEnumerable<string> tokens, double penaltyWeight = DislikePenalty, string? reason = null, CancellationToken ct = default)

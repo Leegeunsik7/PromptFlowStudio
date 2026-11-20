@@ -35,7 +35,7 @@ public interface IPlutoRenderCatalogService
 /// 🎞️ <see cref="IPlutoRenderCatalogService"/> 구현 — <c>pluto_render_catalog.json</c>(☁️ Drive 볼트 · 로컬 폴백 · 원자 기록).
 /// 적재 불가(잠금·권한) 세션은 기존 파일 덮어쓰기 금지 · 영속 실패 → [부분 구제] 메모리 유지.
 /// </summary>
-public sealed class PlutoRenderCatalogService : IPlutoRenderCatalogService, IDisposable
+public sealed class PlutoRenderCatalogService : IPlutoRenderCatalogService, IPlutoHotReloadable, IDisposable
 {
     public const string FileName = "pluto_render_catalog.json";
     public const int Capacity = 100;
@@ -136,6 +136,12 @@ public sealed class PlutoRenderCatalogService : IPlutoRenderCatalogService, IDis
         if (_loaded) return;
         var (data, status) = await PlutoJsonStore.TryLoadAsync<Snapshot>(StoragePath, "Pluto.RenderCatalog", ct).ConfigureAwait(false);
         _readOnly = status == PlutoLoadStatus.Unreadable;
+        _clips = BuildList(data);
+        _loaded = true;
+    }
+
+    private static List<PlutoRenderedClipRecord> BuildList(Snapshot? data)
+    {
         var list = new List<PlutoRenderedClipRecord>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         if (data?.Clips is { } clips)
@@ -145,8 +151,30 @@ public sealed class PlutoRenderCatalogService : IPlutoRenderCatalogService, IDis
                 list.Add(Sanitize(FromDto(c)));
                 if (list.Count >= Capacity) break;
             }
-        _clips = list;
-        _loaded = true;
+        return list;
+    }
+
+    // ── ♻️ Step 20 — 실행 중 재적재 ──
+
+    public string HubFileName => FileName;
+
+    /// <summary>♻️ 게이트 안에서 대기 해결 승격 → 파싱 → 원자 교체(손상 · 부재 · 잠김 · 읽기 전용 세션 → 라이브 카탈로그 유지 + false).</summary>
+    public async Task<bool> ReloadFromDiskAsync(CancellationToken ct = default)
+    {
+        if (Volatile.Read(ref _disposed) != 0) return false;
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            if (_readOnly) return false;
+            PlutoHotReload.PromotePending(_storage, FileName);
+            var (data, status) = await PlutoJsonStore.TryLoadAsync<Snapshot>(StoragePath, "Pluto.RenderCatalog.Reload", ct).ConfigureAwait(false);
+            if (status != PlutoLoadStatus.Ok || data is null) return false;
+            _clips = BuildList(data);
+            _loaded = true;
+        }
+        finally { _gate.Release(); }
+        RaiseChanged();
+        return true;
     }
 
     public async Task RecordRenderedClipAsync(PlutoRenderedClipRecord record, CancellationToken ct = default)

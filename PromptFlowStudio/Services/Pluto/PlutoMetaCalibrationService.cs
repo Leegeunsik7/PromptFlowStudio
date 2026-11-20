@@ -124,7 +124,7 @@ public interface IPlutoMetaCalibrationService
 ///   ▸ 🛡️ 내구성: 기록마다 <c>.bak</c> 마지막 정상본 동반 기록 → 본 파일 손상(Drive 0 B 자리표시자 · 잘린 동기화) 시 자동 복구.
 ///     적재 불가(잠금·권한) 세션은 디스크 덮어쓰기 금지 — 다음 기록 때 재적재를 시도해 잠금이 풀렸으면 세션 중 관측을 디스크 상태 위에 재생(자가 치유).
 /// </summary>
-public sealed class PlutoMetaCalibrationService : IPlutoMetaCalibrationService, IDisposable
+public sealed class PlutoMetaCalibrationService : IPlutoMetaCalibrationService, IPlutoHotReloadable, IDisposable
 {
     public const string FileName = "pluto_calibration_state.json";
     public const int WindowCapacity = 64;
@@ -320,6 +320,44 @@ public sealed class PlutoMetaCalibrationService : IPlutoMetaCalibrationService, 
         _readOnly = status == PlutoLoadStatus.Unreadable;
         lock (_sync) ReplaceStateLocked(data);
         _loaded = true;
+    }
+
+    // ── ♻️ Step 20 — 실행 중 재적재 ──
+
+    public string HubFileName => FileName;
+
+    /// <summary>
+    /// ♻️ 게이트 안에서 대기 해결 승격 → 본 파일 파싱 → 원자 교체 → <c>.bak</c> 를 새 상태로 갱신.
+    /// <c>.bak</c> 갱신 이유: 그대로 두면 이후 본 파일이 깨졌을 때 '병합 이전' 정상본으로 조용히 되돌아가 병합된 다른 PC 의 보정 이력이 사라진다.
+    /// 본 파일 손상 · 부재 · 잠김 · 읽기 전용 세션 → 라이브 상태 유지 + false(<c>.bak</c> 폴백은 최초 적재 전용).
+    /// </summary>
+    public async Task<bool> ReloadFromDiskAsync(CancellationToken ct = default)
+    {
+        if (Volatile.Read(ref _disposed) != 0) return false;
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            if (_readOnly) return false;
+            PlutoHotReload.PromotePending(_storage, FileName);
+            var (data, status) = await PlutoJsonStore.TryLoadAsync<Snapshot>(StoragePath, "Pluto.MetaCalibration.Reload", ct).ConfigureAwait(false);
+            if (status != PlutoLoadStatus.Ok || data is null) return false;
+            string json;
+            lock (_sync)
+            {
+                ReplaceStateLocked(data);
+                json = JsonSerializer.Serialize(new Snapshot
+                {
+                    CumulativeRegret = _cumulativeRegret, TotalRecords = _totalRecords, Window = new List<RecordDto>(_window),
+                    Attributions = new Dictionary<string, AttributionDto>(_attributions, StringComparer.Ordinal),
+                }, JsonOpts);
+            }
+            _loaded = true;
+            if (_storage is not null) await _storage.WriteAllTextAtomicAsync(FileName + BackupSuffix, json, CancellationToken.None).ConfigureAwait(false);
+            else await PlutoJsonStore.WriteAtomicAsync(_path + BackupSuffix, json, "Pluto.MetaCalibration.Backup", CancellationToken.None).ConfigureAwait(false);
+        }
+        finally { _gate.Release(); }
+        RaiseChanged();
+        return true;
     }
 
     /// <summary>🛡️ 본 파일 적재 — 손상/빈 본문이면 <c>.bak</c> 마지막 정상본으로 복구(본 파일은 <c>.corrupt</c> 격리 유지).</summary>

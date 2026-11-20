@@ -263,9 +263,9 @@ public sealed class PlutoSyncHardeningAndBackfillTests : IDisposable
 
         // 거절 — 손상 · 비병합 허브 · 배열 루트
         Assert.Null(PlutoConflictMergeService.MergeJson(PlutoExperimentLedgerService.FileName, pc1, "{\"Experiments\":["));
-        Assert.Null(PlutoConflictMergeService.MergeJson(PlutoMetaCalibrationService.FileName, "{}", "{}"));
+        Assert.Null(PlutoConflictMergeService.MergeJson(PlutoIdentityVault.FileName, "{}", "{}"));
         Assert.Null(PlutoConflictMergeService.MergeJson(PlutoLearningService.FileName, "[]", "{}"));
-        Assert.Equal(5, PlutoConflictMergeService.MergeableHubs.Count);
+        Assert.Equal(6, PlutoConflictMergeService.MergeableHubs.Count);   // Step 20 — 보정 상태 편입
         Assert.Equal(PlutoSeriesArcMemoryService.FileName, PlutoConflictMergeService.HubFileOf("pluto_series_arc.conflict-20261101010000-2.json"));
         Assert.Null(PlutoConflictMergeService.HubFileOf("pluto_series_arc.json"));
     }
@@ -280,7 +280,7 @@ public sealed class PlutoSyncHardeningAndBackfillTests : IDisposable
         Put(Path.Combine(drive, ledgerFile), Ledger(Exp("pc-b-1", Stamp, true), Exp("shared", Stamp.AddHours(1), false)), Stamp.AddDays(1));
         var conflicts = ConflictDir(local);
         Put(Path.Combine(conflicts, "pluto_experiment_ledger.conflict-20261101010000.json"), Ledger(Exp("pc-a-1", Stamp.AddHours(2), true), Exp("shared", Stamp.AddHours(1), true)), Stamp.AddHours(3));
-        Put(Path.Combine(conflicts, "pluto_calibration_state.conflict-20261101020000.json"), "{\"a\":1}", Stamp.AddHours(4));
+        Put(Path.Combine(conflicts, "pluto_identity_vault.conflict-20261101020000.json"), "{\"a\":1}", Stamp.AddHours(4));
         Put(Path.Combine(conflicts, "pluto_mistake_notebook.conflict-20261101030000.json"), "{\"half", Stamp.AddHours(5));
 
         var storage = new PlutoDriveStorageManager(drive, local);
@@ -289,7 +289,7 @@ public sealed class PlutoSyncHardeningAndBackfillTests : IDisposable
         Assert.Equal(3, list.Count);
         Assert.Equal(PlutoMistakeNotebookService.FileName, list[0].HubFileName);                        // 최신순
         Assert.False(list[0].IsValidJson);
-        var calib = list.Single(c => c.HubFileName == PlutoMetaCalibrationService.FileName);
+        var calib = list.Single(c => c.HubFileName == PlutoIdentityVault.FileName);
         Assert.False(calib.IsMergeable);
         var ledgerCopy = list.Single(c => c.HubFileName == ledgerFile);
         Assert.True(ledgerCopy.IsMergeable && ledgerCopy.IsValidJson);
@@ -326,8 +326,8 @@ public sealed class PlutoSyncHardeningAndBackfillTests : IDisposable
         Assert.Equal(File.ReadAllText(Path.Combine(drive, ledgerFile)), File.ReadAllText(Path.Combine(local, ledgerFile)));   // 로컬 미러 동기
         Assert.NotNull(next.GetSyncRecord(ledgerFile)?.Sha256);
         Assert.Equal(1, next.PendingResolutionCount);                                                   // 보정 상태 복원은 그 허브 적재 때
-        _ = next.ResolveDataPath(PlutoMetaCalibrationService.FileName);
-        Assert.Equal("{\"a\":1}", File.ReadAllText(Path.Combine(drive, PlutoMetaCalibrationService.FileName)));
+        _ = next.ResolveDataPath(PlutoIdentityVault.FileName);
+        Assert.Equal("{\"a\":1}", File.ReadAllText(Path.Combine(drive, PlutoIdentityVault.FileName)));
         Assert.Equal(0, next.PendingResolutionCount);
 
         // 대기 병합이 손상됐으면 현재 기록은 그대로 · .rejected 로 보존
@@ -340,7 +340,7 @@ public sealed class PlutoSyncHardeningAndBackfillTests : IDisposable
 
         // UI — 환경설정 충돌 섹션(병합 · 복원 · 무시) · 두뇌 리포트 본문 표시(상단 3행 헤더 불변)
         var settings = File.ReadAllText(Path.Combine(RepoRoot(), "PromptFlowStudio", "Blazor", "Pages", "Settings.razor"));
-        foreach (var marker in new[] { "data-drive-conflicts=", "data-conflict-merge=\"1\"", "data-conflict-restore=\"1\"", "data-conflict-dismiss=\"1\"", "DriveHealth.MergeConflict(c.FullPath)", "DriveHealth.RestoreConflict(c.FullPath)", "DriveHealth.DismissConflict(c.FullPath)" })
+        foreach (var marker in new[] { "data-drive-conflicts=", "data-conflict-merge=\"1\"", "data-conflict-restore=\"1\"", "data-conflict-dismiss=\"1\"", "DriveHealth.MergeConflictLiveAsync(c.FullPath)", "DriveHealth.RestoreConflictLiveAsync(c.FullPath)", "DriveHealth.DismissConflict(c.FullPath)" })
             Assert.Contains(marker, settings, StringComparison.Ordinal);
         var ws = File.ReadAllText(Path.Combine(RepoRoot(), "PromptFlowStudio", "Blazor", "Pages", "Workspace.razor"));
         var strip = ws.IndexOf("<div class=\"ws-brain-strip\"", StringComparison.Ordinal);

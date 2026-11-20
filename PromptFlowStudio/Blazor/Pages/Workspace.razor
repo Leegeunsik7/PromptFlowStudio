@@ -2491,6 +2491,7 @@
             var cuts = _curationResult?.SelectedCuts is { } sc && sc.Count == plan.Clips.Count ? sc : null;
             var ab = await gen.BuildVariantPairAsync(MontageThemeHint(), "몽타주", plan, cuts, _mediaCts.Token);   // 🧬 (도메인, 몽타주) 컨텍스트 — 콜드스타트는 전역 사전으로 수축
             if (_disposed || !ReferenceEquals(plan, _activeMontagePlan)) return;   // 플랜 교체 → 폐기
+            ab = ab with { ContextRenderMode = ab.ContextRenderMode ?? "몽타주", ContextStyleTags = ActiveViralTagsSafe(3) };   // 🏷️ Step 20 — 장부에 포맷 · 태그 영구 기록
             _abPlan = ab;
             _abPlanSource = plan;
             try { (EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoExperimentLedgerService)) as PromptFlowStudio.Services.Pluto.IPlutoExperimentLedgerService)?.RegisterExperiment(ab); }
@@ -2573,7 +2574,15 @@
     /// <summary>🎞️ 렌더 영상 → 장부 변형 슬롯 결선(예외 격리 · 미리보기 캐시 무효화).</summary>
     private void AttachAbArtifact(string experimentId, string? championPath, string? challengerPath)
     {
-        try { (EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoExperimentLedgerService)) as PromptFlowStudio.Services.Pluto.IPlutoExperimentLedgerService)?.AttachVariantArtifacts(experimentId, championPath, challengerPath); }
+        try
+        {
+            if (EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoExperimentLedgerService)) is PromptFlowStudio.Services.Pluto.IPlutoExperimentLedgerService ledger)
+            {
+                ledger.AttachVariantArtifacts(experimentId, championPath, challengerPath);
+                var tags = ActiveViralTagsSafe(3);   // 🏷️ Step 20 — 카탈로그 기록과 같은 렌더 시점 태그를 장부에도 영구 기록(100건 롤오프 무관)
+                ledger.AttachVariantStyleTags(experimentId, championPath is null ? null : tags, challengerPath is null ? null : tags);
+            }
+        }
         catch (Exception ex) { Program.Log("Workspace.AbAttach", ex); }   // [부분 구제] 렌더 결과는 보존
         _abArtId = null;
     }
@@ -4501,6 +4510,36 @@
         catch (Exception ex) { Program.Log("Workspace.PlutoCore", ex); }
     }
 
+    // ── ♻️ Step 20 — 충돌 병합/복원 즉시 반영(재시작 없이 대기 실험 · 두뇌 리포트 · 추천 갱신) ──
+    private PromptFlowStudio.Services.Pluto.IPlutoDriveHealthService? _hotReloadSource;
+
+    private void AttachHotReload()
+    {
+        try
+        {
+            _hotReloadSource = EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoDriveHealthService)) as PromptFlowStudio.Services.Pluto.IPlutoDriveHealthService;
+            if (_hotReloadSource is not null) _hotReloadSource.HubReloaded += OnPlutoHubReloaded;
+        }
+        catch (Exception ex) { Program.Log("Workspace.HotReloadAttach", ex); }
+    }
+
+    private void OnPlutoHubReloaded(string hub)
+    {
+        if (_disposed) return;
+        _ = InvokeAsync(async () =>
+        {
+            try
+            {
+                await RefreshAbPendingAsync();
+                if (_brainOpen) await RefreshBrainSummaryAsync();
+                _ = RefreshAdaptiveRecommendationAsync();
+                if (!_disposed) StateHasChanged();
+            }
+            catch (OperationCanceledException) { /* 페이지 이탈 */ }
+            catch (Exception ex) { Program.Log("Workspace.HotReload", ex); }
+        });
+    }
+
     private bool _plutoCoreLaunching;
     private CancellationTokenSource? _plutoCoreCts;
 
@@ -5415,6 +5454,7 @@
         PlutoStorage.Changed += OnPlutoCoreChanged;     // ☁️ Drive ↔ 로컬 폴백 배지
         AttachCircuitBreaker();                         // ⚡ 회로 차단 상태 배지
         PlutoHarvester.Changed += OnPlutoCoreChanged;   // 🔄 자율 수확 배지
+        AttachHotReload();                              // ♻️ 충돌 병합/복원 즉시 반영
         PlutoCoreMgr.StartMonitoring();   // 🪐 5초 헬스 폴링(싱글톤 · 멱등)
         StockMon.Start();   // 🟢 2초 주기 StockSuite 프로세스 폴링(싱글톤 · 멱등)
         Journal.OnChanged += OnHubChanged;
@@ -5598,6 +5638,7 @@
         PlutoCoreMgr.OnChanged -= OnPlutoCoreChanged;
         PlutoStorage.Changed -= OnPlutoCoreChanged;
         PlutoHarvester.Changed -= OnPlutoCoreChanged;
+        if (_hotReloadSource is not null) _hotReloadSource.HubReloaded -= OnPlutoHubReloaded;
         try { _plutoCoreCts?.Cancel(); } catch (ObjectDisposedException) { }
         Journal.OnChanged -= OnHubChanged;
         Resilience.OnRetryAttempt -= OnRetryAttempt;

@@ -150,7 +150,7 @@ public interface IPlutoSeriesArcMemoryService
 ///   ▸ 🆕 시즌: 같은 테마 · 편수로 다시 만든 시리즈는 <see cref="StartNewSeasonAsync"/> 로 분리(1시즌 키 = 기존 키 · 2시즌부터 <c>@sN</c>) — 카탈로그/성과는 영상 ID → 렌더 시각 순으로 시즌 귀속.
 ///   ▸ 📐 단일 편 조기 이탈: 측정 편이 1편뿐이어도 (Domain, RenderMode) 유지율 기준선(관측 이전 스냅샷)을 −<see cref="DropThresholdPts"/>p 이상 밑돌면 에스컬레이션.
 /// </summary>
-public sealed class PlutoSeriesArcMemoryService : IPlutoSeriesArcMemoryService, IDisposable
+public sealed class PlutoSeriesArcMemoryService : IPlutoSeriesArcMemoryService, IPlutoHotReloadable, IDisposable
 {
     public const string FileName = "pluto_series_arc.json";
     public const int MaxSeries = 50;
@@ -648,6 +648,19 @@ public sealed class PlutoSeriesArcMemoryService : IPlutoSeriesArcMemoryService, 
             _readOnly = status == PlutoLoadStatus.Unreadable;
             lock (_sync)
             {
+                ReplaceStateLocked(data);
+                // ⚡ 적재 이전 write-through 를 디스크 상태 위에 재적용(측정된 편 보호 · 오래된 항목 무시 규칙 그대로)
+                for (var i = 0; i < _preLoadRenders.Count; i++) ApplyRenderLocked(_preLoadRenders[i], null);
+                _preLoadRenders.Clear();
+                _loaded = true;   // _sync 안에서 전환 — RecordRenderedEpisode 의 '적재 전' 판정과 원자적
+            }
+        }
+        finally { _gate.Release(); }
+    }
+
+    /// <summary>상태 교체(호출자가 <c>_sync</c> 보유) — 정규화 규칙은 최초 적재와 동일.</summary>
+    private void ReplaceStateLocked(Snapshot? data)
+    {
                 _series.Clear();
                 _baselines.Clear();
                 if (data?.Series is { } list)
@@ -684,13 +697,37 @@ public sealed class PlutoSeriesArcMemoryService : IPlutoSeriesArcMemoryService, 
                         _baselines[kv.Key] = new BaselineDto { H = Pct(b.H), C = Pct(b.C), N = Math.Min(PlutoLearningService.MaxExpectancySamples, b.N) };
                     }
                 _mode = data?.Mode == 1 ? 1 : 0;
-                // ⚡ 적재 이전 write-through 를 디스크 상태 위에 재적용(측정된 편 보호 · 오래된 항목 무시 규칙 그대로)
-                for (var i = 0; i < _preLoadRenders.Count; i++) ApplyRenderLocked(_preLoadRenders[i], null);
+    }
+
+    // ── ♻️ Step 20 — 실행 중 재적재 ──
+
+    public string HubFileName => FileName;
+
+    /// <summary>
+    /// ♻️ 백그라운드 기록 배수(<see cref="FlushAsync"/>) → 게이트 안에서 대기 해결 승격 → 파싱 → 원자 교체.
+    /// 배수가 먼저인 이유: 예약된 기록이 승격 '뒤'에 실행되면 메모리 상태로 병합 결과를 되덮는다. 손상 · 부재 · 잠김 · 읽기 전용 → 라이브 아크 유지 + false.
+    /// </summary>
+    public async Task<bool> ReloadFromDiskAsync(CancellationToken ct = default)
+    {
+        if (Volatile.Read(ref _disposed) != 0) return false;
+        await FlushAsync().ConfigureAwait(false);
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            if (_readOnly) return false;
+            PlutoHotReload.PromotePending(_storage, FileName);
+            var (data, status) = await PlutoJsonStore.TryLoadAsync<Snapshot>(StoragePath, "Pluto.SeriesArc.Reload", ct).ConfigureAwait(false);
+            if (status != PlutoLoadStatus.Ok || data is null) return false;
+            lock (_sync)
+            {
+                ReplaceStateLocked(data);
                 _preLoadRenders.Clear();
-                _loaded = true;   // _sync 안에서 전환 — RecordRenderedEpisode 의 '적재 전' 판정과 원자적
+                _loaded = true;
             }
         }
         finally { _gate.Release(); }
+        RaiseChanged();
+        return true;
     }
 
     private static EpisodeDto? FindEpisode(SeriesDto s, int n)

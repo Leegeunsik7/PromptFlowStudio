@@ -45,6 +45,8 @@ public sealed record PlutoVariantABPlan(string ExperimentId, string ThemeHint, P
     public bool IsThompsonSampled => string.Equals(ExplorationPolicy, PlutoThompsonUcbSampler.PolicyHybrid, StringComparison.Ordinal);
     /// <summary>🧬 실험 컨텍스트의 렌더 포맷(미지정 → null · 도메인만으로 컨텍스트 구성).</summary>
     public string? ContextRenderMode { get; init; }
+    /// <summary>🏷️ Step 20 — 실험 공유 스타일 태그(렌더 시점 활성 바이럴 태그 · 미지정 → null) — 장부에 영구 기록되어 카탈로그 100건 롤오프 후에도 남는다.</summary>
+    public IReadOnlyList<string>? ContextStyleTags { get; init; }
     /// <summary>🧬 챔피언 훅의 (Domain, RenderMode) 경험적 베이즈 추정(근거 없음 → None).</summary>
     public PlutoEmpiricalBayesEstimate ChampionContextTransfer { get; init; } = PlutoEmpiricalBayesEstimate.None;
     /// <summary>🧬 챔피언 BGM 무드의 (Domain, RenderMode) 경험적 베이즈 추정(근거 없음 → None).</summary>

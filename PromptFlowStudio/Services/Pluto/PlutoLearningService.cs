@@ -21,7 +21,7 @@ public enum InteractionType
 /// 🪐 Pluto 자가 적응 학습 — 채택/내보내기/평가 → 트렌드별 가중치를 <c>pluto_trend_memory.json</c> 에 영속.
 /// 순위: 80% 활용(가중치 내림차순) + 20% 탐색(상위 2개 밖 최소 상호작용 카드를 2번째 슬롯으로 승격).
 /// </summary>
-public sealed class PlutoLearningService : IDisposable
+public sealed class PlutoLearningService : IPlutoHotReloadable, IDisposable
 {
     public const double AdoptedDelta = 0.05;
     public const double ExportDelta = 0.15;
@@ -265,20 +265,48 @@ public sealed class PlutoLearningService : IDisposable
             // 손상 JSON → .corrupt 격리 후 빈 메모리 · 일시적 잠금 → 재시도 · 끝내 읽기 불가 → 디스크 덮어쓰기 금지(누적 XP 보호)
             var (data, status) = await PlutoJsonStore.TryLoadAsync<Dictionary<string, Entry>>(StoragePath, "Pluto", ct).ConfigureAwait(false);
             _readOnly = status == PlutoLoadStatus.Unreadable;
-            lock (_sync)
-            {
-                _entries = new Dictionary<string, Entry>(StringComparer.Ordinal);
-                if (data is not null)
-                    foreach (var kv in data)
-                        if (kv.Value is not null && !string.IsNullOrWhiteSpace(kv.Key) && double.IsFinite(kv.Value.Weight))
-                        {
-                            SanitizeExtended(kv.Value);
-                            _entries[kv.Key] = kv.Value;
-                        }
-            }
+            var map = BuildEntries(data);
+            lock (_sync) _entries = map;
             _loaded = true;
         }
         finally { _gate.Release(); }
+    }
+
+    private static Dictionary<string, Entry> BuildEntries(Dictionary<string, Entry>? data)
+    {
+        var map = new Dictionary<string, Entry>(StringComparer.Ordinal);
+        if (data is not null)
+            foreach (var kv in data)
+                if (kv.Value is not null && !string.IsNullOrWhiteSpace(kv.Key) && double.IsFinite(kv.Value.Weight))
+                {
+                    SanitizeExtended(kv.Value);
+                    map[kv.Key] = kv.Value;
+                }
+        return map;
+    }
+
+    // ── ♻️ Step 20 — 실행 중 재적재 ──
+
+    public string HubFileName => FileName;
+
+    /// <summary>♻️ 게이트 안에서 대기 해결 승격 → 파싱 → 원자 교체(손상 · 부재 · 잠김 · 읽기 전용 세션 → 라이브 메모리 · 누적 XP 유지 + false).</summary>
+    public async Task<bool> ReloadFromDiskAsync(CancellationToken ct = default)
+    {
+        if (Volatile.Read(ref _disposed) != 0) return false;
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            if (_readOnly) return false;
+            PlutoHotReload.PromotePending(_storage, FileName);
+            var (data, status) = await PlutoJsonStore.TryLoadAsync<Dictionary<string, Entry>>(StoragePath, "Pluto.Reload", ct).ConfigureAwait(false);
+            if (status != PlutoLoadStatus.Ok || data is null) return false;
+            var map = BuildEntries(data);
+            lock (_sync) _entries = map;
+            _loaded = true;
+        }
+        finally { _gate.Release(); }
+        RaiseChanged();
+        return true;
     }
 
     /// <summary>상호작용 기록 → 가중치 갱신(±클램프) → 즉시 원자적 영속. 반환 = 갱신 후 가중치.</summary>
