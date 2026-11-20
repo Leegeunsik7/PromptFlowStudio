@@ -80,6 +80,15 @@ public interface IPlutoClosedLoopReinforcementService
     /// </summary>
     Task<PlutoReinforcementOutcome> IngestExperimentOutcomeAsync(PlutoExperimentReinforcementRequest request, CancellationToken ct = default);
 
+    /// <summary>
+    /// 📈 Step 22 성숙도 증분 강화 — 이미 반영한 영상의 성숙 스냅샷(<paramref name="matured"/>)과 이전 반영 지표(<paramref name="previous"/>)의
+    /// <b>차이만</b> 가중치 <paramref name="weight"/>(0~<see cref="PlutoClosedLoopReinforcementService.MaturityBaseWeight"/>)로 반영.
+    /// 같은 (플랫폼, 영상, 단계)는 한 번만 반영된다. 컨텍스트 기준선 · 보정 · 시리즈 아크에는 다시 넣지 않는다(이중 관측 방지).
+    /// 기본 구현은 아무것도 하지 않는다.
+    /// </summary>
+    Task<PlutoReinforcementOutcome> IngestMaturityDeltaAsync(PlutoVideoPerformanceTelemetry matured, PlutoVideoPerformanceTelemetry previous, int stage, double weight, CancellationToken ct = default)
+        => Task.FromResult(new PlutoReinforcementOutcome(false, false, 0, 1.0, "➖ 성숙도 증분 미지원"));
+
     /// <summary>마지막 반영 결과(없음 → null).</summary>
     PlutoReinforcementOutcome? LastOutcome { get; }
 
@@ -577,6 +586,87 @@ public sealed class PlutoClosedLoopReinforcementService : IPlutoClosedLoopReinfo
                 Context = ctx,
                 ContextualAlphaApplied = alphaApplied || penaltyWaived,
                 ContextualPenaltyWaived = penaltyWaived,
+            };
+            await AppendLedgerAsync(key, ct).ConfigureAwait(false);
+            return Publish(outcome);
+        }
+        finally { _gate.Release(); }
+    }
+
+    // ── 📈 Step 22 — 성숙도 증분 강화 ──
+
+    public const string MaturityLedgerPrefix = "mat|";
+    /// <summary>1단계 증분 가중치 상한(이후 단계마다 절반 · <see cref="MaxMaturityStages"/>단계까지).</summary>
+    public const double MaturityBaseWeight = 0.5;
+    public const int MaxMaturityStages = 3;
+    /// <summary>돌파 강도 · 결손이 이만큼 이상 변해야 증분으로 본다(노이즈 차단).</summary>
+    public const double MaturityMinChange = 0.05;
+
+    /// <summary>단계별 체감 가중치 — 1단계 0.5 · 2단계 0.25 · 3단계 0.125 · 범위 밖 0.</summary>
+    public static double MaturityWeightForStage(int stage)
+        => stage < 1 || stage > MaxMaturityStages ? 0.0 : MaturityBaseWeight * Math.Pow(0.5, stage - 1);
+
+    public async Task<PlutoReinforcementOutcome> IngestMaturityDeltaAsync(PlutoVideoPerformanceTelemetry matured, PlutoVideoPerformanceTelemetry previous, int stage, double weight, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(matured);
+        ArgumentNullException.ThrowIfNull(previous);
+        if (string.IsNullOrWhiteSpace(matured.VideoId)) throw new ArgumentException("VideoId required", nameof(matured));
+        ct.ThrowIfCancellationRequested();
+        var w = double.IsFinite(weight) ? Math.Clamp(weight, 0.0, MaturityBaseWeight) : 0.0;
+        if (stage < 1 || stage > MaxMaturityStages || w <= 0)
+            return new PlutoReinforcementOutcome(false, false, 0, 1.0, "➖ 성숙도 증분 한도 초과 · 변경 없음");
+        var key = MaturityLedgerPrefix + LedgerKey(matured) + "|" + stage.ToString(Inv);
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            await EnsureLedgerLoadedAsync(ct).ConfigureAwait(false);
+            if (_ledgerSet.Contains(key))
+                return Publish(new PlutoReinforcementOutcome(false, false, 0, 1.0, "⏭ 이미 반영된 성숙도 단계입니다: " + matured.VideoId.Trim()) { AlreadyRegistered = true });
+
+            var (nb, ns, np, nd) = Evaluate(matured);
+            var (pb, ps, pp, pd) = Evaluate(previous);
+            var mult = 1.0;
+            var xp = 0;
+            var penalty = 0.0;
+            string? dimension = null;
+            var warn = "";
+            var deltaStrength = nb ? ns - (pb ? ps : 0.0) : 0.0;
+            var deltaDeficit = np ? nd - (pp ? pd : 0.0) : 0.0;
+            if (nb && deltaStrength >= MaturityMinChange)
+            {
+                // 돌파가 새로 생겼거나 강해짐 → 강도 '증가분'만 가중 반영
+                mult = 1.0 + (BoostFor(deltaStrength) - 1.0) * w;
+                xp = (int)Math.Round(XpFor(deltaStrength) * w, MidpointRounding.AwayFromZero);
+                try
+                {
+                    if (_learning is not null) await _learning.ApplyPatternReinforcementAsync(Concat(PatternTokens(matured), InteractionTokens(matured)), mult, XpSourceKey, xp, ct).ConfigureAwait(false);
+                    else { mult = 1.0; xp = 0; warn = " · ⚠ 학습 메모리 미연결"; }
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.ClosedLoop] maturity boost: " + ex.Message); mult = 1.0; xp = 0; warn = " · ⚠ 학습 기록 실패"; }
+            }
+            else if (!nb && np && deltaDeficit >= MaturityMinChange)
+            {
+                // 성숙하며 부진이 드러나거나 깊어짐 → 결손 '증가분' 비례 벌점 × 가중치
+                dimension = ClassifyFailureDimension(matured);
+                penalty = PenaltyForSteepestDeficit(deltaDeficit, dimension) * w;
+                try
+                {
+                    if (_notebook is not null)
+                        await _notebook.RecordDiagnosedMistakeAsync(MistakeTokens(matured), penalty, dimension, "maturity: " + matured.Platform + " " + matured.VideoId.Trim(), ct).ConfigureAwait(false);
+                    else { penalty = 0; warn = " · ⚠ 오답 노트 미연결"; }
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.ClosedLoop] maturity penalty: " + ex.Message); penalty = 0; warn = " · ⚠ 오답 노트 기록 실패"; }
+            }
+            var head = "📈 성숙도 " + stage.ToString(Inv) + "단계(×" + w.ToString("0.###", Inv) + ") · ";
+            var body = mult > 1.0 ? "돌파 증분 패턴 ×" + mult.ToString("0.000", Inv) + " · XP +" + xp.ToString(Inv)
+                : penalty > 0 ? "부진 증분 벌점 " + penalty.ToString("0.00", Inv) + "(" + DimensionLabelKorean(dimension) + ")"
+                : "유의미한 변화 없음";
+            var outcome = new PlutoReinforcementOutcome(mult > 1.0, penalty > 0, xp, mult, head + body + warn)
+            {
+                PenaltySeverity = penalty,
+                FailureDimension = penalty > 0 ? dimension : null,
             };
             await AppendLedgerAsync(key, ct).ConfigureAwait(false);
             return Publish(outcome);

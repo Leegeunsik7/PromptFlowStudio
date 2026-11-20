@@ -10,7 +10,32 @@ namespace PromptFlowStudio.Services.Pluto;
 
 /// <summary>🎞️ 렌더 완료 영상 메타 — 성과 피드백 귀속(훅 · 룩 · BGM · 태그) + 학습 반영 여부.</summary>
 public sealed record PlutoRenderedClipRecord(string VideoId, string Title, string RenderMode, string HookStyle, string ColorLookId, string BgmMood,
-    IReadOnlyList<string> Tags, string OutputPath, DateTimeOffset RenderedAtUtc, bool TelemetryLogged);
+    IReadOnlyList<string> Tags, string OutputPath, DateTimeOffset RenderedAtUtc, bool TelemetryLogged)
+{
+    /// <summary>📺 Step 22 — 게시된 YouTube 동영상 ID(11자 · 미연결 → null). 한 번 연결되면 다음 내보내기부터 O(1) 매칭.</summary>
+    public string? YouTubeVideoId { get; init; }
+
+    /// <summary>📈 Step 22 — 마지막으로 학습에 반영한 YouTube 스냅샷(성숙도 증분 학습 기준 · 미반영 → null).</summary>
+    public PlutoYouTubeIngestWatermark? YouTubeWatermark { get; init; }
+}
+
+/// <summary>📈 YouTube 스냅샷 반영 워터마크 — 반영 시점 조회수 · 성숙도 단계(0 = 최초 반영) · 반영 지표.</summary>
+public sealed record PlutoYouTubeIngestWatermark(long Views, int Stage, double HookPct, double CompletionPct, double CtrPct, DateTimeOffset UpdatedUtc);
+
+/// <summary>📺 YouTube ID 연결 결과.</summary>
+public enum PlutoYouTubeBindResult
+{
+    /// <summary>새로 연결.</summary>
+    Bound,
+    /// <summary>이미 같은 ID로 연결됨.</summary>
+    AlreadyBound,
+    /// <summary>클립이 다른 YouTube ID에 이미 연결됨(덮어쓰기 거부).</summary>
+    ClipBoundElsewhere,
+    /// <summary>YouTube ID가 다른 클립에 이미 연결됨(1:1 위반 거부).</summary>
+    IdTakenByOtherClip,
+    /// <summary>클립 없음 · 잘못된 ID.</summary>
+    NotFound,
+}
 
 /// <summary>🎞️ 영속 렌더 카탈로그 — 시리즈 편별 · 재시작 후에도 최근 렌더 영상을 성과 피드백에 다시 선택.</summary>
 public interface IPlutoRenderCatalogService
@@ -29,6 +54,15 @@ public interface IPlutoRenderCatalogService
 
     /// <summary>카탈로그 변경 통지(백그라운드 스레드 가능).</summary>
     event Action? Changed;
+
+    /// <summary>📺 YouTube 동영상 ID로 조회(Tier 1 · 없음 → null).</summary>
+    Task<PlutoRenderedClipRecord?> FindByYouTubeVideoIdAsync(string youTubeVideoId, CancellationToken ct = default);
+
+    /// <summary>📺 클립 ↔ YouTube ID 1:1 연결을 게이트 안에서 원자적으로 기록(기존 다른 연결은 덮어쓰지 않음).</summary>
+    Task<PlutoYouTubeBindResult> TryBindYouTubeVideoIdAsync(string clipVideoId, string youTubeVideoId, CancellationToken ct = default);
+
+    /// <summary>📈 반영 워터마크 갱신 — 조회수/단계가 기존보다 앞설 때만(단조 · 되감기 거부). 반영됨 → true.</summary>
+    Task<bool> UpdateYouTubeWatermarkAsync(string clipVideoId, PlutoYouTubeIngestWatermark watermark, CancellationToken ct = default);
 }
 
 /// <summary>
@@ -83,6 +117,19 @@ public sealed class PlutoRenderCatalogService : IPlutoRenderCatalogService, IPlu
         public string? OutputPath { get; set; }
         public DateTimeOffset RenderedAtUtc { get; set; }
         public bool TelemetryLogged { get; set; }
+        public string? YouTubeVideoId { get; set; }
+        public WatermarkDto? YouTubeWatermark { get; set; }
+    }
+
+    /// <summary>워터마크 직렬화 DTO.</summary>
+    public sealed class WatermarkDto
+    {
+        public long Views { get; set; }
+        public int Stage { get; set; }
+        public double HookPct { get; set; }
+        public double CompletionPct { get; set; }
+        public double CtrPct { get; set; }
+        public DateTimeOffset UpdatedUtc { get; set; }
     }
 
     /// <summary>영속 스냅샷(버전 필드로 향후 스키마 확장).</summary>
@@ -120,16 +167,26 @@ public sealed class PlutoRenderCatalogService : IPlutoRenderCatalogService, IPlu
                 if (c.Length > 0) tags.Add(c);
             }
         return new PlutoRenderedClipRecord(Clip(r.VideoId), Clip(r.Title), Clip(r.RenderMode), Clip(r.HookStyle), Clip(r.ColorLookId), Clip(r.BgmMood),
-            tags.ToArray(), r.OutputPath?.Trim() ?? string.Empty, r.RenderedAtUtc, r.TelemetryLogged);
+            tags.ToArray(), r.OutputPath?.Trim() ?? string.Empty, r.RenderedAtUtc, r.TelemetryLogged)
+        {
+            YouTubeVideoId = YouTubeStudioAnalyticsNormalizer.IsYouTubeVideoId(r.YouTubeVideoId?.Trim()) ? r.YouTubeVideoId!.Trim() : null,
+            YouTubeWatermark = r.YouTubeWatermark is { Views: >= 0, Stage: >= 0 } w ? w : null,
+        };
     }
 
     private static PlutoRenderedClipRecord FromDto(ClipDto d) => new(d.VideoId, d.Title ?? "", d.RenderMode ?? "", d.HookStyle ?? "", d.ColorLookId ?? "",
-        d.BgmMood ?? "", d.Tags ?? Array.Empty<string>(), d.OutputPath ?? "", d.RenderedAtUtc, d.TelemetryLogged);
+        d.BgmMood ?? "", d.Tags ?? Array.Empty<string>(), d.OutputPath ?? "", d.RenderedAtUtc, d.TelemetryLogged)
+    {
+        YouTubeVideoId = d.YouTubeVideoId,
+        YouTubeWatermark = d.YouTubeWatermark is { } w ? new PlutoYouTubeIngestWatermark(w.Views, w.Stage, w.HookPct, w.CompletionPct, w.CtrPct, w.UpdatedUtc) : null,
+    };
 
     private static ClipDto ToDto(PlutoRenderedClipRecord r) => new()
     {
         VideoId = r.VideoId, Title = r.Title, RenderMode = r.RenderMode, HookStyle = r.HookStyle, ColorLookId = r.ColorLookId, BgmMood = r.BgmMood,
         Tags = r.Tags is string[] arr ? arr : new List<string>(r.Tags).ToArray(), OutputPath = r.OutputPath, RenderedAtUtc = r.RenderedAtUtc, TelemetryLogged = r.TelemetryLogged,
+        YouTubeVideoId = r.YouTubeVideoId,
+        YouTubeWatermark = r.YouTubeWatermark is { } w ? new WatermarkDto { Views = w.Views, Stage = w.Stage, HookPct = w.HookPct, CompletionPct = w.CompletionPct, CtrPct = w.CtrPct, UpdatedUtc = w.UpdatedUtc } : null,
     };
 
     private async Task EnsureLoadedLockedAsync(CancellationToken ct)
@@ -267,6 +324,79 @@ public sealed class PlutoRenderCatalogService : IPlutoRenderCatalogService, IPlu
         }
         finally { _gate.Release(); }
         if (changed) RaiseChanged();
+    }
+
+    public async Task<PlutoRenderedClipRecord?> FindByYouTubeVideoIdAsync(string youTubeVideoId, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(youTubeVideoId)) return null;
+        var yt = youTubeVideoId.Trim();
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            await EnsureLoadedLockedAsync(ct).ConfigureAwait(false);
+            foreach (var c in _clips)
+                if (string.Equals(c.YouTubeVideoId, yt, StringComparison.Ordinal)) return c;   // YouTube ID 는 대소문자 구분
+            return null;
+        }
+        finally { _gate.Release(); }
+    }
+
+    public async Task<PlutoYouTubeBindResult> TryBindYouTubeVideoIdAsync(string clipVideoId, string youTubeVideoId, CancellationToken ct = default)
+    {
+        var yt = youTubeVideoId?.Trim();
+        if (string.IsNullOrWhiteSpace(clipVideoId) || yt is null || !YouTubeStudioAnalyticsNormalizer.IsYouTubeVideoId(yt)) return PlutoYouTubeBindResult.NotFound;
+        var id = clipVideoId.Trim();
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            await EnsureLoadedLockedAsync(ct).ConfigureAwait(false);
+            var idx = -1;
+            for (var i = 0; i < _clips.Count; i++)
+            {
+                var c = _clips[i];
+                if (string.Equals(c.VideoId, id, StringComparison.OrdinalIgnoreCase)) { if (idx < 0) idx = i; continue; }
+                if (string.Equals(c.YouTubeVideoId, yt, StringComparison.Ordinal)) return PlutoYouTubeBindResult.IdTakenByOtherClip;   // 🛡️ 1:1
+            }
+            if (idx < 0) return PlutoYouTubeBindResult.NotFound;
+            var cur = _clips[idx];
+            if (cur.YouTubeVideoId is { } have)
+                return string.Equals(have, yt, StringComparison.Ordinal) ? PlutoYouTubeBindResult.AlreadyBound : PlutoYouTubeBindResult.ClipBoundElsewhere;
+            _clips[idx] = cur with { YouTubeVideoId = yt };
+            await PersistLockedAsync(ct).ConfigureAwait(false);   // 영속 실패 → [부분 구제] 메모리 연결 유지
+        }
+        finally { _gate.Release(); }
+        RaiseChanged();
+        return PlutoYouTubeBindResult.Bound;
+    }
+
+    /// <summary>워터마크 우열 — 조회수 우선, 같으면 단계(멀티 PC 병합과 같은 규칙).</summary>
+    public static bool WatermarkSupersedes(PlutoYouTubeIngestWatermark candidate, PlutoYouTubeIngestWatermark? existing)
+        => existing is null || candidate.Views > existing.Views || (candidate.Views == existing.Views && candidate.Stage > existing.Stage);
+
+    public async Task<bool> UpdateYouTubeWatermarkAsync(string clipVideoId, PlutoYouTubeIngestWatermark watermark, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(watermark);
+        if (string.IsNullOrWhiteSpace(clipVideoId) || watermark.Views < 0 || watermark.Stage < 0) return false;
+        var id = clipVideoId.Trim();
+        var changed = false;
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            await EnsureLoadedLockedAsync(ct).ConfigureAwait(false);
+            for (var i = 0; i < _clips.Count; i++)
+            {
+                var c = _clips[i];
+                if (!string.Equals(c.VideoId, id, StringComparison.OrdinalIgnoreCase)) continue;
+                if (!WatermarkSupersedes(watermark, c.YouTubeWatermark)) break;   // 🛡️ 되감기 거부
+                _clips[i] = c with { YouTubeWatermark = watermark };
+                changed = true;
+                break;
+            }
+            if (changed) await PersistLockedAsync(ct).ConfigureAwait(false);
+        }
+        finally { _gate.Release(); }
+        if (changed) RaiseChanged();
+        return changed;
     }
 
     private async Task<bool> PersistLockedAsync(CancellationToken ct)

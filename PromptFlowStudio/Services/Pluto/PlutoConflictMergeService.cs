@@ -259,6 +259,12 @@ public sealed class PlutoConflictMergeService
                 if (!map.TryGetValue(id, out var cur)) { map[id] = (JsonObject)c.DeepClone(); continue; }
                 var pick = Time(c, "RenderedAtUtc") > Time(cur, "RenderedAtUtc") ? (JsonObject)c.DeepClone() : cur;
                 if (Bool(c, "TelemetryLogged") || Bool(cur, "TelemetryLogged")) pick["TelemetryLogged"] = true;
+                var rest = ReferenceEquals(pick, cur) ? c : cur;
+                // 📺 Step 22 — YouTube 연결은 빈 쪽을 채움(최신 렌더 쪽이 미연결이어도 상대 PC가 학습한 연결 유지)
+                if (Str(pick, "YouTubeVideoId").Length == 0 && Str(rest, "YouTubeVideoId").Length > 0) pick["YouTubeVideoId"] = Str(rest, "YouTubeVideoId");
+                // 📈 반영 워터마크는 앞선 쪽(조회수 → 단계) — 상대 PC가 이미 반영한 성숙도 증분을 다시 적용하지 않음
+                if (rest["YouTubeWatermark"] is JsonObject rw && (pick["YouTubeWatermark"] is not JsonObject pw || WatermarkAhead(rw, pw)))
+                    pick["YouTubeWatermark"] = rw.DeepClone();
                 map[id] = pick;
             }
         var list = new List<KeyValuePair<string, JsonObject>>(map);
@@ -268,7 +274,14 @@ public sealed class PlutoConflictMergeService
             return c != 0 ? c : string.CompareOrdinal(x.Key, y.Key);
         });
         var arr = new JsonArray();
-        for (var i = 0; i < list.Count && i < PlutoRenderCatalogService.Capacity; i++) arr.Add(list[i].Value);
+        var boundYt = new HashSet<string>(StringComparer.Ordinal);
+        for (var i = 0; i < list.Count && i < PlutoRenderCatalogService.Capacity; i++)
+        {
+            var clip = list[i].Value;
+            var yt = Str(clip, "YouTubeVideoId");
+            if (yt.Length > 0 && !boundYt.Add(yt)) clip.Remove("YouTubeVideoId");   // 🛡️ 1:1 — 두 PC가 같은 ID를 다른 클립에 연결 → 최신 렌더 쪽만 유지
+            arr.Add(clip);
+        }
         var root = (JsonObject)a.DeepClone();
         root["Clips"] = arr;
         return root;
@@ -492,6 +505,19 @@ public sealed class PlutoConflictMergeService
     {
         try { return o[prop] is JsonValue v && v.TryGetValue<double>(out var d) && double.IsFinite(d) ? d : 0.0; }
         catch (InvalidOperationException) { return 0.0; }
+    }
+
+    private static long Long(JsonObject o, string prop)
+    {
+        try { return o[prop] is JsonValue v && v.TryGetValue<long>(out var n) ? n : (long)Num(o, prop); }
+        catch (InvalidOperationException) { return 0; }
+    }
+
+    /// <summary>워터마크 우열(조회수 → 단계) — <see cref="PlutoRenderCatalogService.WatermarkSupersedes"/>와 같은 규칙.</summary>
+    private static bool WatermarkAhead(JsonObject candidate, JsonObject existing)
+    {
+        long cv = Long(candidate, "Views"), ev = Long(existing, "Views");
+        return cv > ev || (cv == ev && Int(candidate, "Stage") > Int(existing, "Stage"));
     }
 
     private static bool Bool(JsonObject o, string prop)

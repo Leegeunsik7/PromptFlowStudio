@@ -365,6 +365,8 @@
                         <textarea data-batch-csv="1" @bind="_batchCsv" rows="4" maxlength="200000" spellcheck="false" style="width:100%;font:11px/1.4 var(--mono)" placeholder="VideoId,HookRetentionPct,CompletionPct,CtrPct&#10;my_clip_01,58.2,41.0,5.3&#10;— 또는 YouTube Studio 내보내기 CSV 전체 붙여넣기" disabled="@(_batchBusy)"></textarea>
                         <button class="ws-back" data-batch-template="1" @onclick="FillUnlearnedTemplateAsync" disabled="@(_batchBusy)" title="아직 성과를 반영하지 않은 최근 렌더 영상(최대 15편)을 기본값 행으로 채웁니다 — 실제 수치로 고친 뒤 일괄 학습 실행">[📋 미학습 영상 CSV 템플릿 채우기]</button>
                         <button class="ws-back" data-batch-run="1" @onclick="RunBatchImportAsync" disabled="@(_batchBusy || _perfBusy || string.IsNullOrWhiteSpace(_batchCsv))">@(_batchBusy ? "⏳ 일괄 학습 중…" : "[일괄 학습 실행]")</button>
+                        <span class="ws-back ws-file-pick" data-yt-studio-pick="1" title="YouTube Studio 내보내기(.csv 표 데이터 또는 .zip) → 조회수 10 미만 제외 · 시청 유지 → 3초 훅 · 100% 초과 반복 재생 포화 · 제목/편/게시일로 렌더 영상 자동 연결 · 재반영은 성숙 증분만">📊 YouTube Studio 내보내기 파일 학습<InputFile class="ws-drop-input" OnChange="OnYouTubeStudioPickedAsync" accept=".csv,.zip" disabled="@(_batchBusy || _perfBusy)" /></span>
+                        <button class="ws-back" data-yt-studio-downloads="1" @onclick="ImportNewestStudioDownloadAsync" disabled="@(_batchBusy || _perfBusy)" title="다운로드 폴더에서 가장 최근 YouTube Studio 내보내기(.zip/.csv)를 찾아 바로 학습">[📂 다운로드 폴더 최신 내보내기 학습]</button>
                     }
                     @if (_batchToast is { } btt) { <span class="ws-retry" role="status" data-batch-toast="1">@(btt)</span> }
                 </div>
@@ -3615,6 +3617,75 @@
         }
         catch (OperationCanceledException) { return; }   // 페이지 이탈
         catch (Exception ex) { Program.Log("Workspace.BatchTelemetry", ex); _batchToast = "⚠ 일괄 반영 실패: " + ex.Message; }
+        finally { _batchBusy = false; }
+        if (_disposed) return;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    /// <summary>📊 Step 22 — YouTube Studio 내보내기(.csv/.zip) 파일 선택 → 메모리 안에서 정규화 · 연결 · 반영(예외 전파 금지).</summary>
+    private async Task OnYouTubeStudioPickedAsync(InputFileChangeEventArgs e)
+    {
+        if (_batchBusy) return;
+        var file = e.File;
+        if (file.Size > PromptFlowStudio.Services.Pluto.YouTubeStudioAnalyticsNormalizer.MaxInputBytes) { _batchToast = "⚠ 내보내기 파일이 너무 큽니다(최대 32MB)."; return; }
+        byte[] bytes;
+        try
+        {
+            await using var src = file.OpenReadStream(PromptFlowStudio.Services.Pluto.YouTubeStudioAnalyticsNormalizer.MaxInputBytes, _mediaCts.Token);
+            using var ms = new MemoryStream((int)Math.Max(0, file.Size));
+            await src.CopyToAsync(ms, _mediaCts.Token);
+            bytes = ms.ToArray();
+        }
+        catch (OperationCanceledException) { return; }
+        catch (Exception ex) { Program.Log("Workspace.YouTubeStudioRead", ex); _batchToast = "⚠ 파일 읽기 실패: " + ex.Message; return; }
+        await RunYouTubeStudioImportAsync(bytes, file.Name);
+    }
+
+    /// <summary>📂 Step 22 — 다운로드 폴더 최신 YouTube Studio 내보내기 자동 탐색 → 반영.</summary>
+    private async Task ImportNewestStudioDownloadAsync()
+    {
+        if (_batchBusy) return;
+        string? path;
+        byte[] bytes;
+        try
+        {
+            path = await Task.Run(() => PromptFlowStudio.Services.Pluto.YouTubeStudioAnalyticsNormalizer.FindNewestExport(), _mediaCts.Token);
+            if (path is null) { _batchToast = "📂 다운로드 폴더에서 YouTube Studio 내보내기(.zip/.csv)를 찾지 못했습니다."; return; }
+            if (new FileInfo(path).Length > PromptFlowStudio.Services.Pluto.YouTubeStudioAnalyticsNormalizer.MaxInputBytes) { _batchToast = "⚠ 내보내기 파일이 너무 큽니다(최대 32MB)."; return; }
+            bytes = await File.ReadAllBytesAsync(path, _mediaCts.Token);
+        }
+        catch (OperationCanceledException) { return; }
+        catch (Exception ex) { Program.Log("Workspace.YouTubeStudioDownloads", ex); _batchToast = "⚠ 다운로드 폴더 읽기 실패: " + ex.Message; return; }
+        await RunYouTubeStudioImportAsync(bytes, Path.GetFileName(path));
+    }
+
+    private async Task RunYouTubeStudioImportAsync(byte[] bytes, string fileName)
+    {
+        if (EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoTelemetryBatchImporter)) is not PromptFlowStudio.Services.Pluto.IPlutoTelemetryBatchImporter importer)
+        { _batchToast = "⚠ 일괄 반영 서비스를 사용할 수 없습니다."; return; }
+        _batchBusy = true;
+        _batchToast = null;
+        StateHasChanged();
+        try
+        {
+            var r = await importer.ImportYouTubeStudioFileAsync(bytes, fileName, _perfPlatform, _mediaCts.Token);
+            var toast = "📊 " + fileName + " · " + (r.TotalRows == 0 && r.SkippedNoiseCount == 0 ? "⚠ 인식된 성과 행이 없습니다." : r.SummaryKorean);
+            if (r.UnmatchedIdentifiers.Count > 0)
+            {
+                var n = Math.Min(5, r.UnmatchedIdentifiers.Count);
+                var sb = new System.Text.StringBuilder(" · 미매칭: ");
+                for (var i = 0; i < n; i++) { if (i > 0) sb.Append(", "); sb.Append(r.UnmatchedIdentifiers[i]); }
+                if (r.UnmatchedIdentifiers.Count > n) sb.Append(" 외 ").Append((r.UnmatchedIdentifiers.Count - n).ToString(CultureInfo.InvariantCulture)).Append("건");
+                toast += sb.ToString();
+            }
+            _batchToast = toast;
+            await RefreshCatalogClipsAsync();
+            await RefreshAdaptiveRecommendationAsync();   // 🧠 폐루프 → 순방향 랭킹
+            await RefreshBrainSummaryAsync();   // 🧠 두뇌 리포트 갱신
+        }
+        catch (OperationCanceledException) { return; }   // 페이지 이탈
+        catch (InvalidDataException ex) { _batchToast = "⚠ " + ex.Message; }
+        catch (Exception ex) { Program.Log("Workspace.YouTubeStudioImport", ex); _batchToast = "⚠ YouTube Studio 반영 실패: " + ex.Message; }
         finally { _batchBusy = false; }
         if (_disposed) return;
         await InvokeAsync(StateHasChanged);
