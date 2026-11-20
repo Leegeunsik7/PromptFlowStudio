@@ -260,6 +260,21 @@
                 <button class="ws-back" data-montage-story="1" @onclick="GenerateMontageStoryAsync" disabled="@(_activeMontagePlan is null || _montageStoryBusy || _montageBusy)" title="클립 경계에 맞춘 3막(후킹 → 리듬 → 클라이맥스) KO/EN 자막 — Gemini → PlutoCore → 로컬 게이트웨이 → 템플릿">[✨ 3막 자막 자동 생성]</button>
                 @if (_montageStoryBusy) { <span class="ws-retry" role="status" data-montage-story-busy="1"><span class="ws-motion-spin" aria-hidden="true"></span> 3막 자막 생성 중…</span> }
                 else if (_montageCues is { Count: > 0 } mcs) { <span class="ws-pcore on" data-montage-story-count="@(mcs.Count.ToString(CultureInfo.InvariantCulture))">💬 3막 자막 @(mcs.Count.ToString(CultureInfo.InvariantCulture))컷 · @(_montageStoryLlm ? "AI" : "템플릿")</span> }
+                @if (_montageCues is { Count: > 0 } ecs && !_montageStoryBusy)
+                {
+                    <button class="@(_cueEditorOpen ? "ws-back on" : "ws-back")" data-cue-editor-toggle="1" @onclick="ToggleCueEditor" aria-expanded="@(_cueEditorOpen ? "true" : "false")" title="자막 문구를 직접 고칩니다 — 시리즈 편은 훅/아웃트로 덧입힘과 분리 보관되어 [자동 각색 ↔ 추천만] 전환 · 새 시즌 분리에도 그대로 유지">[✏️ 자막 편집]</button>
+                    @if (_seriesCueState is { HasManualEdits: true } mst2) { <span class="ws-retry" data-cue-manual-edits="@(mst2.ManualEditCount.ToString(CultureInfo.InvariantCulture))">✏️ 수동 편집 @(mst2.ManualEditCount.ToString(CultureInfo.InvariantCulture))회 보존</span> }
+                    @if (_cueEditorOpen)
+                    {
+                        <div class="ws-cue-editor" data-cue-editor="@(ecs.Count.ToString(CultureInfo.InvariantCulture))" style="flex-basis:100%;display:flex;flex-direction:column;gap:4px">
+                            @for (var ci = 0; ci < ecs.Count; ci++)
+                            {
+                                var cueIdx = ci;
+                                <input class="ws-cue-input" data-cue-edit="@(cueIdx.ToString(CultureInfo.InvariantCulture))" value="@(ecs[cueIdx].Text)" @onchange="e => EditMontageCue(cueIdx, e.Value?.ToString())" aria-label="@("자막 " + (cueIdx + 1).ToString(CultureInfo.InvariantCulture) + "번째 줄")" style="width:100%;font-size:12px" />
+                            }
+                        </div>
+                    }
+                }
                 <button class="ws-back" data-sns-kit="1" @onclick="GenerateSnsKitAsync" disabled="@(_snsBusy || _montageBusy)" title="피사체 중심 9:16(1080×1920) 스마트 크롭 + 훅 제목 3종 · KO/EN 캡션 · 해시태그 12개 — Gemini → PlutoCore → 로컬 게이트웨이 → 템플릿 · 오답 노트 차단 태그 제외">[📱 9:16 릴스/쇼츠 스마트 패키징 &amp; SNS 키트]</button>
                 <button class="ws-back" data-perf-toggle="1" @onclick="TogglePerfPanel" aria-expanded="@(_perfOpen ? "true" : "false")" title="게시 후 3초 유지율 · CTR · 완주율을 입력하면 Pluto가 승리 패턴은 강화(XP)하고 약한 훅은 오답 노트로 회피 학습">[📊 배포 성과 피드백 학습] @(_perfOpen ? "▲" : "▼")</button>
                 <button class="ws-back" data-ab-build="1" @onclick="BuildAbExperimentAsync" disabled="@(_abBusy || _montageBusy || _activeMontagePlan is null)" title="챔피언 A(학습 1위 훅·룩·BGM) vs 챌린저 B(오답 노트 감점 제외 탐색 후보) — 같은 컷 경계 · 공유 실험 ID · 성과 입력 시 폐루프 강화">[⚖️ A/B 실험 변형 생성 (챔피언 vs 챌린저)]</button>
@@ -2167,6 +2182,8 @@
         _seriesToast = null;
         _seriesActiveEpisode = 0;
         _seriesEpisodeKey = null;
+        _seriesCueState = null;
+        _seriesComposedCues = null;
     }
 
     // ── 🎯 사진별 초점 · 🎞 멀티컷 프리뷰 ──
@@ -2507,7 +2524,7 @@
         _abActiveB = challenger;
         _montageStorySeq++;   // 진행 중 3막 생성 결과가 변형 자막을 덮지 않도록
         _montageStoryBusy = false;
-        if (v.Subtitles.Count > 0) _montageCues = v.Subtitles;
+        if (v.Subtitles.Count > 0) { _montageCues = v.Subtitles; ApplySeriesCueDecoration(); }   // 시리즈 편이면 “n/N편” 장식 · 덧입힘 유지
         if (PromptFlowStudio.Services.Pluto.PlutoColorGradingCompiler.TryGetPreset(v.ColorLookId) is not null) _learnedLookPinned = v.ColorLookId;
         RefreshMontageLook();
         var bgmNote = await ApplyBgmMoodAsync(v.BgmMood);
@@ -2792,6 +2809,43 @@
     private string? _seriesAnchorLookPinned;   // 📺 시리즈 앵커로 고정한 룩(학습 최적 룩 고정과 구분해 해제)
     private PromptFlowStudio.Services.Pluto.PlutoSeriesSeasonInfo? _seriesSeason;   // 🆕 현재 시즌(아크 기록이 있으면 [새 시즌 분리] 노출)
     private bool _seriesAutoRewrite = true;   // 📺 이탈 에스컬레이션 적용 방식 — 자동 각색(기본) ↔ 추천만 표시
+    private PromptFlowStudio.Services.Pluto.PlutoSubtitleOverlayState? _seriesCueState;   // 💬 시리즈 편 자막 원문(생성 + 수동 편집) · 덧입힘과 분리
+    private IReadOnlyList<PromptFlowStudio.Services.Export.SubtitleCue>? _seriesComposedCues;   // 마지막 합성 결과(이미 합성된 자막인지 판정)
+    private bool _cueEditorOpen;
+
+    private PromptFlowStudio.Services.Pluto.PlutoSeriesEscalationMode SeriesEscalationMode => _seriesAutoRewrite ? PromptFlowStudio.Services.Pluto.PlutoSeriesEscalationMode.AutoRewrite : PromptFlowStudio.Services.Pluto.PlutoSeriesEscalationMode.RecommendOnly;
+
+    /// <summary>불러온 편에 걸린 연속성 지시(다른 편 지시 → null).</summary>
+    private PromptFlowStudio.Services.Pluto.PlutoSeriesContinuityDirective? ActiveSeriesDirective()
+        => _seriesDirective is { } d && d.NextEpisodeNumber == _seriesActiveEpisode ? d : null;
+
+    /// <summary>💬 원문 → (자동 각색일 때만) 덧입힘 → “n/N편” 장식으로 표시 자막 재합성(재생성 없음 · 수동 편집 보존).</summary>
+    private void RecomposeSeriesCues()
+    {
+        if (_series is not { } s || _seriesCueState is not { } st || _seriesActiveEpisode <= 0) return;
+        _montageCues = PromptFlowStudio.Services.Pluto.PlutoSeriesSubtitleOverlay.Compose(st, ActiveSeriesDirective(), SeriesEscalationMode, _seriesActiveEpisode, s.Episodes.Count);
+        _seriesComposedCues = _montageCues;
+    }
+
+    private void ToggleCueEditor() => _cueEditorOpen = !_cueEditorOpen;
+
+    /// <summary>✏️ 자막 1줄 수동 편집 — 시리즈 편은 원문에 반영 후 재합성 · 진행 중 AI 생성 결과가 편집을 덮지 않게 세대 무효화(예외 전파 금지).</summary>
+    private void EditMontageCue(int index, string? text)
+    {
+        try
+        {
+            if (_montageCues is not { Count: > 0 } cues || index < 0 || index >= cues.Count) return;
+            _montageStorySeq++;   // 진행 중 3막 생성 결과 폐기 — 수동 편집이 이긴다
+            _montageStoryBusy = false;
+            if (_series is { } s && _seriesCueState is { } st && ReferenceEquals(cues, _seriesComposedCues))
+            {
+                _seriesCueState = PromptFlowStudio.Services.Pluto.PlutoSeriesSubtitleOverlay.ApplyEdit(st, ActiveSeriesDirective(), SeriesEscalationMode, _seriesActiveEpisode, s.Episodes.Count, index, text);
+                RecomposeSeriesCues();
+            }
+            else _montageCues = PromptFlowStudio.Services.Pluto.PlutoSeriesSubtitleOverlay.EditPlain(cues, index, text);
+        }
+        catch (Exception ex) { Program.Log("Workspace.CueEdit", ex); }
+    }
 
     private PromptFlowStudio.Services.Pluto.IPlutoSeriesArcMemoryService? SeriesArcMemory()
         => EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoSeriesArcMemoryService)) as PromptFlowStudio.Services.Pluto.IPlutoSeriesArcMemoryService;
@@ -2833,15 +2887,38 @@
         foreach (var ep in s.Episodes) if (ep.EpisodeNumber == _seriesActiveEpisode) { active = ep; break; }
         if (active is not null && !_montageBusy && !_curationBusy)
         {
-            await LoadSeriesEpisodeAsync(active);   // 이전 시즌의 앵커 · 에스컬레이션을 걷어내고 새 아크 기준으로 재조립
+            // 새 아크 기준 지시(대개 None) — 이전 시즌의 앵커 · 덧입힘만 걷어내고 자막 원문(수동 편집 포함)은 그대로 다시 합성
+            var directive = await ResolveSeriesContinuityAsync(active);
+            if (_disposed || !ReferenceEquals(_series, s) || _seriesActiveEpisode != active.EpisodeNumber) return;
+            var lookBefore = _montageLook;
+            var bgmChanged = ApplySeriesContinuityAnchors(directive);
+            RefreshSeriesSeasonInfo();
+            if (bgmChanged && _bgmOn) await SyncBgmPreviewAsync();
+            RefreshMontageLook();
+            if (bgmChanged || !string.Equals(lookBefore, _montageLook, StringComparison.Ordinal))
+                await RefreshMontagePreviewKeepingCuesAsync();   // 비트 · 색 프리뷰는 다시 · 자막 문구는 새 컷 경계로만 이동
+            else RecomposeSeriesCues();
             if (_disposed) return;
-            _seriesToast = label + " · " + _seriesToast;
+            _seriesToast = label + (directive.HasGuidance ? " · 📺 " + directive.ReasonKorean : "") + (_seriesCueState is { HasManualEdits: true } ? " · ✏️ 수동 편집 유지" : "");
         }
         else _seriesToast = label;
         await InvokeAsync(StateHasChanged);
     }
 
-    /// <summary>📺 [자동 각색 적용 ↔ 추천만 표시] 전환(영속) — 이탈 지시가 걸린 편은 자막을 다시 조립해 즉시 반영(예외 전파 금지).</summary>
+    /// <summary>🎞 프리뷰 재구성(비트 · 색 변경 반영) — 재생성된 템플릿 자막 대신 기존 원문 문구를 새 컷 경계로 옮겨 유지(큐 수가 다르면 새 결과 채택).</summary>
+    private async Task RefreshMontagePreviewKeepingCuesAsync()
+    {
+        var keep = _seriesCueState;
+        await RefreshMontagePreviewAsync();
+        if (_disposed || keep is null || _montageCues is not { Count: > 0 } fresh) return;
+        if (PromptFlowStudio.Services.Pluto.PlutoSeriesSubtitleOverlay.RetimeOnto(keep, fresh) is { } moved)
+        {
+            _seriesCueState = moved;
+            RecomposeSeriesCues();
+        }
+    }
+
+    /// <summary>📺 [자동 각색 적용 ↔ 추천만 표시] 전환(영속) — 자막 원문은 그대로 두고 덧입힘만 켜고 끈다(예외 전파 금지).</summary>
     private async Task ToggleSeriesEscalationModeAsync()
     {
         if (_seriesBusy || _montageBusy || _seriesRenderAllBusy) return;
@@ -2854,11 +2931,8 @@
         catch (OperationCanceledException) { return; }   // 페이지 이탈
         catch (Exception ex) { Program.Log("Workspace.SeriesEscalationMode", ex); }   // [부분 구제] 이번 세션에는 적용
         if (_disposed) return;
-        PromptFlowStudio.Services.Pluto.PlutoSeriesEpisodePlan? active = null;
-        if (_series is { } s && _seriesDirective is { EscalateHook: true } && !_curationBusy)
-            foreach (var ep in s.Episodes) if (ep.EpisodeNumber == _seriesActiveEpisode) { active = ep; break; }
-        if (active is not null) await LoadSeriesEpisodeAsync(active);
-        else await InvokeAsync(StateHasChanged);
+        RecomposeSeriesCues();   // ✏️ 추천만 → 원문(수동 편집) 그대로 · 자동 각색 → 현재 원문 위에 덧입힘 — 재생성 없음
+        await InvokeAsync(StateHasChanged);
     }
 
     /// <summary>📚 [시리즈 자동 분할] — 후보 풀 → 서로소 2~3편 → 1편 즉시 불러오기(예외 전파 금지).</summary>
@@ -2904,6 +2978,8 @@
         _stagedFocalKey = string.Join("|", photos);
         _seriesEpisodeKey = _stagedFocalKey;
         _seriesActiveEpisode = ep.EpisodeNumber;
+        _seriesCueState = null;   // 다른 편 — 새 원문에서 출발
+        _seriesComposedCues = null;
         _curationResult = null;   // 시리즈 편 컷 ≠ 단편 큐레이션 선택
         _showCurationDetails = false;
         _montageOutput = null;
@@ -2965,15 +3041,13 @@
     /// <summary>💬 불러온 시리즈 편과 사진 목록이 같으면 3막 자막에 "n/N편" 접두 · 계속/완결 접미(중복 장식 방지).</summary>
     private void ApplySeriesCueDecoration()
     {
-        if (_series is not { } s || _seriesActiveEpisode <= 0 || _montageCues is not { Count: > 0 } cues) return;
-        if (!string.Equals(_seriesEpisodeKey, string.Join("|", _montagePhotos), StringComparison.Ordinal)) return;
-        var tag = PromptFlowStudio.Services.Pluto.PlutoSeriesBatchPlanner.PartTag(_seriesActiveEpisode, s.Episodes.Count);
-        if (cues[0].Text.StartsWith(tag, StringComparison.Ordinal)) return;
-        // 📺 편 간 이탈 감지 → 1막 = 궁금증 훅 · 마지막 자막 뒤 = 클리프행어 아웃트로("n/N편" 장식 이전에 반영)
-        //    [추천만 표시] 모드는 자막 원문 보존(추천 문구는 시리즈 패널 배지로만 노출)
-        if (_seriesAutoRewrite && _seriesDirective is { EscalateHook: true } sdir && sdir.NextEpisodeNumber == _seriesActiveEpisode)
-            cues = PromptFlowStudio.Services.Pluto.PlutoSeriesArcMemoryService.ApplyDirective(cues, sdir);
-        _montageCues = PromptFlowStudio.Services.Pluto.PlutoSeriesBatchPlanner.DecorateSubtitles(cues, _seriesActiveEpisode, s.Episodes.Count);
+        if (_series is null || _seriesActiveEpisode <= 0 || _montageCues is not { Count: > 0 } cues
+            || !string.Equals(_seriesEpisodeKey, string.Join("|", _montagePhotos), StringComparison.Ordinal)) { _seriesCueState = null; _seriesComposedCues = null; return; }
+        if (_seriesCueState is not null && ReferenceEquals(cues, _seriesComposedCues)) { RecomposeSeriesCues(); return; }   // 이미 합성된 자막 — 이중 장식 방지
+        // 새 원문(템플릿 · AI 생성 · A/B 변형) → 레이어 상태 재시작 · 📺 편 간 이탈 덧입힘(훅 · 클리프행어)은 원문과 분리 보관 —
+        //    [추천만 표시] 모드는 원문 그대로(추천 문구는 시리즈 패널 배지로만 노출)
+        _seriesCueState = PromptFlowStudio.Services.Pluto.PlutoSubtitleOverlayState.FromBase(cues);
+        RecomposeSeriesCues();
     }
 
     /// <summary>🎞️ [전편 순차 출력] — 1편부터 불러오기 → 15초 몽타주 렌더(편별 실패 → 다음 편 계속 · [부분 구제]).</summary>

@@ -595,8 +595,11 @@ public sealed class PlutoLearningService : IDisposable
                     if (objectives is { IsFinite: true } ov) UpdateObjectives(pe, ov, now);   // ⚖️ 다목적(훅 · 완주 · CTR) EWMA
                 }
 
-            // ⚖️ 전 모달리티 귀속 — BGM 무드 · 스타일 태그는 다목적 EWMA 만(기대치 토큰 · 앞선 항목과 겹치면 1회만 반영)
-            if (objectiveOnlyTokens is not null && objectives is { IsFinite: true } ov2)
+            // ⚖️ 전 모달리티 귀속 — BGM 무드 · 스타일 태그는 다목적 EWMA(기대치 토큰 · 앞선 항목과 겹치면 1회만 반영)
+            // 🧬 Step 18: 같은 잔차 알파를 전역(pattern:) · 지역(cpat:) EWMA 에도 누적 → 계층적 경험적 베이즈가 BGM · 태그에도 적용.
+            //    드리프트 검정 · 표적 망각 · 반사실 예측(훅 · 룩 전용)에는 여전히 불참 → 기존 예측 잔차 통계 불변.
+            var ov2 = objectives is { IsFinite: true } ovf ? ovf : (PlutoObjectiveVector?)null;
+            if (objectiveOnlyTokens is not null)
                 for (var i = 0; i < objectiveOnlyTokens.Count; i++)
                 {
                     var t = objectiveOnlyTokens[i];
@@ -611,7 +614,15 @@ public sealed class PlutoLearningService : IDisposable
                     if (dup) continue;
                     var ok = PatternKeyPrefix + trimmed;
                     if (!_entries.TryGetValue(ok, out var oe)) { oe = new Entry { Weight = PatternBaseWeight }; _entries[ok] = oe; }
-                    UpdateObjectives(oe, ov2, now);
+                    UpdateEwma(oe, alpha, PlutoContextualBaseline.PatternAlpha);
+                    if (localPrefix is not null)
+                    {
+                        var lk = localPrefix + trimmed;
+                        if (!_entries.TryGetValue(lk, out var le)) { le = new Entry(); _entries[lk] = le; }
+                        UpdateEwma(le, alpha, PlutoContextualBaseline.PatternAlpha);
+                        le.LastUtc = now;
+                    }
+                    if (ov2 is { } ovv) UpdateObjectives(oe, ovv, now);
                 }
 
             if (ctx is null) { ctx = new Entry(); _entries[key] = ctx; }
@@ -737,16 +748,17 @@ public sealed class PlutoLearningService : IDisposable
         lock (_sync) return _entries.TryGetValue(PlutoEmpiricalBayes.LocalKey(domain, renderMode, patternToken), out var e) ? (e.Mean, e.Samples) : (0.0, 0.0);
     }
 
-    /// <summary>🧬 전역 검증 패턴 사전(훅 · 룩 중 기대치 표본 ≥ <paramref name="minSamples"/>) — 토큰 사전순(결정론).</summary>
+    /// <summary>🧬 전역 검증 패턴 사전(훅 · 룩 · BGM · 태그 중 알파 표본 ≥ <paramref name="minSamples"/>) — 토큰 사전순(결정론).</summary>
     public IReadOnlyList<(string Token, double Alpha, double Variance, double Samples)> GetProvenPatternPriors(double minSamples)
     {
         var list = new List<(string Token, double Alpha, double Variance, double Samples)>(8);
-        const string hook = PatternKeyPrefix + "hook:", look = PatternKeyPrefix + "look:";
+        const string hook = PatternKeyPrefix + "hook:", look = PatternKeyPrefix + "look:", bgm = PatternKeyPrefix + "bgm:", style = PatternKeyPrefix + "style:";
         lock (_sync)
             foreach (var kv in _entries)
             {
                 if (kv.Value is null || kv.Value.Samples < minSamples || !double.IsFinite(kv.Value.Mean)) continue;
-                if (!kv.Key.StartsWith(hook, StringComparison.Ordinal) && !kv.Key.StartsWith(look, StringComparison.Ordinal)) continue;
+                if (!kv.Key.StartsWith(hook, StringComparison.Ordinal) && !kv.Key.StartsWith(look, StringComparison.Ordinal)
+                    && !kv.Key.StartsWith(bgm, StringComparison.Ordinal) && !kv.Key.StartsWith(style, StringComparison.Ordinal)) continue;
                 list.Add((kv.Key[PatternKeyPrefix.Length..], kv.Value.Mean, kv.Value.Var, kv.Value.Samples));
             }
         list.Sort(static (a, b) => string.CompareOrdinal(a.Token, b.Token));

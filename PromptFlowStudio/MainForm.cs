@@ -1004,7 +1004,7 @@ public sealed class MainForm : Form
         // 임시/캐시 파편 자동 정소(24h 이상) — 백그라운드, 실패해도 기동 무영향.
         try { _ = sp.GetRequiredService<IResourceCleanupService>().CleanupOnStartupAsync(); } catch { /* 정소 실패 무시 */ }
         try { _ = sp.GetRequiredService<PromptFlowStudio.Services.Render.RenderCacheCleaner>().CleanAsync(); } catch (Exception ex) { Program.Log("MainForm.RenderCache", ex); }   // 🧹 고아 임시 파일 회수 + LRU 상한(백그라운드)
-        try { var plutoStore = sp.GetRequiredService<PromptFlowStudio.Services.Pluto.IPlutoStorageManager>() as PromptFlowStudio.Services.Pluto.PlutoDriveStorageManager; if (plutoStore is not null) _ = Task.Run(() => { try { plutoStore.RestoreCoreHubsToLocal(PromptFlowStudio.Services.Pluto.PlutoDriveHealthService.PlutoFiles); } catch (Exception ex) { Program.Log("MainForm.PlutoRestore", ex); } }); } catch (Exception ex) { Program.Log("MainForm.PlutoRestore", ex); }   // 🔁 새 PC 자동 복원 — Drive 핵심 허브 9종(렌더 카탈로그 · 메타 보정 상태 · 시리즈 아크 포함) → 로컬 미러(부재 시만 · 로컬 덮어쓰기 없음)
+        try { var plutoStore = sp.GetRequiredService<PromptFlowStudio.Services.Pluto.IPlutoStorageManager>() as PromptFlowStudio.Services.Pluto.PlutoDriveStorageManager; if (plutoStore is not null) _ = Task.Run(() => { try { plutoStore.WriteBackNewerLocalToDrive(PromptFlowStudio.Services.Pluto.PlutoDriveHealthService.PlutoFiles); plutoStore.RestoreCoreHubsToLocal(PromptFlowStudio.Services.Pluto.PlutoDriveHealthService.PlutoFiles); } catch (Exception ex) { Program.Log("MainForm.PlutoRestore", ex); } }); } catch (Exception ex) { Program.Log("MainForm.PlutoRestore", ex); }   // 🔁 양방향 조정 — 오프라인 학습분 쓰기 반환(로컬 → Drive · 더 새로운 Drive 보호) → 새 PC 자동 복원 — Drive 핵심 허브 9종(렌더 카탈로그 · 메타 보정 상태 · 시리즈 아크 포함) → 로컬 미러(부재 시만 · 로컬 덮어쓰기 없음)
 
         var view = new BlazorWebView
         {

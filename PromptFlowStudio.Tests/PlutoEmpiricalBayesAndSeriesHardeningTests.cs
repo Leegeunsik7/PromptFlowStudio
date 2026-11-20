@@ -317,7 +317,7 @@ public sealed class PlutoEmpiricalBayesAndSeriesHardeningTests : IDisposable
         // Workspace 결선 — 기본 자동 각색 · 추천만 모드는 ApplyDirective 를 건너뛰고 추천 배지만 노출 · 토글은 도구 행 아래
         var ws = File.ReadAllText(Path.Combine(RepoRoot(), "PromptFlowStudio", "Blazor", "Pages", "Workspace.razor"));
         Assert.Equal(1, CountOf(ws, "private bool _seriesAutoRewrite = true;"));
-        Assert.Equal(1, CountOf(ws, "if (_seriesAutoRewrite && _seriesDirective is { EscalateHook: true } sdir && sdir.NextEpisodeNumber == _seriesActiveEpisode)"));
+        Assert.Equal(1, CountOf(ws, "SeriesEscalationMode => _seriesAutoRewrite ? PromptFlowStudio.Services.Pluto.PlutoSeriesEscalationMode.AutoRewrite : PromptFlowStudio.Services.Pluto.PlutoSeriesEscalationMode.RecommendOnly;"));   // Step 18 — 추천만 모드는 합성기에서 덧입힘 생략
         Assert.Equal(1, CountOf(ws, "data-series-escalation-mode="));
         Assert.Contains("\"[✍️ 자동 각색 적용]\" : \"[💡 추천만 표시]\"", ws, StringComparison.Ordinal);
         Assert.Contains("자동 각색 적용(Auto-Rewrite)", ws, StringComparison.Ordinal);

@@ -47,6 +47,8 @@ public sealed record PlutoVariantABPlan(string ExperimentId, string ThemeHint, P
     public string? ContextRenderMode { get; init; }
     /// <summary>🧬 챔피언 훅의 (Domain, RenderMode) 경험적 베이즈 추정(근거 없음 → None).</summary>
     public PlutoEmpiricalBayesEstimate ChampionContextTransfer { get; init; } = PlutoEmpiricalBayesEstimate.None;
+    /// <summary>🧬 챔피언 BGM 무드의 (Domain, RenderMode) 경험적 베이즈 추정(근거 없음 → None).</summary>
+    public PlutoEmpiricalBayesEstimate ChampionBgmContextTransfer { get; init; } = PlutoEmpiricalBayesEstimate.None;
     /// <summary>🧬 지역(컨텍스트) 근거가 전역 순위를 실제로 바꿔 챔피언/챌린저 선정에 반영됨.</summary>
     public bool IsContextSpecialized { get; init; }
 }
@@ -149,16 +151,25 @@ public sealed class PlutoVariantABGenerator : IPlutoVariantABGenerator
         //    지역 근거 없음/배수 1.0 → 아래 전역 경로 그대로(기존 동작 불변).
         contextRenderMode = string.IsNullOrWhiteSpace(contextRenderMode) ? null : contextRenderMode.Trim();
         var contextual = false;
-        IReadOnlyList<PlutoRankedOption> ctxHooks = Array.Empty<PlutoRankedOption>();
+        IReadOnlyList<PlutoRankedOption> ctxHooks = Array.Empty<PlutoRankedOption>(), ctxBgms = ctxHooks;
+        string? ctxChampBgm = null;
         try
         {
             ctxHooks = ranker.RankForContext(PlutoPatternKind.Hook, domain, contextRenderMode) ?? Array.Empty<PlutoRankedOption>();
             var ctxLooks = ranker.RankForContext(PlutoPatternKind.Look, domain, contextRenderMode) ?? Array.Empty<PlutoRankedOption>();
+            ctxBgms = ranker.RankForContext(PlutoPatternKind.BgmMood, domain, contextRenderMode) ?? Array.Empty<PlutoRankedOption>();
             if (IsContextSpecialized(ctxHooks) || IsContextSpecialized(ctxLooks))
             {
                 contextual = true;
                 if (ctxHooks.Count > 0) { hooks = ctxHooks; exploreHooks = SortByUcb(ctxHooks); champHook = ctxHooks[0].DisplayLabel; }
                 if (ctxLooks.Count > 0) { looks = ctxLooks; exploreLooks = SortByUcb(ctxLooks); champLook = ctxLooks[0].DisplayLabel; }
+            }
+            // 🧬 Step 18 — BGM 무드도 같은 컨텍스트 수축(지역 근거가 순위를 바꿀 때만 · 'custom'/'none' 제외)
+            if (IsContextSpecialized(ctxBgms) && FirstUsable(ctxBgms, null, ExcludedBgmMoods) is { } cb)
+            {
+                contextual = true;
+                bgms = ctxBgms;
+                ctxChampBgm = cb;
             }
         }
         catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.AB] context rank: " + ex.Message); }   // [부분 구제] 전역 순위
@@ -179,7 +190,7 @@ public sealed class PlutoVariantABGenerator : IPlutoVariantABGenerator
             }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.AB] thompson: " + ex.Message); }   // [부분 구제] UCB1 순위
         }
-        var champBgm = FirstUsable(bgms, rec?.TopBgmMood.DisplayLabel, ExcludedBgmMoods) ?? BabyBgmTrack.Lullaby.ToString();
+        var champBgm = ctxChampBgm ?? FirstUsable(bgms, rec?.TopBgmMood.DisplayLabel, ExcludedBgmMoods) ?? BabyBgmTrack.Lullaby.ToString();
         var promotedByConfidence = PromoteProvenChampion(hooks, ref champHook);   // 🎯 소표본 급등 1위 → 신뢰 하한이 더 높은 검증 후보
         var drift = SafeDrift(ranker);                                             // 🌊 레짐 드리프트 → 탐색 서지
         var champSynergy = PromoteSynergisticChampion(ranker, hooks, looks, domain, ref champHook, ref champLook, promotedByConfidence);   // 🔗 강한 조합 시너지 → 챔피언 승격
@@ -235,6 +246,7 @@ public sealed class PlutoVariantABGenerator : IPlutoVariantABGenerator
             ExplorationPolicy = policy,
             ContextRenderMode = contextRenderMode,
             ChampionContextTransfer = champTransfer,
+            ChampionBgmContextTransfer = TransferOf(ctxBgms, champBgm),
             IsContextSpecialized = contextual,
         };
     }

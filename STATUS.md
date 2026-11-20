@@ -1,23 +1,18 @@
 # Current Project Status
-- Active Milestone: 【Step 17 — Drive 허브 9종 · 무지연 시리즈 앵커 write-through · 시즌 분리 · 계층적 경험적 베이즈 콜드스타트 전이 · 톰슨–UCB · 자율 하드닝】 ✅ 완료
-- Build: ✅ Desktop Release `-warnaserror` 0W/0E · ✅ Tests Release 0W/0E · ⏳ Mobile net8.0-ios — `ios` 워크로드 미설치(미검증 · DI 결선은 소스 단언으로만 확인)
-- Tests: ✅ 1235/1235 — 전체 단일 실행 통과(17분 50초 · `dotnet test` 종료 코드 0 · 기존 1227 + Step 17 8)
-- Updated: 2026-11-20 (KST) · 기준 `c92d283`
+- Active Milestone: 【Step 18 — 양방향 Drive 쓰기 반환 · BGM/태그 경험적 베이즈 컨텍스트 특화 · 비파괴 자막 모드/시즌 전환 · 자율 하드닝】 ✅ 완료
+- Build: ✅ Desktop Release `-warnaserror` 0W/0E · ✅ Tests Release 0W/0E · ⏳ Mobile net8.0-ios — `ios` 워크로드 미설치(미검증)
+- Tests: ✅ 1243/1243 — 전체 단일 실행 통과(21분 22초 · 종료 코드 0 · 기존 1235 + Step 18 8)
+- Updated: 2026-11-20 (KST) · 기준 `32da265`
 
-## Completed — Step 17
-- ☁️ Drive 핵심 허브 9종: `pluto_series_arc.json` 편입(`CorePlutoFileCount = 9`) — 검증 · 미러 · 새 PC 자동 복원 · `PROMPTFLOW_PLUTO_DRIVE=off` 격리 유지
-- ⚡ `RecordRenderedEpisode`: 렌더 완료 즉시 메모리 아크 갱신(디스크는 병합 백그라운드 기록) → 연속 렌더 k+1편이 지연 없이 앵커 룩/BGM 상속
-- 🆕 시즌: `[🆕 새 시즌 분리]`(1시즌 키 = 기존 키 · 2시즌부터 `@sN`) — 이전 시즌 텔레메트리 보존 · 카탈로그/성과는 영상 ID → 렌더 시각으로 시즌 귀속
-- 📐 단일 편 조기 이탈: 1편이 (Domain, RenderMode) 유지율 기준선을 −5p 이상 밑돌면 3편 시리즈의 2편이 궁금증 훅 + 클리프행어 아웃트로 수령
-- 💬 `[✍️ 자동 각색 적용]` ↔ `[💡 추천만 표시]` 토글(기본 자동 각색 · 영속) — 추천만: 자막 원문 보존 + 추천 배지
-- 🧬 `PlutoEmpiricalBayes`: 지역 시행 < 3 컨텍스트는 α = n/(n + k) 로 전역 검증 사후에 수축(k = σ²/(τ₀² + σ²/n_g)) · `RankForContext` · 지역 통계 `cpat:` 키
-- 🎲 `PlutoThompsonUcbSampler`: 활용 + (1−λ)·UCB1 + λ·사후 추첨(Normal · 다목적 근거는 Beta 혼합) + 후회 회복 사전 · `Random` 주입 시에만(미주입 = 기존 결정론 UCB1) · DI 양쪽 주입
-- 🧠 두뇌 리포트 본문: 🧬 콜드스타트 전이 · 📺 시리즈 아크(시즌 · 추천만 표기) — 상단 3행 헤더 불변
-- 자율 ①: 이중 언어 자막 — 에스컬레이션이 본문만 바꿔 옛 문장의 영문 번역이 남던 문제 수정(영문 짝 교체/확장)
-- 자율 ②: 얼어붙은 로컬 미러 — Drive 사본이 2초 넘게 더 새롭고 유효 JSON 일 때만 로컬 갱신(더 새로운 로컬 · 손상/빈 Drive 사본은 불변)
-- 자율 ③: 적재 전 write-through 내구성 — 디스크 이력 위에 재적용 · 미적재 부분 스냅샷 기록 금지 · 늦게 온 오래된 카탈로그 항목 무시 · Dispose 경합 안전
+## Completed — Step 18
+- ☁️⬆️ `WriteBackNewerLocalToDrive`: 유효 · 비어 있지 않은 로컬이 Drive 보다 2초 넘게 새롭거나 Drive 부재 → 원자 반환(수정 시각 보존 · 비교 후 교체) · 기동(쓰기 반환 → 복원) · 백업 검증 · 재연결 시 고립 파일 즉시 푸시 · 더 새로운 Drive 보호 · `PROMPTFLOW_PLUTO_DRIVE=off` 격리
+- 🧬 BGM 무드 · 스타일 태그도 전역(`pattern:`) · 지역(`cpat:`) 잔차 알파 → `RankForContext` 전 모달리티(태그 '#' 변형 병합) · A/B 챔피언 BGM 컨텍스트 특화 · 두뇌 리포트 모달리티 분해 · 구버전 JSON 순위 불변
+- 💬 `PlutoSeriesSubtitleOverlay`: 원문(생성 + 수동 편집) ⟂ 덧입힘 ⟂ 장식 — 자동 각색 ↔ 추천만 · 새 시즌 분리는 재합성만(재생성 없음) · `[✏️ 자막 편집]` · 덧입힌 훅/아웃트로를 고치면 그 자리 사용자 고정
+- 자율 ①: 첫 해석 쓰기 반환 — 서비스 적재 '이전'에 오프라인 학습을 Drive 로(기동 백그라운드 복원과의 경합으로 최신 학습이 덮이던 경로 차단) · Drive 시드도 검증 + 원자화
+- 자율 ②: 분기 충돌 보관 — `pluto_sync_manifest.json`(로컬 전용) 기준 오프라인 편집 + 다른 PC 의 더 새로운 Drive → 덮기 전 `conflicts/` 사본(파일당 3개)
+- 자율 ③: 자막 편집 무결성 — 편집 시 옛 영문 줄 비움 · 진행 중 AI 생성 무효화 · 프리뷰 재구성 시 편집 문구 재타이밍 · A/B 변형 적용 시 “n/N편” 장식 유지
 
 ## Notes
-- ⚠️ 오프라인 중 로컬에 쌓인 기록(로컬이 Drive 보다 새로움)은 덮이지 않지만 Drive 복귀 시 자동 병합되지도 않음(수동 검증 필요)
-- ⚠️ 컨텍스트 특화는 훅 · 룩만(BGM · 태그는 전역 순위) · A/B 는 Workspace 에서 `(도메인, "몽타주")` 컨텍스트로만 호출
+- ⚠️ 분기 충돌 사본은 보관만(자동 병합 · UI 노출 없음) · 장부 없는 기존 설치의 첫 분기는 보관 불가
+- ⚠️ BGM/태그 알파는 Step 18 이후 관측부터 누적(과거 이력은 소급 불가)
 - ⚠️ `.git`은 `D:\Program` — git 명령에 `--git-dir=D:\Program\.git --work-tree=D:\Program\PromptFlowStudio` 필요

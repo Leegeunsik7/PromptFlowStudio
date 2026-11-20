@@ -72,8 +72,9 @@ public sealed class PlutoFullModalityParetoAndSeriesArcTests : IDisposable
         Assert.Equal((2.0, 0.80, 0.10, 0.30), (bgmClick.Samples, bgmClick.Objectives.Hook, bgmClick.Objectives.Completion, Math.Round(bgmClick.Objectives.Ctr, 9)));
         var tagBal = learning.GetPatternObjectives("style:" + BalTag);
         Assert.Equal((2.0, 0.55, 0.55), (tagBal.Samples, tagBal.Objectives.Hook, tagBal.Objectives.Completion));
-        Assert.Equal(0.0, learning.GetPatternAlpha("bgm:MusicBox").Samples, 9);
-        Assert.Equal(0.0, learning.GetPatternAlpha("style:" + ClickTag).Samples, 9);
+        Assert.Equal(2.0, learning.GetPatternAlpha("bgm:MusicBox").Samples, 9);                     // Step 18 — BGM · 태그도 잔차 알파 EWMA(경험적 베이즈) 보유
+        Assert.Equal(2.0, learning.GetPatternAlpha("style:" + ClickTag).Samples, 9);
+        Assert.Equal(0, learning.GetRegimeDriftStatus().DriftCount);                                  // 드리프트 검정 · 반사실 예측에는 여전히 불참
         Assert.Equal(2.0, learning.GetPatternAlpha("hook:" + ClickHook).Samples, 9);                 // 훅 · 룩은 기존대로 기대치 참여
         Assert.Equal(new[] { "bgm:MusicBox", "style:" + ClickTag }, PlutoClosedLoopReinforcementService.ModalityObjectiveTokens(Video("h", Vintage, "MusicBox", ClickTag, 1, 1, 1)));
 
@@ -655,10 +656,11 @@ public sealed class PlutoFullModalityParetoAndSeriesArcTests : IDisposable
         // 시리즈 편 조립 결선 — 연속성 지시 조회 → 앵커 룩/BGM 유지 → 1막 훅/아웃트로 반영(장식 이전) · 표시 배지는 도구 행 아래
         Assert.Equal(1, CountOf(ws, "arc.GetContinuityDirectiveAsync(s.SeriesTheme, s.Episodes.Count, ep.EpisodeNumber, _mediaCts.Token)"));
         Assert.Equal(1, CountOf(ws, "var directive = await ResolveSeriesContinuityAsync(ep);"));
-        Assert.Equal(1, CountOf(ws, "ApplySeriesContinuityAnchors(directive);"));
+        Assert.Equal(2, CountOf(ws, "ApplySeriesContinuityAnchors(directive);"));                       // Step 18 — 편 불러오기 + 새 시즌 분리(재조립 없이 앵커만 교체)
+        // Step 18 — 덧입힘(ApplyDirective) → 장식(DecorateSubtitles) 순서는 순수 합성기(PlutoSeriesSubtitleOverlay.Compose)가 보장 · 페이지는 원문 포착 후 재합성만
         var decorate = ws.IndexOf("private void ApplySeriesCueDecoration()", StringComparison.Ordinal);
-        var applyAt = ws.IndexOf("PlutoSeriesArcMemoryService.ApplyDirective(cues, sdir);", decorate, StringComparison.Ordinal);
-        Assert.True(applyAt > decorate && applyAt < ws.IndexOf("PlutoSeriesBatchPlanner.DecorateSubtitles(cues, _seriesActiveEpisode", decorate, StringComparison.Ordinal));
+        Assert.True(ws.IndexOf("PromptFlowStudio.Services.Pluto.PlutoSubtitleOverlayState.FromBase(cues);", decorate, StringComparison.Ordinal) > decorate);
+        Assert.Equal(1, CountOf(ws, "PromptFlowStudio.Services.Pluto.PlutoSeriesSubtitleOverlay.Compose(st, ActiveSeriesDirective(), SeriesEscalationMode, _seriesActiveEpisode, s.Episodes.Count);"));
         Assert.Equal(1, CountOf(ws, "data-series-continuity="));
         Assert.True(ws.IndexOf("data-series-continuity=", StringComparison.Ordinal) > tools);
 

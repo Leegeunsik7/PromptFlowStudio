@@ -136,7 +136,7 @@ public interface IPlutoAdaptivePatternRanker
 ///   ▸ 🎯 후보마다 Normal–Normal 사후 신뢰 구간(<see cref="PlutoPosteriorConfidence"/>) 동봉 — '검증된 승자'와 '1회 급등' 구분.
 ///   ▸ ⚖️ 전 모달리티(훅 · 룩 · BGM 무드 · 스타일 태그): 다목적 근거(신선도 반영 표본 ≥ <see cref="PlutoParetoFrontier.MinObjectiveSamples"/>)가 있는 후보는 FinalScore × 파레토 배수(티어 · 최약 축 보너스) —
 ///     클릭베이트 급등은 학습 부스트(배수 &gt; 1)를 무효화하고 ×<see cref="PlutoParetoFrontier.ClickbaitFactor"/> 강등. 근거 없는 후보는 완전 불변.
-///   ▸ 🧬 <see cref="RankForContext"/>: 훅 · 룩을 (Domain, RenderMode) 지역 잔차 알파로 특화 — 콜드스타트는 <see cref="PlutoEmpiricalBayes"/> 수축(전역 순위 · 기존 API 는 불변).
+///   ▸ 🧬 <see cref="RankForContext"/>: 훅 · 룩 · BGM 무드 · 스타일 태그를 (Domain, RenderMode) 지역 잔차 알파로 특화 — 콜드스타트는 <see cref="PlutoEmpiricalBayes"/> 수축(전역 순위 · 기존 API 는 불변).
 /// </summary>
 public sealed class PlutoAdaptivePatternRanker : IPlutoAdaptivePatternRanker
 {
@@ -385,13 +385,14 @@ public sealed class PlutoAdaptivePatternRanker : IPlutoAdaptivePatternRanker
     public IReadOnlyList<PlutoRankedOption> RankForContext(PlutoPatternKind kind, string? domain, string? renderMode, IEnumerable<string>? candidates = null)
     {
         var list = Rank(kind, candidates, SafeSuppressed());
-        if (_learning is null || kind is not (PlutoPatternKind.Hook or PlutoPatternKind.Look) || !PlutoContextualBaseline.IsExplicit(domain, renderMode)) return list;
+        if (_learning is null || !PlutoContextualBaseline.IsExplicit(domain, renderMode)) return list;   // 🧬 Step 18 — 훅 · 룩 · BGM · 태그 전 모달리티
         var prefix = PrefixOf(kind);
+        var isTag = kind == PlutoPatternKind.StyleTag;
         var adjusted = false;
         for (var i = 0; i < list.Count; i++)
         {
             var o = list[i];
-            var est = SafeContextEstimate(prefix + o.DisplayLabel, domain, renderMode);
+            var est = SafeContextEstimate(prefix, o.DisplayLabel, isTag, domain, renderMode);
             if (!est.HasEvidence) continue;
             var mult = PlutoEmpiricalBayes.ContextMultiplier(est);
             var changed = Math.Abs(mult - 1.0) > Epsilon;
@@ -407,13 +408,22 @@ public sealed class PlutoAdaptivePatternRanker : IPlutoAdaptivePatternRanker
         return list;
     }
 
-    private PlutoEmpiricalBayesEstimate SafeContextEstimate(string token, string? domain, string? renderMode)
+    /// <summary>🧬 후보 1건의 경험적 베이즈 추정 — 태그는 '#' 유무 변형의 지역 · 전역 통계를 각각 병합(가중치 · 시행 수와 같은 변형 규칙).</summary>
+    private PlutoEmpiricalBayesEstimate SafeContextEstimate(string prefix, string label, bool tagVariants, string? domain, string? renderMode)
     {
         if (_learning is null) return PlutoEmpiricalBayesEstimate.None;
         try
         {
+            var token = prefix + label;
             var (localMean, localN) = _learning.GetContextPatternAlpha(domain, renderMode, token);
             var (globalMean, globalVar, globalN) = _learning.GetPatternAlphaStats(token);
+            if (tagVariants && TagVariant(label) is { } alt)
+            {
+                var (lm2, ln2) = _learning.GetContextPatternAlpha(domain, renderMode, prefix + alt);
+                var (gm2, gv2, gn2) = _learning.GetPatternAlphaStats(prefix + alt);
+                (localMean, _, localN) = PlutoEmpiricalBayes.MergeVariants(localMean, 0.0, localN, lm2, 0.0, ln2);
+                (globalMean, globalVar, globalN) = PlutoEmpiricalBayes.MergeVariants(globalMean, globalVar, globalN, gm2, gv2, gn2);
+            }
             return PlutoEmpiricalBayes.Shrink(localMean, localN, globalMean, globalN, globalVar);
         }
         catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Ranker] context estimate: " + ex.Message); return PlutoEmpiricalBayesEstimate.None; }
@@ -427,6 +437,17 @@ public sealed class PlutoAdaptivePatternRanker : IPlutoAdaptivePatternRanker
             var contexts = _learning.GetContextBaselines();
             if (contexts.Count == 0) return PlutoColdStartTransferStatus.Empty;
             var priors = _learning.GetProvenPatternPriors(PlutoEmpiricalBayes.MinProvenSamples);
+            int hooks = 0, looks = 0, bgms = 0;
+            var tags = new HashSet<string>(StringComparer.Ordinal);   // '#x' · 'x' 는 같은 태그
+            for (var i = 0; i < priors.Count; i++)
+            {
+                var t = priors[i].Token;
+                if (t.StartsWith(HookPrefix, StringComparison.Ordinal)) hooks++;
+                else if (t.StartsWith(LookPrefix, StringComparison.Ordinal)) looks++;
+                else if (t.StartsWith(BgmPrefix, StringComparison.Ordinal)) bgms++;
+                else if (t.StartsWith(StylePrefix, StringComparison.Ordinal)) tags.Add(t[StylePrefix.Length..].TrimStart('#'));
+            }
+            var provenCount = hooks + looks + bgms + tags.Count;
             var cold = 0;
             PlutoContextBaselineStat? focus = null;   // 표본 내림차순 목록 → 가장 덜 차가운 콜드스타트 컨텍스트(곧 독립할 후보)
             for (var i = 0; i < contexts.Count; i++)
@@ -446,7 +467,10 @@ public sealed class PlutoAdaptivePatternRanker : IPlutoAdaptivePatternRanker
                 }
                 weightPct = Math.Round(sum / priors.Count * 100.0, 0, MidpointRounding.AwayFromZero);
             }
-            return new PlutoColdStartTransferStatus(contexts.Count, cold, priors.Count, focus is null ? string.Empty : focus.Domain + "·" + focus.RenderMode, focus?.Samples ?? 0.0, weightPct);
+            return new PlutoColdStartTransferStatus(contexts.Count, cold, provenCount, focus is null ? string.Empty : focus.Domain + "·" + focus.RenderMode, focus?.Samples ?? 0.0, weightPct)
+            {
+                ProvenHookPriors = hooks, ProvenLookPriors = looks, ProvenBgmPriors = bgms, ProvenTagPriors = tags.Count,
+            };
         }
         catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Ranker] cold start: " + ex.Message); return PlutoColdStartTransferStatus.Empty; }
     }

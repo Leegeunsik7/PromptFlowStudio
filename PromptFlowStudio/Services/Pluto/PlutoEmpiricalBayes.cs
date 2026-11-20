@@ -29,6 +29,11 @@ public sealed record PlutoColdStartTransferStatus(int ContextCount, int ColdStar
 {
     public static readonly PlutoColdStartTransferStatus Empty = new(0, 0, 0, string.Empty, 0.0, 0.0);
     public bool IsTransferActive => ColdStartContextCount > 0 && ProvenPriorCount > 0;
+    /// <summary>🧬 모달리티별 전역 검증 사전 수(훅 · 룩 · BGM · 태그 — 태그는 '#' 변형 병합).</summary>
+    public int ProvenHookPriors { get; init; }
+    public int ProvenLookPriors { get; init; }
+    public int ProvenBgmPriors { get; init; }
+    public int ProvenTagPriors { get; init; }
 }
 
 /// <summary>
@@ -100,15 +105,36 @@ public static class PlutoEmpiricalBayes
         var ctx = status.ContextCount.ToString(Inv);
         var priors = status.ProvenPriorCount.ToString(Inv);
         if (status.ColdStartContextCount == 0)
-            return "전 컨텍스트 성숙(" + ctx + "개) — 지역 데이터 우선 · 전역 검증 사전 " + priors + "개 대기";
+            return "전 컨텍스트 성숙(" + ctx + "개) — 지역 데이터 우선 · 전역 검증 사전 " + priors + "개 대기" + ModalityBreakdown(status);
         var head = "콜드스타트 " + status.ColdStartContextCount.ToString(Inv) + "/" + ctx + "개 컨텍스트";
         if (status.ProvenPriorCount == 0)
             return head + " · 이식할 전역 검증 사전 없음(패턴 표본 " + MinProvenSamples.ToString("0", Inv) + "건부터)";
         var s = head + " · 전역 검증 사전 " + priors + "개 이식 중";
         if (status.FocusContext.Length > 0)
             s += " · '" + status.FocusContext + "' n=" + status.FocusContextSamples.ToString("0.#", Inv) + " → 전역 가중 " + status.FocusGlobalWeightPct.ToString("0", Inv) + "%";
-        return s;
+        return s + ModalityBreakdown(status);
     }
+
+    /// <summary>🧬 BGM · 태그 사전이 있을 때만 모달리티 분해 꼬리(훅 · 룩만이면 Step 17 문구 그대로).</summary>
+    private static string ModalityBreakdown(PlutoColdStartTransferStatus s)
+        => s.ProvenBgmPriors + s.ProvenTagPriors == 0 ? string.Empty
+            : " (훅 " + s.ProvenHookPriors.ToString(Inv) + " · 룩 " + s.ProvenLookPriors.ToString(Inv) + " · BGM " + s.ProvenBgmPriors.ToString(Inv) + " · 태그 " + s.ProvenTagPriors.ToString(Inv) + ")";
+
+    /// <summary>
+    /// 🧬 '#' 유무 태그 변형 병합(순수) — 지역/전역 각각 표본 가중 평균 · 표본 합 · 분산은 표본 가중 평균(근사). 한쪽만 있으면 그대로.
+    /// </summary>
+    public static (double Mean, double Variance, double Samples) MergeVariants(double meanA, double varA, double nA, double meanB, double varB, double nB)
+    {
+        var a = double.IsFinite(nA) && nA > 0 ? nA : 0.0;
+        var b = double.IsFinite(nB) && nB > 0 ? nB : 0.0;
+        if (a + b <= 0) return (0.0, 0.0, 0.0);
+        if (b <= 0) return (Finite(meanA), Finite(varA), a);
+        if (a <= 0) return (Finite(meanB), Finite(varB), b);
+        var n = a + b;
+        return ((a * Finite(meanA) + b * Finite(meanB)) / n, (a * Finite(varA) + b * Finite(varB)) / n, n);
+    }
+
+    private static double Finite(double v) => double.IsFinite(v) ? v : 0.0;
 }
 
 /// <summary>

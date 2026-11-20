@@ -101,6 +101,9 @@ public sealed class PlutoDriveHealthService : IPlutoDriveHealthService
             try { _members?.FlushMirror(); }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.DriveHealth] members flush: " + ex.Message); }
             ct.ThrowIfCancellationRequested();
+            // ☁️⬆️ 오프라인 쓰기 반환 — 더 새로운 유효 로컬 사본(또는 Drive 부재)을 먼저 Drive 로(더 새로운 Drive 사본은 보호)
+            (_storage as PlutoDriveStorageManager)?.WriteBackNewerLocalToDrive(PlutoFiles);
+            ct.ThrowIfCancellationRequested();
             // Drive 활성 시 ResolveDataPath 가 부재 파일을 로컬 폴백/레거시 사본에서 시드(기존 Drive 파일 덮어쓰기 없음).
             if (_storage is not null && _storage.IsCloudSynced)
                 foreach (var f in PlutoFiles)
