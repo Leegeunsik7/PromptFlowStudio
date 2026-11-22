@@ -5,6 +5,7 @@
 @inject NavigationManager Nav
 @inject PromptFlowStudio.Services.Pluto.IPlutoDriveHealthService DriveHealth
 @inject PromptFlowStudio.Services.Pluto.IPlutoSystemDiagnosticService PlutoDiagnostics
+@inject PromptFlowStudio.Services.Pluto.IPlutoFlywheelSelfTestService FlywheelSelfTest
 @inject PromptFlowStudio.Services.Platform.IClipboardService Clipboard
 @using PromptFlowStudio.Services.Pluto
 @using System.Globalization
@@ -136,7 +137,41 @@ else
                         </div>
                     }
                 </div>
+                @* 🔁 Step 30 — 동반 동기화 파일 2종(핵심 허브 9종 집계 밖) — 로컬/Drive 존재 · SHA-256 일치 · 항목 수 *@
+                <div class="dh-companions" data-drive-companions="@(r2.CompanionInSyncCount.ToString(CultureInfo.InvariantCulture))/@(r2.Companions.Count.ToString(CultureInfo.InvariantCulture))">
+                    <div class="dh-sum @(AllCompanionsHealthy(r2) ? "ok" : "warn")">@(r2.CompanionSummaryKorean)</div>
+                    @foreach (var cp in r2.Companions)
+                    {
+                        <div class="dh-row" data-drive-companion="@(cp.FileName)" data-companion-state="@(cp.State.ToString())">
+                            <span class="dh-badge @(cp.IsHealthy ? "s0" : "s2")">@(cp.StateKorean)</span>
+                            <span class="dh-name">@(cp.FileName)</span>
+                            <span class="dh-cat">로컬 @(cp.LocalPresent ? "✔" : "—") · Drive @(cp.DrivePresent ? "✔" : "—")</span>
+                            <span class="dh-size">@(cp.EntryCount.ToString(CultureInfo.InvariantCulture))건</span>
+                            <span class="dh-time">@(cp.DriveSha256 is { Length: >= 12 } dsha ? dsha.Substring(0, 12) : "—")</span>
+                            @if (!string.IsNullOrEmpty(cp.ErrorDetail)) { <span class="dh-detail">@(PromptFlowStudio.Services.Pluto.PlutoSystemDiagnosticService.RedactPaths(cp.ErrorDetail))</span> }
+                        </div>
+                    }
+                </div>
             }
+            @* 🧪 Step 30 — 샌드박스 1클릭 7단계 플라이휠 자가진단(임시 폴더 · 네트워크 0 · 라이브 상태/Drive 무접촉) *@
+            <div class="dh-selftest" data-flywheel-selftest="@(_selfTest is { } stx ? (stx.AllPassed ? "pass" : "fail") : "idle")">
+                <button class="dh-btn" data-flywheel-selftest-run="1" disabled="@_selfTestBusy" @onclick="RunFlywheelSelfTestAsync" title="격리 임시 폴더에서 토픽 플래너 → 기획 출처 → 업로드 패키지 · 연결성 → Studio 내보내기 정규화 · 연결 → 기획 채점 · 사후 분석 → 유기적 복권 · 멀티 PC 장부 재생 → 진단 Markdown 7단계를 실행하고 끝나면 임시 폴더를 지웁니다 — 실제 학습 데이터 · Google Drive 는 건드리지 않음">@(_selfTestBusy ? "⏳ 자가진단 실행 중…" : "[🧪 플라이휠 자가진단 실행]")</button>
+                @if (_selfTest is { } st)
+                {
+                    <div class="dh-sum @(st.AllPassed ? "ok" : "warn")" role="status">@(st.SummaryKorean)</div>
+                    @foreach (var sg in st.Stages)
+                    {
+                        <div class="dh-row" data-flywheel-stage="@(sg.Index.ToString(CultureInfo.InvariantCulture))" data-flywheel-stage-status="@(sg.StatusLabel)">
+                            <span class="dh-badge @(sg.Passed ? "s0" : sg.Skipped ? "s3" : "s2")">@(sg.Passed ? "✅ PASS" : sg.Skipped ? "⏭ SKIP" : "❌ FAIL")</span>
+                            <span class="dh-name">@(sg.Index.ToString(CultureInfo.InvariantCulture)). @(sg.Name)</span>
+                            <span class="dh-cat">@(sg.Detail)</span>
+                            <span class="dh-size">@(sg.ElapsedMs.ToString("0.0", CultureInfo.InvariantCulture))ms</span>
+                            <span class="dh-time"></span>
+                        </div>
+                    }
+                }
+                @if (_selfTestError is { } ste) { <div class="dh-err" role="alert">@(ste)</div> }
+            </div>
         </section>
     }
     else if (_tab == Tab.Gemini)
@@ -214,6 +249,8 @@ else
     .dh-cat,.dh-size,.dh-time{color:var(--sub,#93a3b8)}
     .dh-size{text-align:right}
     .dh-detail{grid-column:2/-1;color:#f87171;font-size:11.5px}
+    .dh-companions,.dh-selftest{margin-top:10px;display:flex;flex-direction:column;gap:4px}
+    .dh-selftest .dh-btn{align-self:flex-start}
 </style>
 
 @code {
@@ -294,6 +331,27 @@ else
         }
         catch (Exception ex) { Program.Log("Settings.PlutoDiagnosticSave", ex); _diagToast = "⚠ 진단서 저장 실패: " + PromptFlowStudio.Services.Pluto.PlutoSystemDiagnosticService.RedactPaths(ex.Message); }
         finally { _diagBusy = false; }
+    }
+
+    // ── 🧪 Step 30 — 샌드박스 플라이휠 자가진단 ──
+    private bool _selfTestBusy;
+    private PromptFlowStudio.Services.Pluto.PlutoFlywheelSelfTestReport? _selfTest;
+    private string? _selfTestError;
+
+    private async Task RunFlywheelSelfTestAsync()
+    {
+        if (_selfTestBusy) return;
+        _selfTestBusy = true;
+        _selfTestError = null;
+        try { _selfTest = await FlywheelSelfTest.RunAsync(); }
+        catch (Exception ex) { Program.Log("Settings.FlywheelSelfTest", ex); _selfTestError = "⚠ 자가진단 실행 실패: " + PromptFlowStudio.Services.Pluto.PlutoSystemDiagnosticService.RedactPaths(ex.Message); }
+        finally { _selfTestBusy = false; }
+    }
+
+    private static bool AllCompanionsHealthy(PlutoDriveHealthReport r)
+    {
+        foreach (var c in r.Companions) if (!c.IsHealthy) return false;
+        return true;
     }
 
     private async Task VerifyDriveAsync()

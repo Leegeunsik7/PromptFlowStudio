@@ -68,9 +68,15 @@ public sealed record PlutoDownloadsWatcherHealth(bool IsEnabled, bool IsRunning,
             if (QuarantinedCount > 0) s += " · 🧯 격리 " + QuarantinedCount.ToString(inv) + "건";
             if (PendingFailureCount > 0) s += " · 재시도 대기 " + PendingFailureCount.ToString(inv) + "건";
             if (LastIngestUtc is { } t) s += " · 최근 수집 " + t.ToLocalTime().ToString("MM-dd HH:mm", inv);
+            if (ArchiveEnabled) s += " · 📦 정리 " + ArchivedCount.ToString(inv) + "건";
             return s;
         }
     }
+
+    /// <summary>📦 Step 30 — 수집 후 폴더 정리 토글.</summary>
+    public bool ArchiveEnabled { get; init; }
+    /// <summary>📦 Step 30 — 이번 세션 정리(이동) 건수.</summary>
+    public long ArchivedCount { get; init; }
 }
 
 /// <summary>📥 Step 23 — Downloads 폴더 YouTube Studio 내보내기 자동 감시 · 디바운스 · SHA-256 중복 차단 · 자동 학습.</summary>
@@ -117,6 +123,36 @@ public interface IYouTubeDownloadsAutoWatcherService : IDisposable, IAsyncDispos
 
     /// <summary>🩺 Step 24 — 상태 스냅샷.</summary>
     PlutoDownloadsWatcherHealth GetHealth();
+
+    /// <summary>📦 Step 30 — 수집 완료 내보내기를 <c>{감시 폴더}/Pluto_Ingested/</c> 로 정리(영속 · 기본 OFF). 미구현 → false.</summary>
+    bool ArchiveIngestedExports => false;
+    /// <summary>📦 Step 30 — 정리 토글 영속(미구현 → 무동작).</summary>
+    Task SetArchiveIngestedExportsAsync(bool enabled, CancellationToken ct = default) => Task.CompletedTask;
+    /// <summary>📦 Step 30 — 이번 세션 정리(이동) 건수.</summary>
+    long ArchivedCount => 0;
+}
+
+/// <summary>📦 Step 30 — 수집 후 폴더 정리 1건 판정.</summary>
+public enum PlutoIngestArchiveOutcome
+{
+    /// <summary><c>Pluto_Ingested/</c> 로 이동함.</summary>
+    Archived = 0,
+    /// <summary>토글 꺼짐(기본) — 아무것도 하지 않음.</summary>
+    Disabled = 1,
+    /// <summary>원본이 이미 없음(사용자가 옮김/삭제).</summary>
+    SourceMissing = 2,
+    /// <summary>🧬 수집 후 같은 이름으로 다른 내용이 덮어써짐 → 수집 안 된 내용이므로 이동 거부.</summary>
+    ContentChanged = 3,
+    /// <summary>다른 프로세스가 쓰는 중/잠김 → 그대로 둠.</summary>
+    Locked = 4,
+    /// <summary>정리 폴더가 파일 · 심볼릭 링크/정션이거나 원본이 링크 · 감시 폴더 밖 → 거부.</summary>
+    Unsafe = 5,
+    /// <summary>🧯 장부 · 미매칭 대기열 영속 실패 → 복구 단서 보존을 위해 이동 거부.</summary>
+    NotDurable = 6,
+    /// <summary>같은 이름 접미(<c>_2</c>…<c>_99</c>) 소진.</summary>
+    NameExhausted = 7,
+    /// <summary>그 밖 IO 실패(격리됨).</summary>
+    Failed = 8,
 }
 
 /// <summary>
@@ -494,8 +530,9 @@ public sealed class YouTubeDownloadsAutoWatcherService : IYouTubeDownloadsAutoWa
                     if (CountFailure(sha) >= Math.Max(1, _opt.MaxFailuresPerFile)) { await RecordAsync(sha, rejected: true, ct, quarantined: true).ConfigureAwait(false); Remember(path); }
                     return false;   // 일시 실패 → 다음 스윕에서 재시도(상한 후 격리)
                 }
-                await RecordAsync(sha, rejected: false, ct).ConfigureAwait(false);
+                var ledgerDurable = await RecordAsync(sha, rejected: false, ct).ConfigureAwait(false);
                 Remember(path);
+                ArchiveAfterIngest(path, sha, r, ledgerDurable);   // 📦 Step 30 — 완전 수집 · 영속 확인 후에만(기본 OFF · 실패 격리)
                 Interlocked.Increment(ref _ingestedCount);
                 _lastIngestUtc = Now();
                 var evt = new PlutoDownloadsAutoIngestEvent(name, sha, r, DateTimeOffset.UtcNow);
@@ -685,6 +722,127 @@ public sealed class YouTubeDownloadsAutoWatcherService : IYouTubeDownloadsAutoWa
         }
     }
 
+    // ── 📦 Step 30 — 수집 후 폴더 정리(선택 · 기본 OFF) ──
+
+    /// <summary>정리 폴더 이름(감시 폴더 바로 아래 · 스윕/감시는 최상위만 보므로 재수집 대상 아님).</summary>
+    public const string ArchiveFolderName = "Pluto_Ingested";
+    /// <summary>같은 이름 충돌 접미 최대값(<c>_2</c> … <c>_99</c>).</summary>
+    public const int MaxArchiveSuffix = 99;
+
+    private bool _archive;   // _sync 보호
+    private long _archivedCount, _archiveSkipped;
+
+    public bool ArchiveIngestedExports { get { lock (_sync) return _archive; } }
+    public long ArchivedCount => Interlocked.Read(ref _archivedCount);
+    /// <summary>정리 대상이었지만 안전 규칙으로 건너뛴 건수(내용 변경 · 잠김 · 영속 실패 · 링크 등).</summary>
+    public long ArchiveSkippedCount => Interlocked.Read(ref _archiveSkipped);
+    /// <summary>마지막 정리 판정(없음 → null).</summary>
+    public PlutoIngestArchiveOutcome? LastArchiveOutcome { get; private set; }
+
+    public async Task SetArchiveIngestedExportsAsync(bool enabled, CancellationToken ct = default)
+    {
+        bool changed;
+        lock (_sync) { changed = _archive != enabled; _archive = enabled; }
+        if (!changed) return;
+        await SaveStateAsync(ct).ConfigureAwait(false);
+        RaiseStateChanged();
+    }
+
+    /// <summary>수집 게이트 안 · 장부 기록 직후 — 토글 ON + 영속 확인 시에만 이동(예외 비전파).</summary>
+    private void ArchiveAfterIngest(string path, string sha, PlutoTelemetryBatchImportResult result, bool ledgerDurable)
+    {
+        if (!ArchiveIngestedExports) return;
+        PlutoIngestArchiveOutcome outcome;
+        try
+        {
+            outcome = !ledgerDurable || result.UnmatchedQueuePersistFailed
+                ? PlutoIngestArchiveOutcome.NotDurable
+                : TryArchiveIngestedFile(WatchedDirectory, path, sha, out _);
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine("[Pluto.DownloadsWatcher] archive: " + ex.Message);
+            outcome = PlutoIngestArchiveOutcome.Failed;
+        }
+        LastArchiveOutcome = outcome;
+        if (outcome == PlutoIngestArchiveOutcome.Archived)
+        {
+            Interlocked.Increment(ref _archivedCount);
+            _ignoredSignatures.TryRemove(path, out _);   // 자리에 새 파일이 오면 다시 판정
+        }
+        else Interlocked.Increment(ref _archiveSkipped);
+    }
+
+    /// <summary>
+    /// 📦 순수 정리 이동(동기 · 예외 비전파) —
+    /// ① 원본은 감시 폴더 <b>바로 아래</b>의 일반 파일만(링크 · 하위 폴더 · 다른 폴더 거부)
+    /// ② <c>Pluto_Ingested</c> 가 파일이거나 재분석 지점(심볼릭 링크/정션)이면 거부(생성 직후 재확인)
+    /// ③ 🧬 쓰기 거부 공유(<c>FileShare.Read | Delete</c>)로 연 채 SHA-256 재계산 → 수집한 해시와 다르면 거부(브라우저가 같은 이름으로 새 내보내기를 덮어쓴 경우)
+    /// ④ 핸들을 쥔 채 <c>File.Move(overwrite: false)</c> — 대상이 파일 · 폴더 · 링크로 점유되면 <c>_2</c>, <c>_3</c> … 접미(덮어쓰기 없음).
+    /// </summary>
+    public static PlutoIngestArchiveOutcome TryArchiveIngestedFile(string? watchedDirectory, string path, string expectedSha256Hex, out string? archivedPath)
+    {
+        archivedPath = null;
+        if (string.IsNullOrWhiteSpace(watchedDirectory) || string.IsNullOrWhiteSpace(path) || string.IsNullOrWhiteSpace(expectedSha256Hex)) return PlutoIngestArchiveOutcome.Unsafe;
+        string root, src, archiveDir;
+        try
+        {
+            root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(watchedDirectory));
+            src = Path.GetFullPath(path);
+            var parent = Path.GetDirectoryName(src);
+            if (parent is null || !string.Equals(Path.TrimEndingDirectorySeparator(parent), root, StringComparison.OrdinalIgnoreCase)) return PlutoIngestArchiveOutcome.Unsafe;
+            if (!IsCandidateName(src)) return PlutoIngestArchiveOutcome.Unsafe;
+            var fi = new FileInfo(src);
+            if (!fi.Exists) return PlutoIngestArchiveOutcome.SourceMissing;
+            if ((fi.Attributes & FileAttributes.ReparsePoint) != 0) return PlutoIngestArchiveOutcome.Unsafe;   // 🔗 링크 자체를 옮기면 대상 내용 검증이 무의미
+            archiveDir = Path.Combine(root, ArchiveFolderName);
+            if (File.Exists(archiveDir)) return PlutoIngestArchiveOutcome.Unsafe;
+            var di = new DirectoryInfo(archiveDir);
+            if (di.Exists && (di.Attributes & FileAttributes.ReparsePoint) != 0) return PlutoIngestArchiveOutcome.Unsafe;
+            if (!di.Exists)
+            {
+                System.IO.Directory.CreateDirectory(archiveDir);
+                di.Refresh();
+                if (!di.Exists || (di.Attributes & FileAttributes.ReparsePoint) != 0) return PlutoIngestArchiveOutcome.Unsafe;   // 경합 — 그 사이 링크로 바뀜
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException or System.Security.SecurityException)
+        {
+            System.Diagnostics.Debug.WriteLine("[Pluto.DownloadsWatcher] archive prepare: " + ex.Message);
+            return PlutoIngestArchiveOutcome.Failed;
+        }
+
+        FileStream? hold = null;
+        try
+        {
+            try { hold = new FileStream(src, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete, 81920, FileOptions.SequentialScan); }
+            catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException) { return PlutoIngestArchiveOutcome.SourceMissing; }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return PlutoIngestArchiveOutcome.Locked; }
+            var actual = Convert.ToHexString(SHA256.HashData(hold));
+            if (!string.Equals(actual, expectedSha256Hex.Trim(), StringComparison.OrdinalIgnoreCase)) return PlutoIngestArchiveOutcome.ContentChanged;
+            var stem = Path.GetFileNameWithoutExtension(src);
+            var ext = Path.GetExtension(src);
+            for (var suffix = 1; suffix <= MaxArchiveSuffix; suffix++)
+            {
+                var target = Path.Combine(archiveDir, suffix == 1 ? stem + ext : stem + "_" + suffix.ToString(CultureInfo.InvariantCulture) + ext);
+                if (PlutoSystemDiagnosticService.IsPathOccupied(target)) continue;   // 🔒 파일 · 폴더 · 링크 → 다음 접미
+                try { File.Move(src, target, overwrite: false); }
+                catch (IOException) when (PlutoSystemDiagnosticService.IsPathOccupied(target)) { continue; }   // 경합 — 그 사이 생김
+                catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException) { return PlutoIngestArchiveOutcome.SourceMissing; }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { System.Diagnostics.Debug.WriteLine("[Pluto.DownloadsWatcher] archive move: " + ex.Message); return PlutoIngestArchiveOutcome.Locked; }
+                archivedPath = target;
+                return PlutoIngestArchiveOutcome.Archived;
+            }
+            return PlutoIngestArchiveOutcome.NameExhausted;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
+        {
+            System.Diagnostics.Debug.WriteLine("[Pluto.DownloadsWatcher] archive: " + ex.Message);
+            return PlutoIngestArchiveOutcome.Failed;
+        }
+        finally { hold?.Dispose(); }
+    }
+
     // ── 이벤트 발행(구독자 격리) ──
 
     /// <summary>
@@ -728,7 +886,8 @@ public sealed class YouTubeDownloadsAutoWatcherService : IYouTubeDownloadsAutoWa
         }
     }
 
-    private async Task RecordAsync(string sha, bool rejected, CancellationToken ct, bool quarantined = false)
+    /// <summary>장부 기록 + 영속 — 디스크 반영 성공 → true(📦 Step 30 폴더 정리 거부권에 사용).</summary>
+    private async Task<bool> RecordAsync(string sha, bool rejected, CancellationToken ct, bool quarantined = false)
     {
         lock (_sync)
         {
@@ -738,7 +897,7 @@ public sealed class YouTubeDownloadsAutoWatcherService : IYouTubeDownloadsAutoWa
             _failures.Remove(sha);
             PruneLocked();
         }
-        await SaveStateAsync(ct).ConfigureAwait(false);
+        return await SaveStateAsync(ct).ConfigureAwait(false);
     }
 
     /// <summary>TTL 초과 제거 → 상한 초과분은 가장 오래된 것부터(LRU) 축출. 반환 = 제거 수.</summary>
@@ -811,7 +970,7 @@ public sealed class YouTubeDownloadsAutoWatcherService : IYouTubeDownloadsAutoWa
             var q = 0;
             foreach (var kv in _rejected) if (kv.Value.Quarantined) q++;
             return new PlutoDownloadsWatcherHealth(_enabled, _running, IsIsolationBlocked, WatchedDirectory, _ingested.Count, _rejected.Count - q, q, _failures.Count,
-                _prunedTotal, IngestedCount, OverflowRecoveryCount, _lastIngestUtc, _lastError);
+                _prunedTotal, IngestedCount, OverflowRecoveryCount, _lastIngestUtc, _lastError) { ArchiveEnabled = _archive, ArchivedCount = ArchivedCount };
         }
     }
 
@@ -823,6 +982,7 @@ public sealed class YouTubeDownloadsAutoWatcherService : IYouTubeDownloadsAutoWa
             var node = JsonNode.Parse(File.ReadAllText(_statePath));
             if (node is not JsonObject o) return;
             if (o["enabled"] is JsonValue ev && ev.TryGetValue<bool>(out var en)) _enabled = en;
+            if (o["archive"] is JsonValue av && av.TryGetValue<bool>(out var ar)) _archive = ar;   // 📦 Step 30 — 없으면 기본 OFF(기존 동작 100% 보존)
             var now = Now().UtcTicks;
             Fill(o["ingested"] as JsonArray, _ingested, now);
             Fill(o["rejected"] as JsonArray, _rejected, now);
@@ -853,13 +1013,13 @@ public sealed class YouTubeDownloadsAutoWatcherService : IYouTubeDownloadsAutoWa
         }
     }
 
-    private async Task SaveStateAsync(CancellationToken ct)
+    private async Task<bool> SaveStateAsync(CancellationToken ct)
     {
         string json;
         lock (_sync)
         {
             _pruneDirty = false;
-            json = new JsonObject { ["v"] = StateSchemaVersion, ["enabled"] = _enabled, ["ingested"] = ToJson(_ingested), ["rejected"] = ToJson(_rejected) }.ToJsonString();
+            json = new JsonObject { ["v"] = StateSchemaVersion, ["enabled"] = _enabled, ["archive"] = _archive, ["ingested"] = ToJson(_ingested), ["rejected"] = ToJson(_rejected) }.ToJsonString();
         }
         await _stateIo.WaitAsync(ct).ConfigureAwait(false);
         try
@@ -869,10 +1029,12 @@ public sealed class YouTubeDownloadsAutoWatcherService : IYouTubeDownloadsAutoWa
             var tmp = _statePath + ".tmp";
             await File.WriteAllTextAsync(tmp, json, ct).ConfigureAwait(false);
             File.Move(tmp, _statePath, overwrite: true);   // 원자적 교체 — 중간 크래시에도 장부 파손 없음
+            return true;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             System.Diagnostics.Debug.WriteLine("[Pluto.DownloadsWatcher] state save: " + ex.Message);
+            return false;
         }
         finally { _stateIo.Release(); }
 

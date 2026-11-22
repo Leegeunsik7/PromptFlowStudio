@@ -61,6 +61,9 @@ public interface IPlutoYouTubeUnmatchedQueueService
     /// <summary>대기 중 행 수.</summary>
     int Count { get; }
 
+    /// <summary>🧯 Step 30 — 마지막 영속 시도가 디스크에 닿지 못함(읽기 전용 세션 · 원자 쓰기 실패). 미구현 → false.</summary>
+    bool LastPersistFailed => false;
+
     /// <summary>대기열 변경 통지(백그라운드 스레드 가능).</summary>
     event Action? Changed;
 
@@ -346,12 +349,17 @@ public sealed class PlutoYouTubeUnmatchedQueueService : IPlutoYouTubeUnmatchedQu
 
     private async Task PersistLockedAsync(CancellationToken ct)
     {
-        if (_readOnly) return;   // 🔒 적재 불가 세션 → 기존 파일 보호
+        if (_readOnly) { LastPersistFailed = true; return; }   // 🔒 적재 불가 세션 → 기존 파일 보호(영속 안 됨으로 표시)
         var json = JsonSerializer.Serialize(BuildSnapshotLocked());
         // ☁️ Step 25 — 저장소 관리자 경유: Drive 실패 → 로컬 폴백 + 재연결 시 쓰기 반환(📴 대기 목록) · 다른 PC로 전파
-        if (_storage is not null) await _storage.WriteAllTextAtomicAsync(FileName, json, ct).ConfigureAwait(false);
-        else await PlutoJsonStore.WriteAtomicAsync(_path, json, "Pluto.UnmatchedQueue", ct).ConfigureAwait(false);
+        var ok = _storage is not null
+            ? await _storage.WriteAllTextAtomicAsync(FileName, json, ct).ConfigureAwait(false)
+            : await PlutoJsonStore.WriteAtomicAsync(_path, json, "Pluto.UnmatchedQueue", ct).ConfigureAwait(false);
+        LastPersistFailed = !ok;
     }
+
+    /// <summary>🧯 Step 30 — 마지막 영속 시도 실패(수집 후 폴더 정리 거부권).</summary>
+    public bool LastPersistFailed { get; private set; }
 
     private void RaiseChanged()
     {

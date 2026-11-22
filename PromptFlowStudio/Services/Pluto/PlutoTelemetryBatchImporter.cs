@@ -25,6 +25,12 @@ public sealed record PlutoTelemetryBatchImportResult(int TotalRows, int MatchedA
     /// <summary>📌 Step 24 — 페어링 대기열에 새로 보존(또는 더 성숙한 스냅샷으로 갱신)한 미매칭 행 수.</summary>
     public int QueuedUnmatchedCount { get; init; }
 
+    /// <summary>
+    /// 🧯 Step 30 — 미매칭 대기열 정리/보존이 [부분 구제]로 삼켜진 실패를 겪음(학습 결과는 유효).
+    /// 수집 후 폴더 정리(<c>Pluto_Ingested/</c> 이동)는 이 값이 true 면 원본을 옮기지 않는다 — 미매칭 행이 대기열에 없는데 원본까지 치우면 복구 단서가 사라진다.
+    /// </summary>
+    public bool UnmatchedQueuePersistFailed { get; init; }
+
     /// <summary>📊 YouTube Studio 보고서 경로로 처리됨.</summary>
     public bool IsYouTubeStudioReport { get; init; }
 
@@ -386,15 +392,20 @@ public sealed class PlutoTelemetryBatchImporter : IPlutoTelemetryBatchImporter
         }
 
         var queued = 0;
+        var queueFailed = false;
         if (_unmatchedQueue is not null)
         {
             try
             {
-                if (linkedIds is not null) await _unmatchedQueue.ResolveLinkedAsync(linkedIds, ct).ConfigureAwait(false);   // 🧹 이번 내보내기에서 연결된 ID → 대기열 정리
-                if (toQueue is not null) queued = await _unmatchedQueue.EnqueueAsync(toQueue, ct).ConfigureAwait(false);
+                if (linkedIds is not null && await _unmatchedQueue.ResolveLinkedAsync(linkedIds, ct).ConfigureAwait(false) > 0 && _unmatchedQueue.LastPersistFailed) queueFailed = true;   // 🧹 이번 내보내기에서 연결된 ID → 대기열 정리
+                if (toQueue is not null)
+                {
+                    queued = await _unmatchedQueue.EnqueueAsync(toQueue, ct).ConfigureAwait(false);
+                    if (queued > 0 && _unmatchedQueue.LastPersistFailed) queueFailed = true;   // 🧯 Step 30 — 보존했다고 셌지만 디스크에 닿지 못함
+                }
             }
             catch (OperationCanceledException) { throw; }
-            catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.BatchImport] unmatched queue: " + ex.Message); }   // [부분 구제] 학습 결과는 유지
+            catch (Exception ex) { queueFailed = true; System.Diagnostics.Debug.WriteLine("[Pluto.BatchImport] unmatched queue: " + ex.Message); }   // [부분 구제] 학습 결과는 유지
         }
 
         return new PlutoTelemetryBatchImportResult(learned + matured + dup + unmatched.Count, learned, unmatched.Count, guards, unmatched.ToArray())
@@ -404,6 +415,7 @@ public sealed class PlutoTelemetryBatchImporter : IPlutoTelemetryBatchImporter
             SkippedNoiseCount = report.SkippedNoiseCount,
             NewlyLinkedCount = linked,
             QueuedUnmatchedCount = queued,
+            UnmatchedQueuePersistFailed = queueFailed,
             IsYouTubeStudioReport = true,
             SourceName = report.SourceEntryName,
         };

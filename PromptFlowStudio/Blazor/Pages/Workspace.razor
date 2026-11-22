@@ -393,6 +393,7 @@
                         @if (_ytWatcher is not null)
                         {
                             <button class="@(_ytWatchOn ? "ws-pcore on" : "ws-back")" data-yt-autowatch="@(_ytWatchOn ? "on" : "off")" @onclick="ToggleYouTubeAutoWatchAsync" aria-pressed="@(_ytWatchOn ? "true" : "false")" title="다운로드 폴더에 새로 저장되는 YouTube Studio 내보내기(.csv/.zip)를 자동 감지 → 받는 중 파일 대기 · 같은 파일(SHA-256) 재학습 차단 · 무관한 파일은 조용히 무시@(_ytWatchHealth is { } wht ? " — " + wht.StatusKorean : "")">@(_ytWatchOn ? "[👁️ 다운로드 자동 감시 ON]" : "[👁️ 다운로드 자동 감시 OFF]")</button>
+                            <button class="@(_ytArchiveOn ? "ws-pcore on" : "ws-back")" data-yt-archive="@(_ytArchiveOn ? "on" : "off")" @onclick="ToggleYouTubeArchiveAsync" aria-pressed="@(_ytArchiveOn ? "true" : "false")" title="수집 · 영속이 끝난 내보내기(.csv/.zip)만 감시 폴더의 Pluto_Ingested 하위 폴더로 옮겨 정리 — 같은 이름은 _2 · _3 접미 · 실패/격리/무관/잠긴 파일과 수집 뒤 내용이 바뀐 파일은 그대로 둠 · 기본 OFF">@(_ytArchiveOn ? "[📦 수집 후 폴더 정리 ON]" : "[📦 수집 후 폴더 정리 OFF]")</button>
                             @if (_ytWatchHealth is { QuarantinedCount: > 0 } whq)
                             {
                                 <button class="ws-back" data-yt-quarantine="@(whq.QuarantinedCount.ToString(CultureInfo.InvariantCulture))" @onclick="ClearYouTubeQuarantineAsync" title="@(whq.LastError ?? "형식 오류 · 반복 실패로 격리된 내보내기")">[🧯 격리 @(whq.QuarantinedCount.ToString(CultureInfo.InvariantCulture))건 해제 · 다시 시도]</button>
@@ -4835,6 +4836,7 @@
             _ytWatcher.OnExportAutoIngested += OnYouTubeExportAutoIngested;
             _ytWatcher.StateChanged += OnYouTubeWatchStateChanged;
             _ytWatchOn = _ytWatcher.IsEnabled;
+            _ytArchiveOn = _ytWatcher.ArchiveIngestedExports;   // 📦 Step 30 — 영속 토글(기본 OFF)
             if (_ytWatchOn) _ytWatcher.Start();   // 멱등 · 격리 env(PROMPTFLOW_PLUTO_DRIVE=off 등) → 미기동
             _ = PruneYouTubeLedgerAsync(_ytWatcher);        // 🧹 Step 24 장부 TTL/상한 정리 영속
             (EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoBriefOutcomeAttributionService)) as PromptFlowStudio.Services.Pluto.IPlutoBriefOutcomeAttributionService)?.Start();   // 🎯 Step 27 — 카탈로그 변경 → 적용 기획 실측 채점(멱등)
@@ -4854,7 +4856,19 @@
     private void OnYouTubeWatchStateChanged()
     {
         if (_disposed) return;
-        SafeUiUpdate(() => { if (_ytWatcher is { } w) { _ytWatchOn = w.IsEnabled; _ytWatchHealth = w.GetHealth(); } return Task.CompletedTask; }, "Workspace.YouTubeAutoWatchState");
+        SafeUiUpdate(() => { if (_ytWatcher is { } w) { _ytWatchOn = w.IsEnabled; _ytArchiveOn = w.ArchiveIngestedExports; _ytWatchHealth = w.GetHealth(); } return Task.CompletedTask; }, "Workspace.YouTubeAutoWatchState");
+    }
+
+    // ── 📦 Step 30 — 수집 후 폴더 정리(선택 · 기본 OFF) ──
+    private bool _ytArchiveOn;
+
+    private async Task ToggleYouTubeArchiveAsync()
+    {
+        if (_ytWatcher is not { } w) return;
+        _ytArchiveOn = !_ytArchiveOn;
+        try { await w.SetArchiveIngestedExportsAsync(_ytArchiveOn, _mediaCts.Token); }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { Program.Log("Workspace.YouTubeArchiveToggle", ex); _ytArchiveOn = w.ArchiveIngestedExports; }
     }
 
     // ── 🧯 Step 24 — 감시기 상태 · 격리 해제 ──

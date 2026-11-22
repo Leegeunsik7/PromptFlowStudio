@@ -169,6 +169,7 @@ public sealed class PlutoSystemDiagnosticService : IPlutoSystemDiagnosticService
                       .Append(it.LastModifiedUtc is { } m ? m.UtcDateTime.ToString("yyyy-MM-dd HH:mm", Inv) : "—").Append(" | ").Append(Cell(it.ErrorDetail ?? "")).Append(" |\n");
                 }
             }
+            AppendCompanions(sb, d.Companions);
         }
         else if (!HasError(input, SectionDrive)) sb.Append("- 미연결\n");
         var conflicts = input.Conflicts ?? Array.Empty<PlutoConflictCopy>();
@@ -232,6 +233,28 @@ public sealed class PlutoSystemDiagnosticService : IPlutoSystemDiagnosticService
         }
         return sb.ToString();
     }
+
+    /// <summary>동반 동기화 소제목 헤더(테스트 · UI 공통).</summary>
+    public const string CompanionHeading = "### 🔁 동반 동기화 파일(핵심 허브 9종 집계 밖)";
+
+    /// <summary>🔁 Step 30 — 동반 파일 2종 소절(핵심 허브 표 · 집계와 분리 · 경로 없음 · 해시는 앞 12자).</summary>
+    private static void AppendCompanions(StringBuilder sb, IReadOnlyList<PlutoCompanionSyncItem> companions)
+    {
+        sb.Append('\n').Append(CompanionHeading).Append("\n\n");
+        if (companions.Count == 0) { sb.Append("- 점검 안 함\n"); return; }
+        var inSync = 0;
+        foreach (var c in companions) if (c.State == PlutoCompanionSyncState.InSync) inSync++;
+        sb.Append("- 일치 ").Append(inSync.ToString(Inv)).Append('/').Append(companions.Count.ToString(Inv)).Append(" · 핵심 허브 ").Append(PlutoDriveHealthService.CorePlutoFileCount.ToString(Inv)).Append("종 불변\n\n");
+        sb.Append("| 파일 | 상태 | 로컬 | Drive | 항목 | SHA-256(로컬/Drive) | 비고 |\n|---|---|---|---|---|---|---|\n");
+        foreach (var c in companions)
+            sb.Append("| ").Append(Cell(c.FileName)).Append(" | ").Append(Cell(c.StateKorean)).Append(" | ")
+              .Append(c.LocalPresent ? c.LocalSizeBytes.ToString(Inv) + " B" : "—").Append(" | ")
+              .Append(c.DrivePresent ? c.DriveSizeBytes.ToString(Inv) + " B" : "—").Append(" | ")
+              .Append(c.EntryCount.ToString(Inv)).Append(" | ").Append(ShortSha(c.LocalSha256)).Append('/').Append(ShortSha(c.DriveSha256)).Append(" | ")
+              .Append(Cell(c.ErrorDetail ?? "")).Append(" |\n");
+    }
+
+    private static string ShortSha(string? sha) => string.IsNullOrEmpty(sha) ? "—" : sha.Length <= 12 ? sha : sha.Substring(0, 12);
 
     private static bool HasError(PlutoDiagnosticInputs input, string section) => input.Errors is { } e && e.ContainsKey(section);
 
@@ -341,7 +364,7 @@ public sealed class PlutoSystemDiagnosticService : IPlutoSystemDiagnosticService
     }
 
     /// <summary>경로가 무엇이든(파일 · 디렉터리 · 끊긴 링크 포함) 점유됐는지 — 링크 자체 속성으로 판정(대상 추적 없음).</summary>
-    private static bool IsPathOccupied(string path)
+    internal static bool IsPathOccupied(string path)
     {
         try { _ = File.GetAttributes(path); return true; }
         catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException) { return false; }

@@ -17,6 +17,77 @@ public sealed record PlutoDriveHealthReport(bool IsDriveMounted, int HealthyCoun
 {
     /// <summary>🩺 Step 20 — [지금 전체 드라이브 백업 검증] 의 라이브 마운트 왕복 프로브(단순 점검 · 저장소 미연결 → null).</summary>
     public PlutoLiveDriveProbe? LiveProbe { get; init; }
+
+    /// <summary>
+    /// 🔁 Step 30 — 동반 동기화 파일 2종(<see cref="PlutoDriveHealthService.CompanionSyncFiles"/>) 상태. 핵심 허브 9종 집계(<see cref="HealthyCount"/> ·
+    /// <see cref="TotalCount"/> · <see cref="Items"/>)와 분리 — 동반 파일이 허브 수 · "전체 정상" 판정 · 새 PC 복원 대상 수를 바꾸지 않는다.
+    /// </summary>
+    public IReadOnlyList<PlutoCompanionSyncItem> Companions { get; init; } = Array.Empty<PlutoCompanionSyncItem>();
+
+    /// <summary>동반 파일 중 동기화 일치 수.</summary>
+    public int CompanionInSyncCount
+    {
+        get { var n = 0; foreach (var c in Companions) if (c.State == PlutoCompanionSyncState.InSync) n++; return n; }
+    }
+
+    /// <summary>한국어 1줄 요약(경로 없음).</summary>
+    public string CompanionSummaryKorean
+    {
+        get
+        {
+            if (Companions.Count == 0) return "🔁 동반 동기화 파일 — 점검 안 함";
+            var inv = System.Globalization.CultureInfo.InvariantCulture;
+            var sb = new System.Text.StringBuilder(160);
+            sb.Append("🔁 동반 동기화 ").Append(CompanionInSyncCount.ToString(inv)).Append('/').Append(Companions.Count.ToString(inv)).Append(" 일치");
+            foreach (var c in Companions) sb.Append(" · ").Append(c.FileName).Append(' ').Append(c.StateKorean).Append(' ').Append(c.EntryCount.ToString(inv)).Append("건");
+            return sb.ToString();
+        }
+    }
+}
+
+/// <summary>🔁 Step 30 — 동반 동기화 파일 상태(SHA-256 · 동기화 장부 기준선 판정).</summary>
+public enum PlutoCompanionSyncState
+{
+    /// <summary>로컬 · Drive 내용 SHA-256 일치.</summary>
+    InSync = 0,
+    /// <summary>아직 어느 쪽에도 없음(해당 기능 미사용 · 정상).</summary>
+    NotCreated = 1,
+    /// <summary>로컬에만 있음 → 다음 쓰기 반환 대기.</summary>
+    LocalOnly = 2,
+    /// <summary>Drive 에만 있음 → 다음 미러 복원 대기.</summary>
+    DriveOnly = 3,
+    /// <summary>로컬만 기준선 이후 변경(Drive = 기준선) → 쓰기 반환 대기(충돌 아님).</summary>
+    LocalAhead = 4,
+    /// <summary>Drive 만 기준선 이후 변경(로컬 = 기준선) → 미러 갱신 대기(충돌 아님).</summary>
+    DriveAhead = 5,
+    /// <summary>양쪽 모두 기준선과 다름(또는 기준선 없음) → 분기 — 병합 대상.</summary>
+    Diverged = 6,
+    /// <summary>JSON 손상 · 0 바이트 · 읽기 실패.</summary>
+    Corrupt = 7,
+    /// <summary>Drive 폴더 비활성/없음(로컬 사본만 점검).</summary>
+    DriveUnavailable = 8,
+}
+
+/// <summary>🔁 Step 30 — 동반 동기화 파일 1건(경로 미포함 · 공유 안전).</summary>
+public sealed record PlutoCompanionSyncItem(string FileName, bool LocalPresent, bool DrivePresent, PlutoCompanionSyncState State, int EntryCount,
+    long LocalSizeBytes, long DriveSizeBytes, string? LocalSha256, string? DriveSha256, DateTimeOffset? DriveModifiedUtc, string? ErrorDetail)
+{
+    /// <summary>정상 범주(일치 · 미생성 · 단방향 대기).</summary>
+    public bool IsHealthy => State is PlutoCompanionSyncState.InSync or PlutoCompanionSyncState.NotCreated or PlutoCompanionSyncState.LocalOnly
+        or PlutoCompanionSyncState.DriveOnly or PlutoCompanionSyncState.LocalAhead or PlutoCompanionSyncState.DriveAhead;
+
+    public string StateKorean => State switch
+    {
+        PlutoCompanionSyncState.InSync => "✅ 일치",
+        PlutoCompanionSyncState.NotCreated => "⚪ 미생성",
+        PlutoCompanionSyncState.LocalOnly => "⬆️ 로컬만(반환 대기)",
+        PlutoCompanionSyncState.DriveOnly => "⬇️ Drive만(복원 대기)",
+        PlutoCompanionSyncState.LocalAhead => "⬆️ 로컬 최신(반환 대기)",
+        PlutoCompanionSyncState.DriveAhead => "⬇️ Drive 최신(미러 대기)",
+        PlutoCompanionSyncState.Diverged => "⚔️ 분기",
+        PlutoCompanionSyncState.Corrupt => "❌ 손상",
+        _ => "⛔ 드라이브 없음",
+    };
 }
 
 /// <summary>☁️ Google Drive 영구 백업 파일 헬스 점검(PC 이전 준비 · Pluto 핵심 허브 9종 + 계정·설정 2종) — 존재 · 크기 &gt; 0 · JSON 파싱 검증.</summary>
@@ -180,7 +251,108 @@ public sealed class PlutoDriveHealthService : IPlutoDriveHealthService
         foreach (var f in StudioFiles) Add(items, CategoryStudio, studioDir, studioOk, f, ref healthy);
 
         return new PlutoDriveHealthReport(plutoOk || studioOk, healthy, items.Count,
-            _settings?.LastMirrorError, _members?.LastMirrorError, items, DateTimeOffset.UtcNow);
+            _settings?.LastMirrorError, _members?.LastMirrorError, items, DateTimeOffset.UtcNow)
+        {
+            Companions = InspectCompanions(plutoDir, plutoOk, LocalMirrorRoot ?? (_storage as PlutoDriveStorageManager)?.FallbackRoot, _storage as PlutoDriveStorageManager),
+        };
+    }
+
+    // ── 🔁 Step 30 — 동반 동기화 파일 관측(핵심 허브 9종 집계와 분리) ──
+
+    /// <summary>로컬 미러 폴더 재정의(테스트 · 자가진단 샌드박스) — null → 저장소 관리자 폴백 루트.</summary>
+    public string? LocalMirrorRoot { get; init; }
+
+    /// <summary>동반 파일 JSON 최대 검사 크기(초과 → 손상 판정 · 무한 메모리 차단).</summary>
+    public const long MaxCompanionParseBytes = 16L * 1024 * 1024;
+
+    /// <summary>
+    /// 🔁 동반 파일 2종 상태 — 존재 · 크기 · SHA-256 · 항목 수(대기열 <c>Rows</c> · 장부 <c>Records</c>).
+    /// 양쪽 해시가 다르면 동기화 장부 기준선(<see cref="PlutoDriveStorageManager.GetSyncRecord"/>)으로 '단방향 대기'와 '진짜 분기'를 구분한다.
+    /// 모든 IO 예외 격리 · 경로는 결과에 넣지 않음(진단 공유 안전).
+    /// </summary>
+    public static IReadOnlyList<PlutoCompanionSyncItem> InspectCompanions(string? driveDir, bool driveOk, string? localDir, PlutoDriveStorageManager? manifest = null)
+    {
+        var list = new PlutoCompanionSyncItem[CompanionSyncFiles.Length];
+        var localOk = DirExists(localDir);
+        for (var i = 0; i < CompanionSyncFiles.Length; i++)
+            list[i] = InspectCompanion(CompanionSyncFiles[i], driveOk ? driveDir : null, localOk ? localDir : null, driveOk, manifest);
+        return list;
+    }
+
+    private static PlutoCompanionSyncItem InspectCompanion(string file, string? driveDir, string? localDir, bool driveOk, PlutoDriveStorageManager? manifest)
+    {
+        var local = ProbeCompanion(localDir, file);
+        var drive = ProbeCompanion(driveDir, file);
+        var count = drive.Valid ? drive.Count : local.Valid ? local.Count : 0;
+        var err = drive.Error ?? local.Error;
+        PlutoCompanionSyncState state;
+        if ((drive.Present && !drive.Valid) || (local.Present && !local.Valid)) state = PlutoCompanionSyncState.Corrupt;
+        else if (!driveOk) state = PlutoCompanionSyncState.DriveUnavailable;
+        else if (!local.Present && !drive.Present) state = PlutoCompanionSyncState.NotCreated;
+        else if (local.Present && !drive.Present) state = PlutoCompanionSyncState.LocalOnly;
+        else if (!local.Present) state = PlutoCompanionSyncState.DriveOnly;
+        else if (string.Equals(local.Sha, drive.Sha, StringComparison.Ordinal)) state = PlutoCompanionSyncState.InSync;
+        else
+        {
+            // 🧾 기준선 판정 — 마지막 동기화 해시와 같은 쪽은 '안 바뀐 쪽'(다른 쪽만 전진 = 단방향 대기 · 충돌 아님)
+            string? baseline = null;
+            try { baseline = manifest?.GetSyncRecord(file)?.Sha256; }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException) { baseline = null; }
+            state = baseline is null ? PlutoCompanionSyncState.Diverged
+                : string.Equals(baseline, drive.Sha, StringComparison.OrdinalIgnoreCase) ? PlutoCompanionSyncState.LocalAhead
+                : string.Equals(baseline, local.Sha, StringComparison.OrdinalIgnoreCase) ? PlutoCompanionSyncState.DriveAhead
+                : PlutoCompanionSyncState.Diverged;
+        }
+        return new PlutoCompanionSyncItem(file, local.Present, drive.Present, state, count, local.Size, drive.Size, local.Sha, drive.Sha, drive.Modified, err);
+    }
+
+    private readonly record struct CompanionProbe(bool Present, bool Valid, long Size, string? Sha, int Count, DateTimeOffset? Modified, string? Error);
+
+    /// <summary>파일 1개 — 한 번 읽은 바이트로 해시 · 파싱(읽는 사이 교체돼도 해시와 항목 수가 같은 내용 기준).</summary>
+    private static CompanionProbe ProbeCompanion(string? dir, string file)
+    {
+        if (dir is null) return default;
+        var path = Path.Combine(dir, file);
+        try
+        {
+            var fi = new FileInfo(path);
+            if (!fi.Exists) return default;
+            var modified = new DateTimeOffset(fi.LastWriteTimeUtc, TimeSpan.Zero);
+            if (fi.Length == 0) return new CompanionProbe(true, false, 0, null, 0, modified, "빈 파일(0 B)");
+            if (fi.Length > MaxCompanionParseBytes) return new CompanionProbe(true, false, fi.Length, null, 0, modified, "크기 상한 초과");
+            byte[] bytes;
+            using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+            {
+                bytes = new byte[fs.Length];
+                var read = 0;
+                while (read < bytes.Length) { var n = fs.Read(bytes, read, bytes.Length - read); if (n == 0) break; read += n; }
+                if (read != bytes.Length) Array.Resize(ref bytes, read);
+            }
+            var sha = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant();
+            int count;
+            try { count = CountEntries(bytes); }
+            catch (JsonException ex) { return new CompanionProbe(true, false, bytes.LongLength, sha, 0, modified, "JSON 손상: " + ex.Message); }
+            return new CompanionProbe(true, true, bytes.LongLength, sha, count, modified, null);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or ArgumentException)
+        {
+            return new CompanionProbe(true, false, 0, null, 0, null, ex.Message);
+        }
+    }
+
+    /// <summary>항목 수 — 대기열 <c>Rows</c> · 장부 <c>Records</c> 배열 길이 · 최상위 배열이면 그 길이 · 그 밖 0(JSON 손상 → <see cref="JsonException"/>).</summary>
+    public static int CountEntries(ReadOnlySpan<byte> json)
+    {
+        if (json.Length >= 3 && json[0] == 0xEF && json[1] == 0xBB && json[2] == 0xBF) json = json[3..];
+        var reader = new Utf8JsonReader(json, new JsonReaderOptions { CommentHandling = JsonCommentHandling.Skip, AllowTrailingCommas = true });
+        using var doc = JsonDocument.ParseValue(ref reader);
+        var root = doc.RootElement;
+        if (root.ValueKind == JsonValueKind.Array) return root.GetArrayLength();
+        if (root.ValueKind != JsonValueKind.Object) return 0;
+        foreach (var p in root.EnumerateObject())
+            if ((p.NameEquals("Rows") || p.NameEquals("Records") || p.NameEquals("rows") || p.NameEquals("records")) && p.Value.ValueKind == JsonValueKind.Array)
+                return p.Value.GetArrayLength();
+        return 0;
     }
 
     public async Task<PlutoDriveHealthReport> ForceSyncAndVerifyAsync(CancellationToken ct = default)
