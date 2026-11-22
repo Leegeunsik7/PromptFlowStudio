@@ -20,6 +20,9 @@ public sealed record PlutoPublishPackRequest(string Theme, string? CatalogTitle,
     /// <summary>Shorts(<c>#shorts</c> 포함 · 기본) / 일반 영상.</summary>
     public bool IsShorts { get; init; } = true;
     public bool IsSeries => EpisodeNumber >= 1 && TotalEpisodes >= 2 && EpisodeNumber <= TotalEpisodes;
+
+    /// <summary>🌐 Step 31 — 지역 채널 로캘(<c>ko-KR</c> · <c>en-US</c> · <c>ja-JP</c> · <c>es-ES</c>). null → 레거시(한글 감지 한/영) 출력.</summary>
+    public string? TargetLocale { get; init; }
 }
 
 /// <summary>📋 A/B 제목 후보 1개 — 카탈로그 제목과의 연결 유사도(게시 후 자동 연결 예측) 포함.</summary>
@@ -36,6 +39,9 @@ public sealed record PlutoPublishTitleCandidate(string Variant, string Title, do
 public sealed record PlutoYouTubePublishPack(PlutoPublishTitleCandidate TitleA, PlutoPublishTitleCandidate TitleB, string Description, string PinnedComment,
     IReadOnlyList<string> Hashtags, IReadOnlyList<string> Tags, IReadOnlyList<string> BlockedRemoved, string HookLine, bool IsKorean)
 {
+    /// <summary>🌐 Step 31 — 생성 로캘(레거시 → 빈 문자열). 사이드카 이름 <c>{base}_{locale}_publish_pack.txt</c> 에 쓰인다.</summary>
+    public string Locale { get; init; } = string.Empty;
+
     /// <summary>클립보드 1회 복사용 전체 텍스트.</summary>
     public string ToClipboardText()
     {
@@ -55,6 +61,7 @@ public sealed record PlutoYouTubePublishPack(PlutoPublishTitleCandidate TitleA, 
         sb.Append("# Pluto 업로드 패키지 — ").Append(videoFileName).Append('\n');
         sb.Append("# 생성(UTC): ").Append(generatedUtc.UtcDateTime.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture)).Append('\n');
         if (!string.IsNullOrWhiteSpace(clipVideoId)) sb.Append("# 카탈로그 ID: ").Append(clipVideoId.Trim()).Append('\n');
+        if (Locale.Length > 0) sb.Append("# 로캘: ").Append(Locale).Append('\n');
         sb.Append('\n');
         sb.Append("[제목 A] (").Append(TitleA.Framing).Append(")\n").Append(TitleA.Title).Append("\n\n");
         sb.Append("[제목 B] (").Append(TitleB.Framing).Append(")\n").Append(TitleB.Title).Append("\n\n");
@@ -150,6 +157,9 @@ public sealed class PlutoYouTubePublishPackService : IPlutoYouTubePublishPackSer
     public const string SidecarSuffix = "_publish_pack.txt";
 
     private static readonly string[] SidecarVideoExtensions = { ".mp4", ".mov", ".webm", ".mkv" };
+
+    private static readonly System.Text.RegularExpressions.Regex LocalizedEpisodeTokenRx = new(@"第\s*\d{1,3}\s*/\s*\d{1,3}\s*話|\bEp\.\s?\d{1,3}\s*/\s*\d{1,3}",
+        System.Text.RegularExpressions.RegexOptions.CultureInvariant | System.Text.RegularExpressions.RegexOptions.Compiled, TimeSpan.FromMilliseconds(200));
 
     private readonly IPlutoAdaptivePatternRanker? _ranker;
     private readonly IPlutoSeriesArcMemoryService? _arc;
@@ -348,8 +358,20 @@ public sealed class PlutoYouTubePublishPackService : IPlutoYouTubePublishPackSer
     /// 💾 순수 경로 검증 — 완전 한정 · <c>..</c> 세그먼트 없음 · 장치/확장 접두(<c>\\?\</c> · <c>\\.\</c>) 금지 · 영상 확장자(mp4/mov/webm/mkv) →
     /// <c>{dir}\{base}_publish_pack.txt</c>. 실패 → null + 사유.
     /// </summary>
-    public static string? TryGetSidecarPath(string? videoPath, out string reason)
+    public static string? TryGetSidecarPath(string? videoPath, out string reason) => TryGetSidecarPath(videoPath, null, out reason);
+
+    /// <summary>
+    /// 🌐 Step 31 — 로캘 사이드카 경로 <c>{dir}\{base}_{locale}_publish_pack.txt</c>(로캘 null/빈 → 레거시 이름).
+    /// 로캘은 <see cref="PlutoMultiLanguageChannelService.NormalizeLocale"/> 통과 값만(문자/숫자/하이픈 · 경로 문자 주입 차단).
+    /// </summary>
+    public static string? TryGetSidecarPath(string? videoPath, string? locale, out string reason)
     {
+        var loc = string.Empty;
+        if (!string.IsNullOrWhiteSpace(locale))
+        {
+            if (PlutoMultiLanguageChannelService.NormalizeLocale(locale) is not { } n) { reason = "로캘 형식이 올바르지 않습니다"; return null; }
+            loc = "_" + n;
+        }
         reason = string.Empty;
         if (string.IsNullOrWhiteSpace(videoPath)) { reason = "렌더된 영상 경로가 없습니다"; return null; }
         var p = videoPath.Trim();
@@ -365,7 +387,7 @@ public sealed class PlutoYouTubePublishPackService : IPlutoYouTubePublishPackSer
         var dir = Path.GetDirectoryName(p);
         var stem = Path.GetFileNameWithoutExtension(p);
         if (string.IsNullOrEmpty(dir) || string.IsNullOrWhiteSpace(stem)) { reason = "영상 파일 이름이 비어 있습니다"; return null; }
-        var name = stem + SidecarSuffix;
+        var name = stem + loc + SidecarSuffix;
         if (name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0) { reason = "파일 이름에 허용되지 않는 문자가 있습니다"; return null; }
         return Path.Combine(dir, name);
     }
@@ -373,7 +395,7 @@ public sealed class PlutoYouTubePublishPackService : IPlutoYouTubePublishPackSer
     public async Task<PlutoSidecarWriteResult> WriteSidecarAsync(string videoPath, PlutoYouTubePublishPack pack, string? clipVideoId = null, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(pack);
-        if (TryGetSidecarPath(videoPath, out var reason) is not { } sidecar) return new PlutoSidecarWriteResult(false, null, "⚠ " + reason);
+        if (TryGetSidecarPath(videoPath, pack.Locale, out var reason) is not { } sidecar) return new PlutoSidecarWriteResult(false, null, "⚠ " + reason);
         var video = videoPath.Trim();
         string? tmp = null;
         try
@@ -410,7 +432,14 @@ public sealed class PlutoYouTubePublishPackService : IPlutoYouTubePublishPackSer
         var catalogTitle = Clean(request.CatalogTitle);
         if (theme.Length == 0) theme = catalogTitle.Length > 0 ? PlutoSeriesArcMemoryService.SeriesThemeOf(catalogTitle) : "Pluto";
         if (catalogTitle.Length == 0) catalogTitle = theme;
-        var korean = ContainsHangul(theme) || ContainsHangul(catalogTitle);
+        // 🌐 Step 31 — 로캘 지정 → 프로필(편 토큰 · 훅 스타일 · 기본 해시태그 · 설명/CTA 문구) · 미지정 → 레거시(한글 감지)
+        var locale = PlutoMultiLanguageChannelService.NormalizeLocale(request.TargetLocale);
+        var channels = Channels ?? SharedChannels;
+        PlutoChannelLocaleProfile? profile = null;
+        if (locale is not null && channels.TryGetProfile(locale, out var lp)) profile = lp;
+        else locale = null;
+        var korean = profile is not null ? string.Equals(profile.LocaleCode, "ko-KR", StringComparison.Ordinal) : ContainsHangul(theme) || ContainsHangul(catalogTitle);
+        var legacyCopy = profile is null || profile.LocaleCode is "ko-KR" or "en-US";
         var suppressed = SafeSuppressed();
         var blocked = new List<string>();
 
@@ -422,21 +451,31 @@ public sealed class PlutoYouTubePublishPackService : IPlutoYouTubePublishPackSer
         if (directive.EscalateHook && directive.RecommendedHookLine.Length > 0 && !IsBlocked(directive.RecommendedHookLine, suppressed))
             hook = directive.RecommendedHookLine;   // 📺 편 간 이탈 → 아크 메모리 강화 훅 우선
         var hookPhrase = HookPhrase(hook, korean);
+        if (profile is not null)
+        {
+            // 키 형태/일반 훅을 영어로 매핑한 문구는 ja/es 채널에 맞지 않음 → 로캘 기본 훅 · 그 밖은 로캘 스타일로 각색
+            var raw = Clean(hook);
+            var keyLike = raw.Length == 0 || IsGenericHookKey(raw) || (raw.IndexOf(' ') < 0 && (raw.IndexOf('-') > 0 || raw.IndexOf('_') > 0));
+            hookPhrase = channels.AdaptHook(profile.LocaleCode, keyLike && !legacyCopy ? string.Empty : hookPhrase);
+        }
 
         // ── 제목 A/B ──
-        var token = request.IsSeries ? EpisodeToken(request.EpisodeNumber, request.TotalEpisodes) : string.Empty;
+        var token = !request.IsSeries ? string.Empty
+            : profile is not null ? channels.FormatEpisodeToken(profile.LocaleCode, request.EpisodeNumber, request.TotalEpisodes)
+            : EpisodeToken(request.EpisodeNumber, request.TotalEpisodes);
+        var endingSuffix = profile is not null ? profile.Copy.EndingPromptSuffix : korean ? " — 결말 예상?" : " — guess the ending?";
         var core = StripEpisodeToken(catalogTitle);
         if (core.Length == 0) core = StripEpisodeToken(theme);
         // 🅰️🅱️ Step 25 — 실측 CTR 순위 1위 프레이밍 = A · A와 다른 다음 순위 = B(근거 부족 → Step 24 기본: 정보형 A · 호기심형 B)
         PlutoPublishTitleCandidate? a = null, b = null;
         foreach (var framing in FramingOrder(Volatile.Read(ref _framingStats)))
         {
-            var cand = EnsureLinkable(a is null ? "A" : "B", ComposeFramed(framing, core, token, hookPhrase, korean), catalogTitle, core, token, framing);
+            var cand = EnsureLinkable(a is null ? "A" : "B", ComposeFramed(framing, core, token, hookPhrase, endingSuffix), catalogTitle, core, token, framing);
             if (a is null) { a = cand; continue; }
             if (!string.Equals(cand.Title, a.Title, StringComparison.Ordinal)) { b = cand; break; }   // A/B가 같아지면 실험 불가 → 다음 프레이밍
         }
         a ??= EnsureLinkable("A", FitTitle(core, token), catalogTitle, core, token, PlutoTitleFramings.CatalogSafe);
-        b ??= EnsureLinkable("B", ComposeFramed(PlutoTitleFramings.EndingPrompt, core, token, hookPhrase, korean), catalogTitle, core, token, PlutoTitleFramings.EndingPrompt);
+        b ??= EnsureLinkable("B", ComposeFramed(PlutoTitleFramings.EndingPrompt, core, token, hookPhrase, endingSuffix), catalogTitle, core, token, PlutoTitleFramings.EndingPrompt);
 
         // ── 해시태그 · 태그 ──
         var tagCandidates = new List<string>();
@@ -447,6 +486,12 @@ public sealed class PlutoYouTubePublishPackService : IPlutoYouTubePublishPackSer
         var hashtags = new List<string>(MaxHashtags);
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         if (request.IsShorts) { hashtags.Add("#shorts"); seen.Add("shorts"); }
+        if (request.IsShorts && profile is not null)   // 🌐 로캘 기본 해시태그(#쇼츠 · #ショート · #cortos)
+            foreach (var dh in profile.DefaultHashtags)
+            {
+                var body = HashtagBody(dh);
+                if (body.Length >= 2 && hashtags.Count < MaxHashtags && seen.Add(body)) hashtags.Add("#" + body);
+            }
         var seriesTag = request.IsSeries ? HashtagBody(StripEpisodeToken(theme)) : string.Empty;
         if (seriesTag.Length > 0 && seen.Add(seriesTag)) hashtags.Add("#" + seriesTag);
         foreach (var raw in ranked)
@@ -468,9 +513,42 @@ public sealed class PlutoYouTubePublishPackService : IPlutoYouTubePublishPackSer
         }
         if (core.Length > 0 && total + core.Length + 1 <= MaxTagsTotalChars && !ContainsIgnoreCase(tags, core)) tags.Insert(0, core);
 
-        var description = BuildDescription(request, a.Title, hookPhrase, directive, hashtags, korean);
-        var pinned = BuildPinnedComment(request, korean);
-        return new PlutoYouTubePublishPack(a, b, description, pinned, hashtags, tags, blocked, hookPhrase, korean);
+        var description = legacyCopy ? BuildDescription(request, a.Title, hookPhrase, directive, hashtags, korean) : BuildLocalizedDescription(request, a.Title, hookPhrase, directive, hashtags, profile!.Copy);
+        var pinned = legacyCopy ? BuildPinnedComment(request, korean) : BuildLocalizedPinnedComment(request, profile!.Copy);
+        return new PlutoYouTubePublishPack(a, b, description, pinned, hashtags, tags, blocked, hookPhrase, korean) { Locale = locale ?? string.Empty };
+    }
+
+    /// <summary>🌐 Step 31 — 공유 기본 로캘 레지스트리(주입 없을 때 · 내장 4종).</summary>
+    private static readonly PlutoMultiLanguageChannelService SharedChannels = new();
+
+    /// <summary>🌐 Step 31 — 로캘 레지스트리(사용자 정의 로캘 포함 · null → 내장 4종).</summary>
+    public IPlutoMultiLanguageChannelService? Channels { get; init; }
+
+    private static string BuildLocalizedDescription(PlutoPublishPackRequest r, string title, string hookPhrase, PlutoSeriesContinuityDirective d, List<string> hashtags, PlutoLocaleCopy copy)
+    {
+        var inv = CultureInfo.InvariantCulture;
+        var sb = new StringBuilder(400);
+        sb.Append(hookPhrase).Append('\n');   // 첫 줄 = 로캘 훅
+        sb.Append(title).Append("\n\n");
+        if (r.IsSeries)
+        {
+            sb.Append(string.Format(inv, copy.SeriesLineTemplate, r.EpisodeNumber, r.TotalEpisodes));
+            if (r.EpisodeNumber > 1 && copy.ContinuesFromTemplate.Length > 0) sb.Append(string.Format(inv, copy.ContinuesFromTemplate, r.EpisodeNumber - 1));
+            sb.Append('\n');
+            if (r.EpisodeNumber < r.TotalEpisodes)
+                sb.Append(string.Format(inv, copy.NextEpisodeTemplate, r.EpisodeNumber + 1)).Append(d.CliffhangerOutroLine).Append('\n');
+            else sb.Append(copy.SeriesFinaleLine).Append('\n');
+            sb.Append('\n');
+        }
+        sb.Append(copy.SubscribeLine).Append("\n\n");
+        sb.Append(string.Join(" ", hashtags));
+        return sb.ToString();
+    }
+
+    private static string BuildLocalizedPinnedComment(PlutoPublishPackRequest r, PlutoLocaleCopy copy)
+    {
+        if (r.IsSeries && r.EpisodeNumber < r.TotalEpisodes) return string.Format(CultureInfo.InvariantCulture, copy.PinnedNextTemplate, r.EpisodeNumber + 1);
+        return r.IsSeries ? copy.PinnedSeriesCompleteLine : copy.PinnedStandaloneLine;
     }
 
     // ── 순수 함수 ──
@@ -504,6 +582,14 @@ public sealed class PlutoYouTubePublishPackService : IPlutoYouTubePublishPackSer
     public static string StripEpisodeToken(string? title)
     {
         var s = Clean(title);
+        if (s.Length == 0) return s;
+        // 🌐 Step 31 — 로캘 편 토큰(第1/3話 · Ep.1/3 · Ep. 1/3) 제거 — 안 지우면 core 에 남아 로캘 토큰이 제목에 두 번 들어감
+        try
+        {
+            var stripped = LocalizedEpisodeTokenRx.Replace(s, " ");
+            if (!string.Equals(stripped, s, StringComparison.Ordinal)) s = Clean(stripped).Trim('[', ']', '(', ')', '·', '-', '—').Trim();
+        }
+        catch (System.Text.RegularExpressions.RegexMatchTimeoutException) { System.Diagnostics.Debug.WriteLine("[Pluto.PublishPack] token strip timeout"); }
         if (s.Length == 0) return s;
         var theme = PlutoSeriesArcMemoryService.SeriesThemeOf(s);
         if (!string.Equals(theme, s, StringComparison.Ordinal)) return theme;
@@ -544,7 +630,7 @@ public sealed class PlutoYouTubePublishPackService : IPlutoYouTubePublishPackSer
         return h.Length > MaxHookPhraseLength ? h[..MaxHookPhraseLength].TrimEnd() + "…" : h;
     }
 
-    private static string ComposeTitle(string core, string token, string hookPhrase, bool curiosity, bool korean)
+    private static string ComposeTitle(string core, string token, string hookPhrase, bool curiosity)
     {
         // A(정보형): "{core} {n/N편} · {hook}"  ·  B(호기심형): "{hook} | {core} {n/N편}"
         var main = token.Length > 0 ? core + " " + token : core;
@@ -563,11 +649,11 @@ public sealed class PlutoYouTubePublishPackService : IPlutoYouTubePublishPackSer
     }
 
     /// <summary>프레이밍별 제목 합성(알 수 없는 프레이밍 → 정보형).</summary>
-    private static string ComposeFramed(string framing, string core, string token, string hookPhrase, bool korean) => framing switch
+    private static string ComposeFramed(string framing, string core, string token, string hookPhrase, string endingSuffix) => framing switch
     {
-        PlutoTitleFramings.CuriosityQuestion => ComposeTitle(core, token, hookPhrase, curiosity: true, korean),
-        PlutoTitleFramings.EndingPrompt => FitTitle(core + (korean ? " — 결말 예상?" : " — guess the ending?"), token),
-        _ => ComposeTitle(core, token, hookPhrase, curiosity: false, korean),
+        PlutoTitleFramings.CuriosityQuestion => ComposeTitle(core, token, hookPhrase, curiosity: true),
+        PlutoTitleFramings.EndingPrompt => FitTitle(core + endingSuffix, token),
+        _ => ComposeTitle(core, token, hookPhrase, curiosity: false),
     };
 
     private static PlutoPublishTitleCandidate EnsureLinkable(string variant, string title, string catalogTitle, string core, string token, string framing)

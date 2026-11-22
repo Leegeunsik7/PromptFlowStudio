@@ -44,8 +44,55 @@ public sealed class PlutoYouTubeCatalogLinker
     /// <summary>렌더 시각과 게시일(날짜 단위) 간 시계/시간대 오차 허용.</summary>
     public const double PublishSkewToleranceHours = 36;
     public const int CandidateScanCount = PlutoRenderCatalogService.Capacity;
+    /// <summary>🌐 Step 31 — 내보내기 헤더 언어가 같은 로캘 형제에 주는 동점 해소 가점(모호 여유보다 큼 · 제목 유사도 0.12 이상 차이는 뒤집지 못함).</summary>
+    public const double WeakLocaleBonus = 0.12;
 
-    private static readonly Regex EpisodeRx = new(@"(\d{1,3})\s*/\s*(\d{1,3})\s*편|\b(?:ep|part|episode)\.?\s*(\d{1,3})|제?\s*(\d{1,3})\s*편",
+    /// <summary>🌐 Step 31 — 로캘 변형이 2개 이상인(마스터 + 변형) 가족 루트 집합. 단일 로캘 클립(레거시)은 로캘 필터 대상이 아니다.</summary>
+    public static HashSet<string> LocaleFamilies(IReadOnlyList<PlutoRenderedClipRecord> clips)
+    {
+        var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var c in clips) if (c.ParentClipId is { } p) set.Add(p);
+        return set;
+    }
+
+    /// <summary>
+    /// 🌐 Step 31 — Tier 1 정확 제목 일치를 로캘 가족 안에서 재라우팅(순수 · 결정론). 같은 가족에 정규화 제목이 같은 형제가 여럿이면
+    /// (예: 브랜드명 제목 en/es · <c>Ep.1/3</c> vs <c>Ep. 1/3</c> 정규형 동일) 제목 로캘(강) → 헤더 언어(약) 순으로 고르고, 못 고르면 null(모호 → 미매칭 대기열).
+    /// 강한 제목 로캘이 일치 클립과 다르고 그 로캘 형제가 정확 일치 후보에 없으면 null(교차 로캘 오연결 차단).
+    /// </summary>
+    public static (PlutoRenderedClipRecord? Clip, string? Reason) RouteExactTitleToLocale(PlutoRenderedClipRecord matched, YouTubeAnalyticsRow row, IReadOnlyList<PlutoRenderedClipRecord> clips)
+    {
+        ArgumentNullException.ThrowIfNull(matched);
+        ArgumentNullException.ThrowIfNull(row);
+        ArgumentNullException.ThrowIfNull(clips);
+        var root = matched.LocaleFamilyRoot;
+        var norm = PlutoRenderCatalogService.NormalizeKey(row.Title);
+        var exact = new List<PlutoRenderedClipRecord>(2);
+        var familySize = 0;
+        foreach (var c in clips)
+        {
+            if (!string.Equals(c.LocaleFamilyRoot, root, StringComparison.OrdinalIgnoreCase)) continue;
+            familySize++;
+            if (norm.Length > 0 && string.Equals(PlutoRenderCatalogService.NormalizeKey(c.Title), norm, StringComparison.Ordinal)) exact.Add(c);
+        }
+        if (familySize <= 1) return (matched, null);   // 단일 로캘 클립 — 기존 동작
+        if (exact.Count == 0) exact.Add(matched);       // VideoId 일치 등 제목 외 경로
+        var strong = PlutoMultiLanguageChannelService.InferTitleLocale(row.Title);
+        var weak = PlutoMultiLanguageChannelService.LocaleOfExportLanguage(row.ExportLanguage);
+        if (strong is not null)
+        {
+            foreach (var c in exact) if (string.Equals(c.TargetLocale, strong, StringComparison.OrdinalIgnoreCase)) return (c, null);
+            return (null, "제목 로캘(" + strong + ")과 다른 로캘 변형만 일치");
+        }
+        if (exact.Count == 1) return (exact[0], null);   // 유일 정확 일치는 UI 언어보다 강함
+        if (weak is not null)
+            foreach (var c in exact) if (string.Equals(c.TargetLocale, weak, StringComparison.OrdinalIgnoreCase)) return (c, null);
+        return (null, "로캘 변형 모호(같은 제목 " + exact.Count.ToString(System.Globalization.CultureInfo.InvariantCulture) + "개)");
+    }
+
+    // 🌐 Step 31 — 로캘 편 토큰: 1/3편 · 第1/3話 · 第2話 · Ep.1/3 · Ep. 1/3 · Episodio 2 · Parte 2 · Capítulo 2 (n/N 의 총 편수까지 소비 → 토큰 잔여물 없음)
+    private static readonly Regex EpisodeRx = new(
+        @"(?<n>\d{1,3})\s*/\s*\d{1,3}\s*(?:편|話|话)|第\s*(?<n>\d{1,3})\s*(?:/\s*\d{1,3}\s*)?(?:話|话|回|集)|\b(?:episodio|episode|cap[ií]tulo|parte|part|cap|ep)\.?\s*(?<n>\d{1,3})(?:\s*/\s*\d{1,3})?|제?\s*(?<n>\d{1,3})\s*편",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled, TimeSpan.FromMilliseconds(200));
 
     private static readonly HashSet<string> StopTokens = new(StringComparer.Ordinal) { "shorts", "short", "쇼츠", "숏츠", "mp4", "mov", "webm", "youtube", "유튜브" };
@@ -61,13 +108,8 @@ public sealed class PlutoYouTubeCatalogLinker
         try
         {
             var m = EpisodeRx.Match(title);
-            if (!m.Success) return 0;
-            for (var g = 1; g <= 4; g++)
-            {
-                if (g == 2 || !m.Groups[g].Success) continue;
-                return int.TryParse(m.Groups[g].Value, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var n) ? n : 0;
-            }
-            return 0;
+            if (!m.Success || !m.Groups["n"].Success) return 0;
+            return int.TryParse(m.Groups["n"].Value, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var n) ? n : 0;
         }
         catch (RegexMatchTimeoutException) { return 0; }
     }
@@ -141,6 +183,9 @@ public sealed class PlutoYouTubeCatalogLinker
     {
         if (string.IsNullOrWhiteSpace(row.Title)) return (null, 0, "제목 없음");
         if (row.PublishedAtUtc is not { } published) return (null, 0, "게시일 없음");
+        var families = LocaleFamilies(clips);
+        var strong = PlutoMultiLanguageChannelService.InferTitleLocale(row.Title);
+        var weak = strong is null ? PlutoMultiLanguageChannelService.LocaleOfExportLanguage(row.ExportLanguage) : null;
         PlutoRenderedClipRecord? best = null;
         double bestScore = 0, second = 0;
         foreach (var c in clips)
@@ -149,10 +194,14 @@ public sealed class PlutoYouTubeCatalogLinker
             if (excludedClipIds is not null && excludedClipIds.Contains(c.VideoId)) continue;
             if (!InPublishWindow(c.RenderedAtUtc, published)) continue;
             if (EpisodeConflict(row.Title, c)) continue;   // 🛡️ Step 24 — 편 번호가 카탈로그 RenderMode(시리즈 n/N편)에만 있는 경우
+            var multi = families.Contains(c.LocaleFamilyRoot);
+            if (multi && strong is not null && !string.Equals(c.TargetLocale, strong, StringComparison.OrdinalIgnoreCase)) continue;   // 🌐 다른 로캘 변형 차단
             var sim = TitleSimilarity(row.Title, c.Title);
             if (sim < MinFuzzyScore) continue;
             var days = Math.Max(0.0, (published - c.RenderedAtUtc).TotalDays);
             var score = sim + 0.05 * (1.0 - Math.Min(1.0, days / PublishWindowDays));
+            // 🌐 약한 신호(Studio UI 언어)는 같은 가족 형제 간 동점만 가름 — 제목이 훨씬 잘 맞는 다른 로캘을 뒤집지 못함
+            if (multi && weak is not null && string.Equals(c.TargetLocale, weak, StringComparison.OrdinalIgnoreCase)) score += WeakLocaleBonus;
             if (score > bestScore) { second = bestScore; bestScore = score; best = c; }
             else if (score > second) second = score;
         }
@@ -192,10 +241,13 @@ public sealed class PlutoYouTubeCatalogLinker
         ArgumentNullException.ThrowIfNull(row);
         ArgumentNullException.ThrowIfNull(clips);
         var list = new List<(PlutoRenderedClipRecord Clip, double Score, int Order)>();
+        var families = LocaleFamilies(clips);
+        var strong = PlutoMultiLanguageChannelService.InferTitleLocale(row.Title);
         for (var i = 0; i < clips.Count; i++)
         {
             var c = clips[i];
             if (c.YouTubeVideoId is not null || EpisodeConflict(row.Title, c)) continue;
+            if (strong is not null && families.Contains(c.LocaleFamilyRoot) && !string.Equals(c.TargetLocale, strong, StringComparison.OrdinalIgnoreCase)) continue;   // 🌐 교차 로캘 제안 제외
             var sim = TitleSimilarity(row.Title, c.Title);
             var score = sim;
             if (row.PublishedAtUtc is { } p)
@@ -223,6 +275,7 @@ public sealed class PlutoYouTubeCatalogLinker
         var results = new PlutoYouTubeLinkResult[rows.Count];
         var claimed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var pendingFuzzy = new List<int>();
+        IReadOnlyList<PlutoRenderedClipRecord>? snapshot = null;
 
         // 1차: 정확 매칭(Tier 1)을 먼저 모두 확정 → 퍼지 매칭이 정확 매칭 대상 클립을 가로채지 않음
         for (var i = 0; i < rows.Count; i++)
@@ -239,6 +292,18 @@ public sealed class PlutoYouTubeCatalogLinker
             }
             if (clip is null && row.Title is { } t && (clip = await _catalog.FindByVideoIdOrTitleAsync(t, ct).ConfigureAwait(false)) is not null)
                 tier = PlutoYouTubeLinkTier.ExactLocal;
+            // 🌐 Step 31 — 정확 제목 일치는 첫 적중 클립이라 로캘 형제(같은 제목 en/es 등) 중 엉뚱한 채널 변형을 고를 수 있음 → 가족 안 재라우팅
+            if (clip is not null && tier == PlutoYouTubeLinkTier.ExactLocal)
+            {
+                snapshot ??= await _catalog.GetRecentClipsAsync(CandidateScanCount, ct).ConfigureAwait(false);
+                var (routed, why) = RouteExactTitleToLocale(clip, row, snapshot);
+                if (routed is null)
+                {
+                    results[i] = new PlutoYouTubeLinkResult(null, PlutoYouTubeLinkTier.Unmatched, 0, why);
+                    continue;
+                }
+                clip = routed;
+            }
             // 정확 제목 일치라도 이미 다른 YouTube ID에 연결된 클립이면 거부(재업로드 · 동명 영상)
             if (clip is not null && tier == PlutoYouTubeLinkTier.ExactLocal && clip.YouTubeVideoId is { } bound && row.YouTubeVideoId is { } rowYt
                 && !string.Equals(bound, rowYt, StringComparison.Ordinal))
@@ -262,7 +327,7 @@ public sealed class PlutoYouTubeCatalogLinker
         }
 
         if (pendingFuzzy.Count == 0) return results;
-        var clips = await _catalog.GetRecentClipsAsync(CandidateScanCount, ct).ConfigureAwait(false);
+        var clips = await _catalog.GetRecentClipsAsync(CandidateScanCount, ct).ConfigureAwait(false);   // 바인딩 반영 최신본(1차 스냅샷 재사용 금지)
         foreach (var i in pendingFuzzy)
         {
             ct.ThrowIfCancellationRequested();

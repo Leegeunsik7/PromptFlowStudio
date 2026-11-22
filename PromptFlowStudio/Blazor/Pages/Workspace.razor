@@ -423,6 +423,15 @@
                         </div>
                     }
                     @if (_ytPairToast is { } ypt) { <span class="ws-pcore on" role="status" data-yt-pair-toast="1">@(ypt)</span> }
+                    <span role="group" aria-label="지역 채널 로캘" data-publish-locales="1" style="display:inline-flex;gap:2px;align-items:center">
+                        @for (var li = 0; li < PublishLocaleChips.Length; li++)
+                        {
+                            var lc = PublishLocaleChips[li];
+                            var lcOn = string.Equals(_publishLocale, lc.Locale, StringComparison.Ordinal);
+                            if (li > 0) { <span aria-hidden="true">·</span> }
+                            <button class="ws-back @(lcOn ? "on" : "")" data-publish-locale="@(lc.Locale)" aria-pressed="@(lcOn ? "true" : "false")" @onclick="@(() => SelectPublishLocale(lc.Locale))" disabled="@(_publishPackBusy)" title="@(lc.Locale) 지역 채널용 업로드 패키지 — 마스터 렌더를 {클립ID}::@(lc.Locale) 변형으로 분기(독립 YouTube 연결 · 성숙도 · 기획 채점) · 로캘 편 토큰 · 훅 · 해시태그 · 설명/CTA · {영상}_@(lc.Locale)_publish_pack.txt">@(lc.Label)</button>
+                        }
+                    </span>
                     <button class="ws-back" data-publish-pack="1" @onclick="GeneratePublishPackAsync" disabled="@(_publishPackBusy || (_catalogClips.Count == 0 && string.IsNullOrWhiteSpace(_perfVideoId)))" title="활성 렌더의 주제 · n/N편 · 승리 훅/태그 · 시리즈 연속성 · 오답 노트 기준으로 A/B 제목 · 설명 · 고정 댓글 · 해시태그를 만들어 복사 — 편 표기를 지켜 게시 후 내보내기가 자동 연결됩니다">[📋 업로드 패키지 생성/복사]</button>
                     @if (_publishPack is { } ppk)
                     {
@@ -4991,6 +5000,20 @@
     private string? _publishPackToast;
     private bool _publishPackBusy;
 
+    // ── 🌐 Step 31 — 다국어 지역 채널 선택(KO · EN · JA · ES) ──
+    private static readonly (string Locale, string Label)[] PublishLocaleChips = { ("ko-KR", "KO"), ("en-US", "EN"), ("ja-JP", "JA"), ("es-ES", "ES") };
+    private string _publishLocale = PromptFlowStudio.Services.Pluto.PlutoMultiLanguageChannelService.DefaultLocale;
+
+    /// <summary>🌐 로캘 전환 — 이전 로캘 패키지를 비워 다른 채널용 제목/사이드카가 저장되지 않게 함.</summary>
+    private void SelectPublishLocale(string locale)
+    {
+        if (_publishPackBusy || string.Equals(_publishLocale, locale, StringComparison.Ordinal)) return;
+        _publishLocale = locale;
+        _publishPack = null;
+        _publishPackClip = null;
+        _publishPackToast = null;
+    }
+
     /// <summary>🅰️🅱️ Step 25 — 제목 A/B 단일 복사 + 카탈로그에 선택 변형 기록(실측 CTR 귀속 기준).</summary>
     private async Task CopyPublishTitleAsync(string variant)
     {
@@ -5047,7 +5070,26 @@
                 ? ser.SeriesTheme : PromptFlowStudio.Services.Pluto.PlutoSeriesArcMemoryService.SeriesThemeOf(title);
             var hook = clip?.HookStyle ?? _perfHookStyle;
             IReadOnlyList<string> tags = clip?.Tags ?? (string.IsNullOrWhiteSpace(_perfStyleTags) ? Array.Empty<string>() : SplitPerfTags(_perfStyleTags));
-            var req = new PromptFlowStudio.Services.Pluto.PlutoPublishPackRequest(theme, title, n, total, hook, tags) { IsShorts = !string.Equals(_perfPlatform, "Instagram Reels", StringComparison.Ordinal) };
+            // 🌐 Step 31 — 선택 로캘이 마스터와 다르면 {클립ID}::{로캘} 변형으로 분기(카탈로그 제목 = 로캘 편 토큰 · 게시 후 내보내기가 정확한 변형에 연결)
+            string? targetLocale = null;
+            if (clip is not null && EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoRenderCatalogService)) is PromptFlowStudio.Services.Pluto.IPlutoRenderCatalogService cat)
+            {
+                var channels = EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoMultiLanguageChannelService)) as PromptFlowStudio.Services.Pluto.IPlutoMultiLanguageChannelService;
+                var token = n > 0 && total > 0 && channels is not null ? channels.FormatEpisodeToken(_publishLocale, n, total) : "";
+                var locTitle = PromptFlowStudio.Services.Pluto.PlutoYouTubePublishPackService.FitTitle(PromptFlowStudio.Services.Pluto.PlutoYouTubePublishPackService.StripEpisodeToken(title), token);
+                if (await cat.BranchLocaleVariantAsync(clip.VideoId, _publishLocale, locTitle, null, _mediaCts.Token) is { } branched)
+                {
+                    clip = branched;
+                    if (branched.IsLocaleVariant)
+                    {
+                        title = branched.Title;
+                        theme = PromptFlowStudio.Services.Pluto.PlutoYouTubePublishPackService.StripEpisodeToken(branched.Title);
+                        targetLocale = branched.TargetLocale;
+                    }
+                }
+            }
+            else if (clip is null && !string.Equals(_publishLocale, PromptFlowStudio.Services.Pluto.PlutoMultiLanguageChannelService.DefaultLocale, StringComparison.Ordinal)) targetLocale = _publishLocale;
+            var req = new PromptFlowStudio.Services.Pluto.PlutoPublishPackRequest(theme, title, n, total, hook, tags) { IsShorts = !string.Equals(_perfPlatform, "Instagram Reels", StringComparison.Ordinal), TargetLocale = targetLocale };
             var pack = await svc.GenerateAsync(req, _mediaCts.Token);
             _publishPack = pack;
             _publishPackClip = clip;

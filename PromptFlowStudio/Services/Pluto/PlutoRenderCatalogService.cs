@@ -74,6 +74,18 @@ public sealed record PlutoRenderedClipRecord(string VideoId, string Title, strin
 
     /// <summary>🎯 적용 기획안 추적 중.</summary>
     public bool HasAppliedBrief => !string.IsNullOrEmpty(AppliedBriefId);
+
+    /// <summary>🌐 Step 31 — 업로드 대상 지역 채널 로캘(레거시 → <c>ko-KR</c> · 변형 ID <c>{Base}::{Locale}</c> 이면 ID 로캘이 우선).</summary>
+    public string TargetLocale { get; init; } = PlutoMultiLanguageChannelService.DefaultLocale;
+
+    /// <summary>🌐 Step 31 — 로캘 변형의 마스터 클립 ID(마스터 · 레거시 → null · 변형 ID 에서 파생).</summary>
+    public string? ParentClipId { get; init; }
+
+    /// <summary>🌐 로캘 변형 레코드.</summary>
+    public bool IsLocaleVariant => ParentClipId is not null;
+
+    /// <summary>🌐 로캘 가족 루트(마스터 ID).</summary>
+    public string LocaleFamilyRoot => ParentClipId ?? VideoId;
 }
 
 /// <summary>🅰️🅱️ Step 25 — 제목 귀속 상태 상수.</summary>
@@ -150,6 +162,13 @@ public interface IPlutoRenderCatalogService
 
     /// <summary>🎯 Step 27 — 적용 기획안 채점 결과를 게이트 안에서 원자적으로 1회 기록(미추적 · 이미 채점 → false = 정확히 1회 CAS). 기본 구현 = 미지원(false).</summary>
     Task<bool> TryRecordBriefOutcomeAsync(string clipVideoId, double surpriseDelta, CancellationToken ct = default) => Task.FromResult(false);
+
+    /// <summary>
+    /// 🌐 Step 31 — 마스터 클립을 <c>{BaseClipId}::{Locale}</c> 변형으로 분기(게이트 안 원자 · 멱등). 변형은 독립 YouTube 1:1 연결 · 성숙도 · 기획 채점을 가진다.
+    /// 마스터 로캘과 같은 로캘 → 마스터 그대로 반환(중복 레코드 금지) · 마스터 없음/로캘 형식 위반 → null. 기본 구현 = 미지원(null).
+    /// </summary>
+    Task<PlutoRenderedClipRecord?> BranchLocaleVariantAsync(string baseClipId, string locale, string? localizedTitle = null, string? localizedOutputPath = null, CancellationToken ct = default)
+        => Task.FromResult<PlutoRenderedClipRecord?>(null);
 }
 
 /// <summary>
@@ -224,6 +243,8 @@ public sealed class PlutoRenderCatalogService : IPlutoRenderCatalogService, IPlu
         public string? AppliedBriefTheme { get; set; }
         public DateTimeOffset? AppliedBriefAppliedAtUtc { get; set; }
         public double? AppliedBriefSurpriseDelta { get; set; }
+        public string? TargetLocale { get; set; }
+        public string? ParentClipId { get; set; }
     }
 
     /// <summary>워터마크 직렬화 DTO.</summary>
@@ -277,7 +298,18 @@ public sealed class PlutoRenderCatalogService : IPlutoRenderCatalogService, IPlu
             YouTubeVideoId = YouTubeStudioAnalyticsNormalizer.IsYouTubeVideoId(r.YouTubeVideoId?.Trim()) ? r.YouTubeVideoId!.Trim() : null,
             YouTubeWatermark = r.YouTubeWatermark is { Views: >= 0, Stage: >= 0 } w ? w : null,
         };
-        return SanitizeAppliedBrief(SanitizeTitleAttribution(clean, r), r);
+        return SanitizeLocale(SanitizeAppliedBrief(SanitizeTitleAttribution(clean, r), r), r);
+    }
+
+    /// <summary>
+    /// 🌐 Step 31 — 로캘 정화: 변형 ID(<c>{Base}::{Locale}</c>)면 로캘 · 부모를 ID 에서 파생(필드 누락 · 불일치 · 구버전 PC 왕복 후에도 복원) ·
+    /// 마스터는 부모 없음 · 로캘 형식 위반 → <c>ko-KR</c>.
+    /// </summary>
+    private static PlutoRenderedClipRecord SanitizeLocale(PlutoRenderedClipRecord clean, PlutoRenderedClipRecord r)
+    {
+        var v = PlutoMultiLanguageChannelService.ParseVariantClipId(clean.VideoId);
+        if (v.Locale is { } idLocale && v.BaseClipId.Length > 0) return clean with { TargetLocale = idLocale, ParentClipId = v.BaseClipId };
+        return clean with { TargetLocale = PlutoMultiLanguageChannelService.NormalizeLocale(r.TargetLocale) ?? PlutoMultiLanguageChannelService.DefaultLocale, ParentClipId = null };
     }
 
     private static string? OptField(string? v) { var c = Clip(v); return c.Length > 0 ? c : null; }
@@ -336,6 +368,7 @@ public sealed class PlutoRenderCatalogService : IPlutoRenderCatalogService, IPlu
         AppliedBriefTitleFraming = d.AppliedBriefTitleFraming, AppliedBriefEvaluated = d.AppliedBriefEvaluated, AppliedBriefKind = d.AppliedBriefKind,
         AppliedBriefHookStyle = d.AppliedBriefHookStyle, AppliedBriefColorLookId = d.AppliedBriefColorLookId, AppliedBriefBgmMood = d.AppliedBriefBgmMood,
         AppliedBriefTheme = d.AppliedBriefTheme, AppliedBriefAppliedAtUtc = d.AppliedBriefAppliedAtUtc, AppliedBriefSurpriseDelta = d.AppliedBriefSurpriseDelta,
+        TargetLocale = d.TargetLocale ?? PlutoMultiLanguageChannelService.DefaultLocale, ParentClipId = d.ParentClipId,
     };
 
     private static ClipDto ToDto(PlutoRenderedClipRecord r) => new()
@@ -350,6 +383,7 @@ public sealed class PlutoRenderCatalogService : IPlutoRenderCatalogService, IPlu
         AppliedBriefTitleFraming = r.AppliedBriefTitleFraming, AppliedBriefEvaluated = r.AppliedBriefEvaluated, AppliedBriefKind = r.AppliedBriefKind,
         AppliedBriefHookStyle = r.AppliedBriefHookStyle, AppliedBriefColorLookId = r.AppliedBriefColorLookId, AppliedBriefBgmMood = r.AppliedBriefBgmMood,
         AppliedBriefTheme = r.AppliedBriefTheme, AppliedBriefAppliedAtUtc = r.AppliedBriefAppliedAtUtc, AppliedBriefSurpriseDelta = r.AppliedBriefSurpriseDelta,
+        TargetLocale = r.TargetLocale, ParentClipId = r.ParentClipId,
     };
 
     private async Task EnsureLoadedLockedAsync(CancellationToken ct)
@@ -590,6 +624,65 @@ public sealed class PlutoRenderCatalogService : IPlutoRenderCatalogService, IPlu
         var delta = Math.Clamp(surpriseDelta, -100.0, 100.0);
         return await MutateClipAsync(clipVideoId.Trim(),
             c => !c.HasAppliedBrief || c.AppliedBriefEvaluated ? c : c with { AppliedBriefEvaluated = true, AppliedBriefSurpriseDelta = delta }, ct).ConfigureAwait(false);
+    }
+
+    public async Task<PlutoRenderedClipRecord?> BranchLocaleVariantAsync(string baseClipId, string locale, string? localizedTitle = null, string? localizedOutputPath = null, CancellationToken ct = default)
+    {
+        var loc = PlutoMultiLanguageChannelService.NormalizeLocale(locale);
+        if (string.IsNullOrWhiteSpace(baseClipId) || loc is null) return null;
+        var baseId = PlutoMultiLanguageChannelService.ParseVariantClipId(baseClipId).BaseClipId;   // 변형의 변형 → 마스터 기준
+        if (baseId.Length == 0) return null;
+        var variantId = baseId + PlutoMultiLanguageChannelService.VariantSeparator + loc;
+        if (variantId.Length > MaxFieldLength) return null;
+        PlutoRenderedClipRecord? result;
+        var changed = false;
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            await EnsureLoadedLockedAsync(ct).ConfigureAwait(false);
+            int masterIdx = -1, variantIdx = -1;
+            for (var i = 0; i < _clips.Count; i++)
+            {
+                if (masterIdx < 0 && string.Equals(_clips[i].VideoId, baseId, StringComparison.OrdinalIgnoreCase)) masterIdx = i;
+                else if (variantIdx < 0 && string.Equals(_clips[i].VideoId, variantId, StringComparison.OrdinalIgnoreCase)) variantIdx = i;
+            }
+            if (masterIdx < 0) return null;
+            var master = _clips[masterIdx];
+            if (string.Equals(master.TargetLocale, loc, StringComparison.OrdinalIgnoreCase)) return master;   // 🛡️ 원본 로캘 = 마스터(같은 채널 이중 레코드 금지)
+            var title = Clip(localizedTitle);
+            var output = localizedOutputPath?.Trim() ?? string.Empty;
+            if (variantIdx >= 0)
+            {
+                var cur = _clips[variantIdx];
+                // 🧊 게시(연결) 후엔 제목/경로 동결 — 실측 귀속 기준 제목이 바뀌지 않게
+                if (cur.YouTubeVideoId is null && ((title.Length > 0 && !string.Equals(title, cur.Title, StringComparison.Ordinal)) || (output.Length > 0 && !string.Equals(output, cur.OutputPath, StringComparison.Ordinal))))
+                {
+                    cur = cur with { Title = title.Length > 0 ? title : cur.Title, OutputPath = output.Length > 0 ? output : cur.OutputPath };
+                    _clips[variantIdx] = cur;
+                    changed = true;
+                }
+                result = cur;
+            }
+            else
+            {
+                // 렌더 메타 · 기획 출처는 상속, 게시 · 학습 상태는 전부 초기화(독립 1:1 연결 · 성숙도 · 채점)
+                var v = Sanitize(master with
+                {
+                    VideoId = variantId, Title = title.Length > 0 ? title : master.Title, OutputPath = output.Length > 0 ? output : master.OutputPath, TelemetryLogged = false,
+                    YouTubeVideoId = null, YouTubeWatermark = null, SelectedTitleVariant = null, PublishedTitleFraming = null, PublishedTitleText = null,
+                    AlternateTitleFraming = null, AlternateTitleText = null, TitleAttribution = null, AppliedBriefEvaluated = false, AppliedBriefSurpriseDelta = null,
+                    TargetLocale = loc, ParentClipId = baseId,
+                });
+                _clips.Insert(Math.Min(masterIdx + 1, _clips.Count), v);   // 마스터 바로 뒤(최신 렌더를 밀어내지 않음)
+                if (_clips.Count > Capacity) _clips.RemoveRange(Capacity, _clips.Count - Capacity);
+                result = v;
+                changed = true;
+            }
+            if (changed) await PersistLockedAsync(ct).ConfigureAwait(false);   // 영속 실패 → [부분 구제] 메모리 유지
+        }
+        finally { _gate.Release(); }
+        if (changed) RaiseChanged();
+        return result;
     }
 
     /// <summary>클립 1건을 게이트 안에서 변환(동일 → 무기록) · 변경 → 영속 + 통지.</summary>

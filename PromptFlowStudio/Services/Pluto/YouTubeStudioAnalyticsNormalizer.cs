@@ -15,6 +15,8 @@ public sealed record YouTubeAnalyticsRow(string? YouTubeVideoId, string? Title, 
     public long Impressions { get; init; } = -1;
     /// <summary>좋아요(열 없음이면 -1).</summary>
     public long Likes { get; init; } = -1;
+    /// <summary>🌐 Step 31 — 내보내기 헤더 언어(<c>ko</c>/<c>en</c>/<c>ja</c>/<c>es</c> · 미상 → null). Studio UI 언어라 채널 로캘의 약한 신호.</summary>
+    public string? ExportLanguage { get; init; }
 }
 
 /// <summary>📊 정규화된 YouTube Studio 보고서.</summary>
@@ -66,24 +68,34 @@ public static class YouTubeStudioAnalyticsNormalizer
     public static Columns MapHeader(string[] header, out string language)
     {
         int id = -1, title = -1, publish = -1, views = -1, avg = -1, impr = -1, ctr = -1, stayed = -1, likes = -1, date = -1;
-        var ko = 0;
+        int ko = 0, ja = 0, es = 0;
         for (var i = 0; i < header.Length; i++)
         {
             var h = NormHeader(header[i]);
             if (h.Length == 0) continue;
             foreach (var ch in h) if (ch >= '가' && ch <= '힣') { ko++; break; }
-            if (ctr < 0 && (h.Contains("클릭률", StringComparison.Ordinal) || h.Contains("clickthrough", StringComparison.Ordinal))) ctr = i;
-            else if (stayed < 0 && (h.Contains("스치듯", StringComparison.Ordinal) || h.Contains("stayedtowatch", StringComparison.Ordinal))) stayed = i;
-            else if (avg < 0 && (h.Contains("평균조회율", StringComparison.Ordinal) || h.Contains("averagepercentageviewed", StringComparison.Ordinal))) avg = i;
-            else if (publish < 0 && (h.Contains("게시", StringComparison.Ordinal) || h.Contains("publish", StringComparison.Ordinal))) publish = i;
-            else if (title < 0 && (h.Contains("제목", StringComparison.Ordinal) || h.Contains("title", StringComparison.Ordinal))) title = i;
-            else if (impr < 0 && (h is "노출수" or "impressions")) impr = i;
-            else if (views < 0 && (h is "조회수" or "views")) views = i;
-            else if (likes < 0 && (h is "좋아요" or "likes" or "좋아요수")) likes = i;
-            else if (date < 0 && (h is "날짜" or "date" or "일자")) date = i;
-            else if (id < 0 && (h is "동영상" or "videoid" or "video" or "content" or "콘텐츠" or "동영상id")) id = i;
+            foreach (var ch in h) if (ch is >= '぀' and <= 'ヿ' or >= '一' and <= '鿿') { ja++; break; }
+            if (IsSpanishHeader(h)) es++;
+            // 🌐 Step 31 — 일본어(動画 · 視聴回数 · 平均再生率 · インプレッションのクリック率 · 視聴を選択) · 스페인어(Vídeo · Visualizaciones · Porcentaje medio visto ·
+            //    Tasa de clics de las impresiones · Se quedaron a ver) 헤더 — 구체적인 열(클릭률 · 시청 유지) 먼저
+            if (ctr < 0 && (h.Contains("클릭률", StringComparison.Ordinal) || h.Contains("clickthrough", StringComparison.Ordinal) || h.Contains("クリック率", StringComparison.Ordinal)
+                || h.Contains("tasadeclics", StringComparison.Ordinal))) ctr = i;
+            else if (stayed < 0 && (h.Contains("스치듯", StringComparison.Ordinal) || h.Contains("stayedtowatch", StringComparison.Ordinal) || h.Contains("視聴を選択", StringComparison.Ordinal)
+                || h.Contains("sequedaronaver", StringComparison.Ordinal))) stayed = i;
+            else if (avg < 0 && (h.Contains("평균조회율", StringComparison.Ordinal) || h.Contains("averagepercentageviewed", StringComparison.Ordinal) || h.Contains("平均再生率", StringComparison.Ordinal)
+                || h.Contains("porcentajemediovisto", StringComparison.Ordinal))) avg = i;
+            else if (publish < 0 && (h.Contains("게시", StringComparison.Ordinal) || h.Contains("publish", StringComparison.Ordinal) || h.Contains("公開", StringComparison.Ordinal)
+                || h.Contains("publicaci", StringComparison.Ordinal))) publish = i;
+            else if (title < 0 && (h.Contains("제목", StringComparison.Ordinal) || h.Contains("title", StringComparison.Ordinal) || h.Contains("タイトル", StringComparison.Ordinal)
+                || h.Contains("título", StringComparison.Ordinal) || h.Contains("titulo", StringComparison.Ordinal))) title = i;
+            else if (impr < 0 && (h is "노출수" or "impressions" or "インプレッション数" or "インプレッション" or "impresiones")) impr = i;
+            else if (views < 0 && (h is "조회수" or "views" or "視聴回数" or "visualizaciones")) views = i;
+            else if (likes < 0 && (h is "좋아요" or "likes" or "좋아요수" or "高評価数" or "高評価" or "megusta")) likes = i;
+            else if (date < 0 && (h is "날짜" or "date" or "일자" or "日付" or "fecha")) date = i;
+            else if (id < 0 && (h is "동영상" or "videoid" or "video" or "content" or "콘텐츠" or "동영상id" or "動画" or "コンテンツ" or "vídeo" or "contenido")) id = i;
         }
-        language = ko > 0 ? "ko" : "en";
+        // 한글 우선(기존 동작) → 가나/한자 → 스페인어 헤더 → 영어
+        language = ko > 0 ? "ko" : ja > 0 ? "ja" : es > 0 ? "es" : "en";
         return new Columns(id, title, publish, views, avg, impr, ctr, stayed, likes, date);
     }
 
@@ -151,7 +163,8 @@ public static class YouTubeStudioAnalyticsNormalizer
         {
             var en = CultureInfo.GetCultureInfo("en-US");
             if (DateTimeOffset.TryParseExact(s, EnDateFormats, en, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal | DateTimeStyles.AllowWhiteSpaces, out value)) return true;
-            return DateTimeOffset.TryParse(s, en, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out value);
+            if (DateTimeOffset.TryParse(s, en, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out value)) return true;
+            return TryParseSpanishDate(s, out value);   // 🌐 Step 31 — "3 nov 2026" · "3 de noviembre de 2026"(en-US 파서 실패 → 게시일 null → Tier 2 불가 방지)
         }
         // 숫자 3개 추출: 첫 수가 31 초과면 년-월-일, 아니면 월/일/년
         Span<int> nums = stackalloc int[3];
@@ -176,7 +189,44 @@ public static class YouTubeStudioAnalyticsNormalizer
 
     private static bool IsTotalRow(string? key)
         => key is not null && (key.Equals("합계", StringComparison.Ordinal) || key.Equals("total", StringComparison.OrdinalIgnoreCase) || key.Equals("총계", StringComparison.Ordinal)
-            || key.Equals("totals", StringComparison.OrdinalIgnoreCase));
+            || key.Equals("totals", StringComparison.OrdinalIgnoreCase) || key.Equals("合計", StringComparison.Ordinal) || key.Equals("total general", StringComparison.OrdinalIgnoreCase));
+
+    private static readonly string[] SpanishMonths = { "ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic" };
+
+    /// <summary>🌐 Step 31 — 스페인어 헤더 표식(언어 판정용).</summary>
+    private static bool IsSpanishHeader(string h)
+        => h is "vídeo" or "visualizaciones" or "impresiones" or "megusta" or "fecha" or "contenido" || h.Contains("título", StringComparison.Ordinal)
+            || h.Contains("tasadeclics", StringComparison.Ordinal) || h.Contains("sequedaronaver", StringComparison.Ordinal) || h.Contains("porcentajemediovisto", StringComparison.Ordinal)
+            || h.Contains("publicaci", StringComparison.Ordinal);
+
+    /// <summary>
+    /// 🌐 Step 31 — 스페인어 Studio 날짜(<c>3 nov 2026</c> · <c>3 nov. 2026</c> · <c>3 de noviembre de 2026</c> · <c>sept</c>) 수동 파싱(ICU 약어 차이에 무관 · 결정론).
+    /// </summary>
+    public static bool TryParseSpanishDate(string? raw, out DateTimeOffset value)
+    {
+        value = default;
+        if (string.IsNullOrWhiteSpace(raw)) return false;
+        int day = -1, year = -1, month = -1;
+        foreach (var part in raw.Trim().ToLowerInvariant().Split(new[] { ' ', ',', '.', '/', '-' }, StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (part == "de") continue;
+            if (char.IsAsciiDigit(part[0]))
+            {
+                if (!int.TryParse(part, NumberStyles.None, CultureInfo.InvariantCulture, out var n)) return false;
+                if (day < 0 && n is >= 1 and <= 31) day = n;
+                else if (year < 0 && n >= 1000) year = n;
+                else return false;
+                continue;
+            }
+            if (month >= 0 || part.Length < 3) return false;
+            var key = part[..3];
+            for (var m = 0; m < SpanishMonths.Length; m++) if (key == SpanishMonths[m]) { month = m + 1; break; }
+            if (month < 0) return false;
+        }
+        if (day < 0 || month < 0 || year < 2005 || year > 2100 || day > DateTime.DaysInMonth(year, month)) return false;
+        value = new DateTimeOffset(year, month, day, 0, 0, 0, TimeSpan.Zero);
+        return true;
+    }
 
     /// <summary>YouTube 동영상 ID 형식(11자 · 영문/숫자/<c>-</c>/<c>_</c>).</summary>
     public static bool IsYouTubeVideoId(string? s)
@@ -224,7 +274,7 @@ public static class YouTubeStudioAnalyticsNormalizer
             var yr = new YouTubeAnalyticsRow(ytId, title, published, views, hook, !hasStayed, completion, hasAvg ? rawAvg : -1, ctrPct, !hasCtr);
             if (TryParseCount(Cell(row, c.Impressions), out var impr)) yr = yr with { Impressions = impr };
             if (TryParseCount(Cell(row, c.Likes), out var likes)) yr = yr with { Likes = likes };
-            rows.Add(yr);
+            rows.Add(yr with { ExportLanguage = lang });
         }
         return new YouTubeAnalyticsReport(rows, noise, invalid, lang, sourceName);
     }
@@ -334,6 +384,8 @@ public static class YouTubeStudioAnalyticsNormalizer
         return name.Contains("youtube", StringComparison.OrdinalIgnoreCase) || name.Contains("studio", StringComparison.OrdinalIgnoreCase)
             || name.Contains("콘텐츠", StringComparison.Ordinal) || name.Contains("content", StringComparison.OrdinalIgnoreCase)
             || name.Contains("표 데이터", StringComparison.Ordinal) || name.Contains("table data", StringComparison.OrdinalIgnoreCase)
-            || name.Contains("동영상", StringComparison.Ordinal);
+            || name.Contains("동영상", StringComparison.Ordinal)
+            || name.Contains("コンテンツ", StringComparison.Ordinal) || name.Contains("表データ", StringComparison.Ordinal) || name.Contains("動画", StringComparison.Ordinal)
+            || name.Contains("datos de la tabla", StringComparison.OrdinalIgnoreCase) || name.Contains("contenido", StringComparison.OrdinalIgnoreCase);
     }
 }

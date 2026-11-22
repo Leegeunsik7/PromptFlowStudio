@@ -306,6 +306,9 @@ public sealed class PlutoConflictMergeService
         return Bool(clip, "AppliedBriefEvaluated") && clip["AppliedBriefSurpriseDelta"] is JsonValue ? 2 : 1;
     }
 
+    /// <summary>🌐 Step 31 — 로캘 변형 필드.</summary>
+    private static readonly string[] LocaleFields = { "TargetLocale", "ParentClipId" };
+
     private static JsonObject MergeCatalog(JsonObject a, JsonObject b)
     {
         var map = new Dictionary<string, JsonObject>(StringComparer.OrdinalIgnoreCase);
@@ -320,6 +323,9 @@ public sealed class PlutoConflictMergeService
                 var rest = ReferenceEquals(pick, cur) ? c : cur;
                 // 📺 Step 22 — YouTube 연결은 빈 쪽을 채움(최신 렌더 쪽이 미연결이어도 상대 PC가 학습한 연결 유지)
                 if (Str(pick, "YouTubeVideoId").Length == 0 && Str(rest, "YouTubeVideoId").Length > 0) pick["YouTubeVideoId"] = Str(rest, "YouTubeVideoId");
+                // 🌐 Step 31 — 로캘 · 부모는 빈 쪽을 채움(구버전 PC가 필드 없이 다시 쓴 쪽이 최신이어도 변형 계보 유지 · 적재 시 ID 파생으로 재검증)
+                foreach (var lf in LocaleFields)
+                    if (Str(pick, lf).Length == 0 && Str(rest, lf).Length > 0) pick[lf] = Str(rest, lf);
                 // 📈 반영 워터마크는 앞선 쪽(조회수 → 단계) — 상대 PC가 이미 반영한 성숙도 증분을 다시 적용하지 않음
                 if (rest["YouTubeWatermark"] is JsonObject rw && (pick["YouTubeWatermark"] is not JsonObject pw || WatermarkAhead(rw, pw)))
                     pick["YouTubeWatermark"] = rw.DeepClone();

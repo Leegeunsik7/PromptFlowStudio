@@ -200,8 +200,14 @@ public sealed class NonBlockingOmnichannelPublishingGuard : IDisposable
                 Step(Math.Clamp((now - last) / 1000.0, 0.001, 0.1)); last = now;
             }
             catch (Exception ex) { PromptFlowStudio.Program.Log("LiveToReels.Upload", ex); }
-            if (ActiveLegs == 0) { _wake.Wait(200); _wake.Reset(); }
-            else Thread.Sleep(TickMs);
+            if (!_running) break;
+            // 🧯 Stop() 의 Join(2000) 이 부하로 시간 초과된 뒤 Dispose() 가 _wake 를 폐기하면 Wait/Reset 이 ObjectDisposedException → 배경 스레드 미처리 예외로 프로세스 종료 → 격리
+            try
+            {
+                if (ActiveLegs == 0) { _wake.Wait(200); _wake.Reset(); }
+                else Thread.Sleep(TickMs);
+            }
+            catch (ObjectDisposedException) { break; }
         }
     }
 
