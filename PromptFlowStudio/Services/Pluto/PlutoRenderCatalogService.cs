@@ -17,7 +17,46 @@ public sealed record PlutoRenderedClipRecord(string VideoId, string Title, strin
 
     /// <summary>📈 Step 22 — 마지막으로 학습에 반영한 YouTube 스냅샷(성숙도 증분 학습 기준 · 미반영 → null).</summary>
     public PlutoYouTubeIngestWatermark? YouTubeWatermark { get; init; }
+
+    /// <summary>🅰️🅱️ Step 25 — 크리에이터가 복사한 업로드 제목 변형(<c>"A"</c> · <c>"B"</c> · 미기록 → null).</summary>
+    public string? SelectedTitleVariant { get; init; }
+
+    /// <summary>🅰️🅱️ 선택된 제목의 프레이밍(<see cref="PlutoTitleFramings"/>).</summary>
+    public string? PublishedTitleFraming { get; init; }
+
+    /// <summary>🅰️🅱️ 선택된 제목 원문.</summary>
+    public string? PublishedTitleText { get; init; }
+
+    /// <summary>🅰️🅱️ 전체 패키지 복사 시 아직 확정되지 않은 반대 변형의 프레이밍(실제 게시 제목으로 판정 · 판정 후 null).</summary>
+    public string? AlternateTitleFraming { get; init; }
+
+    /// <summary>🅰️🅱️ 반대 변형 제목 원문(판정 대기).</summary>
+    public string? AlternateTitleText { get; init; }
+
+    /// <summary>🅰️🅱️ 귀속 상태 — <see cref="PlutoTitleAttributionStates"/>(Copied → Confirmed | Diverged).</summary>
+    public string? TitleAttribution { get; init; }
 }
+
+/// <summary>🅰️🅱️ Step 25 — 제목 귀속 상태 상수.</summary>
+public static class PlutoTitleAttributionStates
+{
+    /// <summary>복사만 됨(게시 미확인).</summary>
+    public const string Copied = "Copied";
+    /// <summary>실제 YouTube 제목과 일치 확인 → CTR 귀속 대상.</summary>
+    public const string Confirmed = "Confirmed";
+    /// <summary>게시 전 크리에이터가 제목을 크게 고침 → 귀속 제외(오귀속 방지).</summary>
+    public const string Diverged = "Diverged";
+
+    public static bool IsKnown(string? s) => s is Copied or Confirmed or Diverged;
+}
+
+/// <summary>🅰️🅱️ Step 25 — 업로드 제목 선택 기록 요청.</summary>
+/// <param name="Variant"><c>"A"</c> 또는 <c>"B"</c>.</param>
+/// <param name="Framing">선택 제목 프레이밍.</param>
+/// <param name="Text">선택 제목 원문.</param>
+/// <param name="AlternateFraming">전체 패키지 복사 시 반대 변형 프레이밍(단일 제목 복사 → null).</param>
+/// <param name="AlternateText">전체 패키지 복사 시 반대 변형 원문.</param>
+public sealed record PlutoPublishedTitleSelection(string Variant, string Framing, string Text, string? AlternateFraming = null, string? AlternateText = null);
 
 /// <summary>📈 YouTube 스냅샷 반영 워터마크 — 반영 시점 조회수 · 성숙도 단계(0 = 최초 반영) · 반영 지표.</summary>
 public sealed record PlutoYouTubeIngestWatermark(long Views, int Stage, double HookPct, double CompletionPct, double CtrPct, DateTimeOffset UpdatedUtc);
@@ -63,6 +102,12 @@ public interface IPlutoRenderCatalogService
 
     /// <summary>📈 반영 워터마크 갱신 — 조회수/단계가 기존보다 앞설 때만(단조 · 되감기 거부). 반영됨 → true.</summary>
     Task<bool> UpdateYouTubeWatermarkAsync(string clipVideoId, PlutoYouTubeIngestWatermark watermark, CancellationToken ct = default);
+
+    /// <summary>🅰️🅱️ Step 25 — 복사된 업로드 제목 변형 기록(실측 판정 완료 클립은 동결 · 기록됨 → true). 기본 구현 = 미지원(false).</summary>
+    Task<bool> RecordPublishedTitleAsync(string clipVideoId, PlutoPublishedTitleSelection selection, CancellationToken ct = default) => Task.FromResult(false);
+
+    /// <summary>🅰️🅱️ Step 25 — 연결된 실제 YouTube 제목으로 변형 귀속 판정(Confirmed · Diverged · 변형 교정). 변경됨 → true. 기본 구현 = 미지원(false).</summary>
+    Task<bool> ResolvePublishedTitleAsync(string clipVideoId, string? realizedTitle, CancellationToken ct = default) => Task.FromResult(false);
 }
 
 /// <summary>
@@ -119,6 +164,12 @@ public sealed class PlutoRenderCatalogService : IPlutoRenderCatalogService, IPlu
         public bool TelemetryLogged { get; set; }
         public string? YouTubeVideoId { get; set; }
         public WatermarkDto? YouTubeWatermark { get; set; }
+        public string? SelectedTitleVariant { get; set; }
+        public string? PublishedTitleFraming { get; set; }
+        public string? PublishedTitleText { get; set; }
+        public string? AlternateTitleFraming { get; set; }
+        public string? AlternateTitleText { get; set; }
+        public string? TitleAttribution { get; set; }
     }
 
     /// <summary>워터마크 직렬화 DTO.</summary>
@@ -166,11 +217,33 @@ public sealed class PlutoRenderCatalogService : IPlutoRenderCatalogService, IPlu
                 var c = Clip(t);
                 if (c.Length > 0) tags.Add(c);
             }
-        return new PlutoRenderedClipRecord(Clip(r.VideoId), Clip(r.Title), Clip(r.RenderMode), Clip(r.HookStyle), Clip(r.ColorLookId), Clip(r.BgmMood),
+        var clean = new PlutoRenderedClipRecord(Clip(r.VideoId), Clip(r.Title), Clip(r.RenderMode), Clip(r.HookStyle), Clip(r.ColorLookId), Clip(r.BgmMood),
             tags.ToArray(), r.OutputPath?.Trim() ?? string.Empty, r.RenderedAtUtc, r.TelemetryLogged)
         {
             YouTubeVideoId = YouTubeStudioAnalyticsNormalizer.IsYouTubeVideoId(r.YouTubeVideoId?.Trim()) ? r.YouTubeVideoId!.Trim() : null,
             YouTubeWatermark = r.YouTubeWatermark is { Views: >= 0, Stage: >= 0 } w ? w : null,
+        };
+        return SanitizeTitleAttribution(clean, r);
+    }
+
+    /// <summary>🅰️🅱️ 제목 귀속 필드 정화 — 변형 ∉ {A,B} 또는 원문 없음 → 전부 해제(부분 상태 금지).</summary>
+    private static PlutoRenderedClipRecord SanitizeTitleAttribution(PlutoRenderedClipRecord clean, PlutoRenderedClipRecord r)
+    {
+        var variant = r.SelectedTitleVariant?.Trim();
+        var text = Clip(r.PublishedTitleText);
+        if (variant is not ("A" or "B") || text.Length == 0)
+            return clean with { SelectedTitleVariant = null, PublishedTitleFraming = null, PublishedTitleText = null, AlternateTitleFraming = null, AlternateTitleText = null, TitleAttribution = null };
+        var alt = Clip(r.AlternateTitleText);
+        var framing = Clip(r.PublishedTitleFraming);
+        var altFraming = Clip(r.AlternateTitleFraming);
+        return clean with
+        {
+            SelectedTitleVariant = variant,
+            PublishedTitleFraming = framing.Length > 0 ? framing : PlutoTitleFramings.Unknown,
+            PublishedTitleText = text,
+            AlternateTitleText = alt.Length > 0 ? alt : null,
+            AlternateTitleFraming = alt.Length > 0 ? (altFraming.Length > 0 ? altFraming : PlutoTitleFramings.Unknown) : null,
+            TitleAttribution = PlutoTitleAttributionStates.IsKnown(r.TitleAttribution) ? r.TitleAttribution : PlutoTitleAttributionStates.Copied,
         };
     }
 
@@ -179,6 +252,8 @@ public sealed class PlutoRenderCatalogService : IPlutoRenderCatalogService, IPlu
     {
         YouTubeVideoId = d.YouTubeVideoId,
         YouTubeWatermark = d.YouTubeWatermark is { } w ? new PlutoYouTubeIngestWatermark(w.Views, w.Stage, w.HookPct, w.CompletionPct, w.CtrPct, w.UpdatedUtc) : null,
+        SelectedTitleVariant = d.SelectedTitleVariant, PublishedTitleFraming = d.PublishedTitleFraming, PublishedTitleText = d.PublishedTitleText,
+        AlternateTitleFraming = d.AlternateTitleFraming, AlternateTitleText = d.AlternateTitleText, TitleAttribution = d.TitleAttribution,
     };
 
     private static ClipDto ToDto(PlutoRenderedClipRecord r) => new()
@@ -187,6 +262,8 @@ public sealed class PlutoRenderCatalogService : IPlutoRenderCatalogService, IPlu
         Tags = r.Tags is string[] arr ? arr : new List<string>(r.Tags).ToArray(), OutputPath = r.OutputPath, RenderedAtUtc = r.RenderedAtUtc, TelemetryLogged = r.TelemetryLogged,
         YouTubeVideoId = r.YouTubeVideoId,
         YouTubeWatermark = r.YouTubeWatermark is { } w ? new WatermarkDto { Views = w.Views, Stage = w.Stage, HookPct = w.HookPct, CompletionPct = w.CompletionPct, CtrPct = w.CtrPct, UpdatedUtc = w.UpdatedUtc } : null,
+        SelectedTitleVariant = r.SelectedTitleVariant, PublishedTitleFraming = r.PublishedTitleFraming, PublishedTitleText = r.PublishedTitleText,
+        AlternateTitleFraming = r.AlternateTitleFraming, AlternateTitleText = r.AlternateTitleText, TitleAttribution = r.TitleAttribution,
     };
 
     private async Task EnsureLoadedLockedAsync(CancellationToken ct)
@@ -390,6 +467,51 @@ public sealed class PlutoRenderCatalogService : IPlutoRenderCatalogService, IPlu
                 if (!WatermarkSupersedes(watermark, c.YouTubeWatermark)) break;   // 🛡️ 되감기 거부
                 _clips[i] = c with { YouTubeWatermark = watermark };
                 changed = true;
+                break;
+            }
+            if (changed) await PersistLockedAsync(ct).ConfigureAwait(false);
+        }
+        finally { _gate.Release(); }
+        if (changed) RaiseChanged();
+        return changed;
+    }
+
+    public async Task<bool> RecordPublishedTitleAsync(string clipVideoId, PlutoPublishedTitleSelection selection, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(selection);
+        if (string.IsNullOrWhiteSpace(clipVideoId) || selection.Variant is not ("A" or "B") || string.IsNullOrWhiteSpace(selection.Text)) return false;
+        return await MutateClipAsync(clipVideoId.Trim(), c =>
+        {
+            // 🧊 실제 게시 제목으로 이미 판정된 클립은 동결(게시 후 재복사가 실측 귀속을 덮지 않음)
+            if (c.TitleAttribution is PlutoTitleAttributionStates.Confirmed or PlutoTitleAttributionStates.Diverged) return c;
+            return SanitizeTitleAttribution(c, c with
+            {
+                SelectedTitleVariant = selection.Variant, PublishedTitleFraming = selection.Framing, PublishedTitleText = selection.Text,
+                AlternateTitleFraming = selection.AlternateFraming, AlternateTitleText = selection.AlternateText, TitleAttribution = PlutoTitleAttributionStates.Copied,
+            });
+        }, ct).ConfigureAwait(false);
+    }
+
+    public async Task<bool> ResolvePublishedTitleAsync(string clipVideoId, string? realizedTitle, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(clipVideoId) || string.IsNullOrWhiteSpace(realizedTitle)) return false;
+        return await MutateClipAsync(clipVideoId.Trim(), c => PlutoYouTubePublishPackService.ResolveRealizedTitle(c, realizedTitle), ct).ConfigureAwait(false);
+    }
+
+    /// <summary>클립 1건을 게이트 안에서 변환(동일 → 무기록) · 변경 → 영속 + 통지.</summary>
+    private async Task<bool> MutateClipAsync(string id, Func<PlutoRenderedClipRecord, PlutoRenderedClipRecord> mutate, CancellationToken ct)
+    {
+        var changed = false;
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            await EnsureLoadedLockedAsync(ct).ConfigureAwait(false);
+            for (var i = 0; i < _clips.Count; i++)
+            {
+                var c = _clips[i];
+                if (!string.Equals(c.VideoId, id, StringComparison.OrdinalIgnoreCase)) continue;
+                var next = mutate(c);
+                if (!next.Equals(c)) { _clips[i] = next; changed = true; }
                 break;
             }
             if (changed) await PersistLockedAsync(ct).ConfigureAwait(false);

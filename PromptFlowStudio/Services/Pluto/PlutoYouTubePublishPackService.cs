@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -24,6 +25,9 @@ public sealed record PlutoPublishPackRequest(string Theme, string? CatalogTitle,
 /// <summary>📋 A/B 제목 후보 1개 — 카탈로그 제목과의 연결 유사도(게시 후 자동 연결 예측) 포함.</summary>
 public sealed record PlutoPublishTitleCandidate(string Variant, string Title, double LinkabilityScore)
 {
+    /// <summary>🅰️🅱️ Step 25 — 제목 프레이밍(<see cref="PlutoTitleFramings"/> · 연결성 안전 형태로 되돌림 → <see cref="PlutoTitleFramings.CatalogSafe"/>).</summary>
+    public string Framing { get; init; } = PlutoTitleFramings.Unknown;
+
     /// <summary>게시 후 YouTube Studio 내보내기가 Tier 2로 자동 연결될 만큼 유사.</summary>
     public bool AutoLinkable => LinkabilityScore >= PlutoYouTubeCatalogLinker.MinFuzzyScore;
 }
@@ -44,6 +48,26 @@ public sealed record PlutoYouTubePublishPack(PlutoPublishTitleCandidate TitleA, 
         return sb.ToString();
     }
 
+    /// <summary>💾 Step 25 — 영상 옆 <c>{base}_publish_pack.txt</c> 본문(제목 A/B · 설명 · 고정 댓글 · 해시태그 · 태그).</summary>
+    public string ToSidecarText(string videoFileName, string? clipVideoId, DateTimeOffset generatedUtc)
+    {
+        var sb = new StringBuilder(768);
+        sb.Append("# Pluto 업로드 패키지 — ").Append(videoFileName).Append('\n');
+        sb.Append("# 생성(UTC): ").Append(generatedUtc.UtcDateTime.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture)).Append('\n');
+        if (!string.IsNullOrWhiteSpace(clipVideoId)) sb.Append("# 카탈로그 ID: ").Append(clipVideoId.Trim()).Append('\n');
+        sb.Append('\n');
+        sb.Append("[제목 A] (").Append(TitleA.Framing).Append(")\n").Append(TitleA.Title).Append("\n\n");
+        sb.Append("[제목 B] (").Append(TitleB.Framing).Append(")\n").Append(TitleB.Title).Append("\n\n");
+        sb.Append("[설명]\n").Append(Description).Append("\n\n");
+        sb.Append("[고정 댓글]\n").Append(PinnedComment).Append("\n\n");
+        sb.Append("[해시태그]\n").Append(string.Join(" ", Hashtags)).Append("\n\n");
+        sb.Append("[태그]\n").Append(string.Join(", ", Tags)).Append('\n');
+        return sb.ToString().ReplaceLineEndings("\r\n");   // 메모장 · 모든 편집기에서 줄바꿈 보존
+    }
+
+    /// <summary>🅰️🅱️ 변형 문자 → 후보(<c>"B"</c> → B · 그 밖 → A).</summary>
+    public PlutoPublishTitleCandidate Candidate(string variant) => string.Equals(variant, "B", StringComparison.OrdinalIgnoreCase) ? TitleB : TitleA;
+
     /// <summary>UI 1줄 요약.</summary>
     public string SummaryKorean => "📋 A: " + TitleA.Title + " · B: " + TitleB.Title + " · " + string.Join(" ", Hashtags)
         + (BlockedRemoved.Count > 0 ? " · 🛡️ 오답 노트 제외 " + BlockedRemoved.Count.ToString(CultureInfo.InvariantCulture) + "개" : "");
@@ -57,7 +81,45 @@ public interface IPlutoYouTubePublishPackService
 
     /// <summary>랭커 · 오답 노트 · 시리즈 아크 선적재 후 생성(적재 실패 → [부분 구제] 메모리 기준 · 취소만 전파).</summary>
     Task<PlutoYouTubePublishPack> GenerateAsync(PlutoPublishPackRequest request, CancellationToken ct = default);
+
+    /// <summary>🅰️🅱️ Step 25 — 현재 프레이밍 순위(실측 CTR 축소 추정 · 근거 부족 → 기본 순서).</summary>
+    IReadOnlyList<PlutoTitleFramingStat> GetFramingRanking();
+
+    /// <summary>🅰️🅱️ Step 25 — 카탈로그(실측 귀속 확정 클립의 워터마크 CTR · 조회수)로 프레이밍 근거 재계산 · 반환 = 귀속 표본 수.</summary>
+    int RefreshFramingEvidence(IReadOnlyList<PlutoRenderedClipRecord> clips);
+
+    /// <summary>🅰️🅱️ Step 25 — 크리에이터가 복사한 변형(<c>"A"</c> · <c>"B"</c> · <c>"AB"</c> = 전체 패키지)을 카탈로그에 기록.</summary>
+    Task<bool> RecordSelectionAsync(string clipVideoId, PlutoYouTubePublishPack pack, string variant, CancellationToken ct = default);
+
+    /// <summary>💾 Step 25 — 렌더된 영상 옆에 <c>{base}_publish_pack.txt</c> 원자 기록(경로 검증 실패 → 무기록).</summary>
+    Task<PlutoSidecarWriteResult> WriteSidecarAsync(string videoPath, PlutoYouTubePublishPack pack, string? clipVideoId = null, CancellationToken ct = default);
 }
+
+/// <summary>🅰️🅱️ Step 25 — 업로드 제목 프레이밍 상수(학습 키 · 카탈로그 기록값).</summary>
+public static class PlutoTitleFramings
+{
+    /// <summary>정보/결과 증명형 — <c>{제목} {n/N편} · {훅}</c>(Step 24 기본 A).</summary>
+    public const string OutcomeProof = "outcome-proof";
+    /// <summary>호기심/질문형 — <c>{훅} | {제목} {n/N편}</c>(Step 24 기본 B).</summary>
+    public const string CuriosityQuestion = "curiosity-question";
+    /// <summary>결말 유도형 — <c>{제목} — 결말 예상? {n/N편}</c>.</summary>
+    public const string EndingPrompt = "ending-prompt";
+    /// <summary>연결성 자가 검사로 되돌린 카탈로그 안전 형태 — <c>{제목} {n/N편}</c>.</summary>
+    public const string CatalogSafe = "catalog-safe";
+    /// <summary>미상(구버전 기록).</summary>
+    public const string Unknown = "unknown";
+
+    /// <summary>근거 부족 시 기본 순서(Step 24 A/B 출력과 동일).</summary>
+    public static readonly IReadOnlyList<string> DefaultOrder = new[] { OutcomeProof, CuriosityQuestion, EndingPrompt };
+
+    public static bool IsComposable(string? f) => f is OutcomeProof or CuriosityQuestion or EndingPrompt;
+}
+
+/// <summary>🅰️🅱️ 프레이밍 1개의 실측 근거 — 표본 수 · 누적 조회수 · 평균 CTR · 경험적 베이즈 축소 CTR(순위 키).</summary>
+public sealed record PlutoTitleFramingStat(string Framing, int Samples, long Views, double MeanCtrPct, double ShrunkCtrPct);
+
+/// <summary>💾 사이드카 기록 결과.</summary>
+public sealed record PlutoSidecarWriteResult(bool Ok, string? Path, string MessageKorean);
 
 /// <summary>
 /// 📋 <see cref="IPlutoYouTubePublishPackService"/> 순수 BCL 구현.
@@ -73,15 +135,37 @@ public sealed class PlutoYouTubePublishPackService : IPlutoYouTubePublishPackSer
     public const int MaxTagsTotalChars = 450;   // YouTube 태그 필드 500자 여유
     public const int MaxHookPhraseLength = 40;
 
+    // ── 🅰️🅱️ Step 25 — 프레이밍 귀속 ──
+    /// <summary>귀속 표본 최소 조회수(그 미만은 CTR 잡음).</summary>
+    public const long MinViewsForAttribution = 50;
+    /// <summary>이 조회수부터 표본 가중치 1(그 아래는 조회수 비례 감쇠).</summary>
+    public const long FullWeightViews = 1000;
+    /// <summary>경험적 베이즈 사전 강도(가상 표본 수) — 행운의 1편이 순위를 뒤집지 못하게.</summary>
+    public const double FramingPriorStrength = 2.0;
+    /// <summary>순위 재정렬에 필요한 최소 귀속 표본(전체).</summary>
+    public const int MinAttributedSamples = 2;
+    /// <summary>실제 게시 제목 ↔ 복사 제목 확정 유사도 하한(정규화 완전 일치는 즉시 확정).</summary>
+    public const double RealizedTitleConfirmScore = 0.8;
+    /// <summary>💾 사이드카 접미.</summary>
+    public const string SidecarSuffix = "_publish_pack.txt";
+
+    private static readonly string[] SidecarVideoExtensions = { ".mp4", ".mov", ".webm", ".mkv" };
+
     private readonly IPlutoAdaptivePatternRanker? _ranker;
     private readonly IPlutoSeriesArcMemoryService? _arc;
     private readonly IPlutoMistakeNotebookService? _notebook;
+    private readonly IPlutoRenderCatalogService? _catalog;
+    private readonly Func<DateTimeOffset> _clock;
+    private PlutoTitleFramingStat[] _framingStats = Array.Empty<PlutoTitleFramingStat>();   // 교체식 갱신 → 락 없는 스냅샷 읽기
 
-    public PlutoYouTubePublishPackService(IPlutoAdaptivePatternRanker? ranker = null, IPlutoSeriesArcMemoryService? arc = null, IPlutoMistakeNotebookService? notebook = null)
+    public PlutoYouTubePublishPackService(IPlutoAdaptivePatternRanker? ranker = null, IPlutoSeriesArcMemoryService? arc = null, IPlutoMistakeNotebookService? notebook = null,
+        IPlutoRenderCatalogService? catalog = null, Func<DateTimeOffset>? clock = null)
     {
         _ranker = ranker;
         _arc = arc;
         _notebook = notebook;
+        _catalog = catalog;
+        _clock = clock ?? (static () => DateTimeOffset.UtcNow);
     }
 
     public async Task<PlutoYouTubePublishPack> GenerateAsync(PlutoPublishPackRequest request, CancellationToken ct = default)
@@ -95,7 +179,228 @@ public sealed class PlutoYouTubePublishPackService : IPlutoYouTubePublishPackSer
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.PublishPack] preload ([부분 구제]): " + ex.Message); }
+        try
+        {
+            // 🅰️🅱️ 실측 CTR 귀속(카탈로그 = 멀티 PC 병합 허브)으로 프레이밍 순위 갱신
+            if (_catalog is not null) RefreshFramingEvidence(await _catalog.GetRecentClipsAsync(PlutoRenderCatalogService.Capacity, ct).ConfigureAwait(false));
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.PublishPack] framing evidence ([부분 구제]): " + ex.Message); }
         return Generate(request);
+    }
+
+    // ── 🅰️🅱️ 프레이밍 귀속 ──
+
+    public IReadOnlyList<PlutoTitleFramingStat> GetFramingRanking()
+    {
+        var stats = Volatile.Read(ref _framingStats);
+        var order = FramingOrder(stats);
+        var result = new List<PlutoTitleFramingStat>(order.Count);
+        foreach (var f in order)
+        {
+            var s = FindStat(stats, f);
+            result.Add(s ?? new PlutoTitleFramingStat(f, 0, 0, 0, 0));
+        }
+        return result;
+    }
+
+    public int RefreshFramingEvidence(IReadOnlyList<PlutoRenderedClipRecord> clips)
+    {
+        ArgumentNullException.ThrowIfNull(clips);
+        var stats = ComputeFramingStats(clips);
+        Volatile.Write(ref _framingStats, stats);
+        var n = 0;
+        foreach (var s in stats) n += s.Samples;
+        return n;
+    }
+
+    /// <summary>
+    /// 🅰️🅱️ 순수 집계 — 실측 귀속 확정(<see cref="PlutoTitleAttributionStates.Confirmed"/>) 클립의 마지막 반영 워터마크(CTR · 조회수)만 사용.
+    /// 클립당 1표본(재수집 · 성숙 증분 · 멀티 PC 중복이 이중 집계되지 않음) · 조회수 가중 · 전역 평균으로 경험적 베이즈 축소.
+    /// </summary>
+    public static PlutoTitleFramingStat[] ComputeFramingStats(IReadOnlyList<PlutoRenderedClipRecord> clips)
+    {
+        ArgumentNullException.ThrowIfNull(clips);
+        var keys = new List<string>(4);
+        var count = new List<int>(4);
+        var views = new List<long>(4);
+        var wSum = new List<double>(4);
+        var wCtr = new List<double>(4);
+        var seenYt = new HashSet<string>(StringComparer.Ordinal);
+        double gW = 0, gCtr = 0;
+        foreach (var c in clips)
+        {
+            if (c is null || c.TitleAttribution != PlutoTitleAttributionStates.Confirmed || c.YouTubeWatermark is not { } wm) continue;
+            var f = c.PublishedTitleFraming;
+            if (string.IsNullOrWhiteSpace(f) || f == PlutoTitleFramings.Unknown) continue;
+            if (wm.Views < MinViewsForAttribution || !double.IsFinite(wm.CtrPct) || wm.CtrPct <= 0 || wm.CtrPct > 100) continue;
+            if (c.YouTubeVideoId is { Length: > 0 } yt && !seenYt.Add(yt)) continue;
+            var w = Math.Min(1.0, (double)wm.Views / FullWeightViews);
+            var i = keys.IndexOf(f);
+            if (i < 0) { keys.Add(f); count.Add(0); views.Add(0); wSum.Add(0); wCtr.Add(0); i = keys.Count - 1; }
+            count[i]++;
+            views[i] += wm.Views;
+            wSum[i] += w;
+            wCtr[i] += w * wm.CtrPct;
+            gW += w;
+            gCtr += w * wm.CtrPct;
+        }
+        foreach (var d in PlutoTitleFramings.DefaultOrder)
+            if (!keys.Contains(d)) { keys.Add(d); count.Add(0); views.Add(0); wSum.Add(0); wCtr.Add(0); }
+        var mu = gW > 0 ? gCtr / gW : 0;
+        var result = new PlutoTitleFramingStat[keys.Count];
+        for (var i = 0; i < keys.Count; i++)
+        {
+            var mean = wSum[i] > 0 ? wCtr[i] / wSum[i] : 0;
+            var shrunk = (wCtr[i] + FramingPriorStrength * mu) / (wSum[i] + FramingPriorStrength);
+            result[i] = new PlutoTitleFramingStat(keys[i], count[i], views[i], mean, shrunk);
+        }
+        return result;
+    }
+
+    private static PlutoTitleFramingStat? FindStat(PlutoTitleFramingStat[] stats, string framing)
+    {
+        foreach (var s in stats) if (string.Equals(s.Framing, framing, StringComparison.Ordinal)) return s;
+        return null;
+    }
+
+    /// <summary>합성 가능한 프레이밍 순서 — 귀속 표본 ≥ <see cref="MinAttributedSamples"/> 이면 축소 CTR 내림차순(동률 → 기본 순서) · 그 밖 기본 순서.</summary>
+    private static List<string> FramingOrder(PlutoTitleFramingStat[] stats)
+    {
+        var order = new List<string>(PlutoTitleFramings.DefaultOrder);
+        var total = 0;
+        foreach (var s in stats) if (PlutoTitleFramings.IsComposable(s.Framing)) total += s.Samples;
+        if (total < MinAttributedSamples) return order;
+        order.Sort((x, y) =>
+        {
+            var sx = FindStat(stats, x)?.ShrunkCtrPct ?? 0;
+            var sy = FindStat(stats, y)?.ShrunkCtrPct ?? 0;
+            var c = sy.CompareTo(sx);
+            return c != 0 ? c : IndexOfDefault(x).CompareTo(IndexOfDefault(y));
+        });
+        return order;
+    }
+
+    private static int IndexOfDefault(string f)
+    {
+        for (var i = 0; i < PlutoTitleFramings.DefaultOrder.Count; i++) if (PlutoTitleFramings.DefaultOrder[i] == f) return i;
+        return int.MaxValue;
+    }
+
+    public async Task<bool> RecordSelectionAsync(string clipVideoId, PlutoYouTubePublishPack pack, string variant, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(pack);
+        if (_catalog is null || string.IsNullOrWhiteSpace(clipVideoId)) return false;
+        var v = variant?.Trim().ToUpperInvariant() ?? string.Empty;
+        var selection = v switch
+        {
+            "A" => new PlutoPublishedTitleSelection("A", pack.TitleA.Framing, pack.TitleA.Title),
+            "B" => new PlutoPublishedTitleSelection("B", pack.TitleB.Framing, pack.TitleB.Title),
+            "AB" => new PlutoPublishedTitleSelection("A", pack.TitleA.Framing, pack.TitleA.Title, pack.TitleB.Framing, pack.TitleB.Title),   // 전체 패키지 → 실제 게시 제목으로 판정
+            _ => null,
+        };
+        if (selection is null) return false;
+        return await _catalog.RecordPublishedTitleAsync(clipVideoId, selection, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// 🅰️🅱️ 순수 — 연결된 실제 YouTube 제목으로 변형 귀속 판정. 정규화 완전 일치 우선 → 유사도 ≥ <see cref="RealizedTitleConfirmScore"/> 이고
+    /// 반대 변형보다 <see cref="PlutoYouTubeCatalogLinker.AmbiguityMargin"/> 이상 앞설 때 확정(필요 시 A↔B 교정) · 그 밖 → <see cref="PlutoTitleAttributionStates.Diverged"/>(귀속 제외).
+    /// 이미 판정된 클립 · 제목 미기록 → 그대로.
+    /// </summary>
+    public static PlutoRenderedClipRecord ResolveRealizedTitle(PlutoRenderedClipRecord clip, string? realizedTitle)
+    {
+        ArgumentNullException.ThrowIfNull(clip);
+        if (string.IsNullOrWhiteSpace(realizedTitle) || string.IsNullOrWhiteSpace(clip.PublishedTitleText) || clip.SelectedTitleVariant is not ("A" or "B")) return clip;
+        if (clip.TitleAttribution is PlutoTitleAttributionStates.Confirmed or PlutoTitleAttributionStates.Diverged) return clip;
+        var real = PlutoRenderCatalogService.NormalizeKey(realizedTitle);
+        var sel = clip.PublishedTitleText!;
+        var alt = clip.AlternateTitleText;
+        var exactSel = real.Length > 0 && real == PlutoRenderCatalogService.NormalizeKey(sel);
+        var exactAlt = real.Length > 0 && !string.IsNullOrWhiteSpace(alt) && real == PlutoRenderCatalogService.NormalizeKey(alt);
+        bool useAlt;
+        if (exactSel != exactAlt) useAlt = exactAlt;
+        else
+        {
+            var simSel = PlutoYouTubeCatalogLinker.TitleSimilarity(realizedTitle, sel);
+            var simAlt = string.IsNullOrWhiteSpace(alt) ? -1.0 : PlutoYouTubeCatalogLinker.TitleSimilarity(realizedTitle, alt);
+            var m = PlutoYouTubeCatalogLinker.AmbiguityMargin;
+            if (exactSel && exactAlt) simSel = simAlt = 1.0;   // A = B 정규형(차별화 실패) → 모호
+            if (simSel >= RealizedTitleConfirmScore && simSel >= simAlt + m) useAlt = false;
+            else if (simAlt >= RealizedTitleConfirmScore && simAlt >= simSel + m) useAlt = true;
+            else return clip with { AlternateTitleFraming = null, AlternateTitleText = null, TitleAttribution = PlutoTitleAttributionStates.Diverged };
+        }
+        if (!useAlt) return clip with { AlternateTitleFraming = null, AlternateTitleText = null, TitleAttribution = PlutoTitleAttributionStates.Confirmed };
+        return clip with
+        {
+            SelectedTitleVariant = clip.SelectedTitleVariant == "A" ? "B" : "A",
+            PublishedTitleFraming = string.IsNullOrWhiteSpace(clip.AlternateTitleFraming) ? PlutoTitleFramings.Unknown : clip.AlternateTitleFraming,
+            PublishedTitleText = alt,
+            AlternateTitleFraming = null,
+            AlternateTitleText = null,
+            TitleAttribution = PlutoTitleAttributionStates.Confirmed,
+        };
+    }
+
+    // ── 💾 사이드카 ──
+
+    /// <summary>
+    /// 💾 순수 경로 검증 — 완전 한정 · <c>..</c> 세그먼트 없음 · 장치/확장 접두(<c>\\?\</c> · <c>\\.\</c>) 금지 · 영상 확장자(mp4/mov/webm/mkv) →
+    /// <c>{dir}\{base}_publish_pack.txt</c>. 실패 → null + 사유.
+    /// </summary>
+    public static string? TryGetSidecarPath(string? videoPath, out string reason)
+    {
+        reason = string.Empty;
+        if (string.IsNullOrWhiteSpace(videoPath)) { reason = "렌더된 영상 경로가 없습니다"; return null; }
+        var p = videoPath.Trim();
+        if (p.IndexOfAny(Path.GetInvalidPathChars()) >= 0 || p.IndexOf('*') >= 0 || p.IndexOf('?') >= 0) { reason = "경로에 허용되지 않는 문자가 있습니다"; return null; }
+        if (p.StartsWith(@"\\?\", StringComparison.Ordinal) || p.StartsWith(@"\\.\", StringComparison.Ordinal)) { reason = "장치 경로는 허용되지 않습니다"; return null; }
+        if (!Path.IsPathFullyQualified(p)) { reason = "절대 경로가 아닙니다"; return null; }
+        foreach (var seg in p.Split('\\', '/'))
+            if (seg == "..") { reason = "상위 폴더 이동(..)이 포함된 경로입니다"; return null; }
+        var ext = Path.GetExtension(p);
+        var okExt = false;
+        foreach (var e in SidecarVideoExtensions) if (string.Equals(e, ext, StringComparison.OrdinalIgnoreCase)) { okExt = true; break; }
+        if (!okExt) { reason = "영상 파일(.mp4/.mov/.webm/.mkv)이 아닙니다"; return null; }
+        var dir = Path.GetDirectoryName(p);
+        var stem = Path.GetFileNameWithoutExtension(p);
+        if (string.IsNullOrEmpty(dir) || string.IsNullOrWhiteSpace(stem)) { reason = "영상 파일 이름이 비어 있습니다"; return null; }
+        var name = stem + SidecarSuffix;
+        if (name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0) { reason = "파일 이름에 허용되지 않는 문자가 있습니다"; return null; }
+        return Path.Combine(dir, name);
+    }
+
+    public async Task<PlutoSidecarWriteResult> WriteSidecarAsync(string videoPath, PlutoYouTubePublishPack pack, string? clipVideoId = null, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(pack);
+        if (TryGetSidecarPath(videoPath, out var reason) is not { } sidecar) return new PlutoSidecarWriteResult(false, null, "⚠ " + reason);
+        var video = videoPath.Trim();
+        string? tmp = null;
+        try
+        {
+            if (!File.Exists(video)) return new PlutoSidecarWriteResult(false, null, "⚠ 렌더된 영상 파일을 찾지 못했습니다");
+            if (Directory.Exists(sidecar)) return new PlutoSidecarWriteResult(false, null, "⚠ 같은 이름의 폴더가 있어 저장하지 않았습니다");
+            // 🔗 심볼릭 링크/정션이 심어진 자리는 따라가지 않음(링크 대상 파일 덮어쓰기 방지)
+            if (File.Exists(sidecar) && (File.GetAttributes(sidecar) & FileAttributes.ReparsePoint) != 0)
+                return new PlutoSidecarWriteResult(false, null, "⚠ 대상이 링크 파일이라 저장하지 않았습니다");
+            var text = pack.ToSidecarText(Path.GetFileName(video), clipVideoId, _clock());
+            tmp = sidecar + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            await File.WriteAllTextAsync(tmp, text, new UTF8Encoding(encoderShouldEmitUTF8Identifier: true), ct).ConfigureAwait(false);
+            File.Move(tmp, sidecar, overwrite: true);   // ⚛️ 원자 교체 — 업로드 중 반쪽 파일 노출 없음
+            tmp = null;
+            return new PlutoSidecarWriteResult(true, sidecar, "💾 영상 옆에 저장: " + Path.GetFileName(sidecar));
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or ArgumentException)
+        {
+            System.Diagnostics.Debug.WriteLine("[Pluto.PublishPack] sidecar: " + ex.Message);
+            return new PlutoSidecarWriteResult(false, null, "⚠ 패키지 저장 실패: " + ex.Message);
+        }
+        finally
+        {
+            if (tmp is not null)
+                try { File.Delete(tmp); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { System.Diagnostics.Debug.WriteLine("[Pluto.PublishPack] tmp: " + ex.Message); }
+        }
     }
 
     public PlutoYouTubePublishPack Generate(PlutoPublishPackRequest request)
@@ -122,12 +427,16 @@ public sealed class PlutoYouTubePublishPackService : IPlutoYouTubePublishPackSer
         var token = request.IsSeries ? EpisodeToken(request.EpisodeNumber, request.TotalEpisodes) : string.Empty;
         var core = StripEpisodeToken(catalogTitle);
         if (core.Length == 0) core = StripEpisodeToken(theme);
-        var titleA = ComposeTitle(core, token, hookPhrase, curiosity: false, korean);
-        var titleB = ComposeTitle(core, token, hookPhrase, curiosity: true, korean);
-        var a = EnsureLinkable("A", titleA, catalogTitle, core, token);
-        var b = EnsureLinkable("B", titleB, catalogTitle, core, token);
-        if (string.Equals(a.Title, b.Title, StringComparison.Ordinal))   // A/B가 같아지면 실험 불가 → B를 질문형 접미로 차별화
-            b = EnsureLinkable("B", FitTitle(core + (korean ? " — 결말 예상?" : " — guess the ending?"), token), catalogTitle, core, token);
+        // 🅰️🅱️ Step 25 — 실측 CTR 순위 1위 프레이밍 = A · A와 다른 다음 순위 = B(근거 부족 → Step 24 기본: 정보형 A · 호기심형 B)
+        PlutoPublishTitleCandidate? a = null, b = null;
+        foreach (var framing in FramingOrder(Volatile.Read(ref _framingStats)))
+        {
+            var cand = EnsureLinkable(a is null ? "A" : "B", ComposeFramed(framing, core, token, hookPhrase, korean), catalogTitle, core, token, framing);
+            if (a is null) { a = cand; continue; }
+            if (!string.Equals(cand.Title, a.Title, StringComparison.Ordinal)) { b = cand; break; }   // A/B가 같아지면 실험 불가 → 다음 프레이밍
+        }
+        a ??= EnsureLinkable("A", FitTitle(core, token), catalogTitle, core, token, PlutoTitleFramings.CatalogSafe);
+        b ??= EnsureLinkable("B", ComposeFramed(PlutoTitleFramings.EndingPrompt, core, token, hookPhrase, korean), catalogTitle, core, token, PlutoTitleFramings.EndingPrompt);
 
         // ── 해시태그 · 태그 ──
         var tagCandidates = new List<string>();
@@ -253,14 +562,24 @@ public sealed class PlutoYouTubePublishPackService : IPlutoYouTubePublishPackSer
         return (c + suffix).Trim();
     }
 
-    private static PlutoPublishTitleCandidate EnsureLinkable(string variant, string title, string catalogTitle, string core, string token)
+    /// <summary>프레이밍별 제목 합성(알 수 없는 프레이밍 → 정보형).</summary>
+    private static string ComposeFramed(string framing, string core, string token, string hookPhrase, bool korean) => framing switch
+    {
+        PlutoTitleFramings.CuriosityQuestion => ComposeTitle(core, token, hookPhrase, curiosity: true, korean),
+        PlutoTitleFramings.EndingPrompt => FitTitle(core + (korean ? " — 결말 예상?" : " — guess the ending?"), token),
+        _ => ComposeTitle(core, token, hookPhrase, curiosity: false, korean),
+    };
+
+    private static PlutoPublishTitleCandidate EnsureLinkable(string variant, string title, string catalogTitle, string core, string token, string framing)
     {
         var score = PlutoYouTubeCatalogLinker.TitleSimilarity(title, catalogTitle);
-        if (score >= PlutoYouTubeCatalogLinker.MinFuzzyScore) return new PlutoPublishTitleCandidate(variant, title, score);
+        if (score >= PlutoYouTubeCatalogLinker.MinFuzzyScore) return new PlutoPublishTitleCandidate(variant, title, score) { Framing = framing };
         // 🔗 연결성 미달 → 카탈로그 제목 중심 안전 형태(훅 문구가 Dice 점수를 희석해 자동 연결이 끊기는 것을 방지)
         var safe = FitTitle(core, token);
         var safeScore = PlutoYouTubeCatalogLinker.TitleSimilarity(safe, catalogTitle);
-        return safeScore > score ? new PlutoPublishTitleCandidate(variant, safe, safeScore) : new PlutoPublishTitleCandidate(variant, title, score);
+        return safeScore > score
+            ? new PlutoPublishTitleCandidate(variant, safe, safeScore) { Framing = PlutoTitleFramings.CatalogSafe }
+            : new PlutoPublishTitleCandidate(variant, title, score) { Framing = framing };
     }
 
     /// <summary>해시태그 본문 — 문자/숫자/밑줄만(공백 · 기호 제거) · 최대 30자.</summary>

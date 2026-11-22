@@ -403,6 +403,9 @@
                     @if (_publishPack is { } ppk)
                     {
                         <span class="ws-retry" role="status" data-publish-pack-result="@(ppk.TitleA.AutoLinkable && ppk.TitleB.AutoLinkable ? "linkable" : "weak")" style="white-space:pre-wrap">@(_publishPackToast) — @(ppk.SummaryKorean)</span>
+                        <button class="ws-back" data-publish-copy="A" @onclick="@(() => CopyPublishTitleAsync("A"))" disabled="@(_publishPackBusy)" title="@(ppk.TitleA.Framing) — 제목 A만 복사하고 이 렌더에 'A 게시'로 기록(게시 후 실측 CTR이 이 프레이밍에 귀속)">[🅰️ 제목 A 복사]</button>
+                        <button class="ws-back" data-publish-copy="B" @onclick="@(() => CopyPublishTitleAsync("B"))" disabled="@(_publishPackBusy)" title="@(ppk.TitleB.Framing) — 제목 B만 복사하고 이 렌더에 'B 게시'로 기록">[🅱️ 제목 B 복사]</button>
+                        <button class="ws-back" data-publish-sidecar="1" @onclick="SavePublishPackSidecarAsync" disabled="@(_publishPackBusy || string.IsNullOrWhiteSpace(_publishPackClip?.OutputPath))" title="렌더된 영상 바로 옆에 {영상이름}_publish_pack.txt 로 제목 A/B · 설명 · 고정 댓글 · 해시태그 저장(원자 기록) — 앱 없이 어느 폴더에서든 업로드">[💾 영상 옆 패키지(.txt) 저장]</button>
                     }
                     else if (_publishPackToast is { } ppt) { <span class="ws-retry" role="status" data-publish-pack-result="error">@(ppt)</span> }
                 </div>
@@ -4700,6 +4703,7 @@
     private bool _ytPairBusy;
     private string? _ytPairToast;
     private int _ytUnmatchedGen;
+    private long _ytReconcileTick = long.MinValue / 2;
     private const int YtUnmatchedVisible = 5;
 
     private void AttachYouTubeUnmatchedQueue()
@@ -4729,6 +4733,15 @@
         try
         {
             await q.EnsureLoadedAsync(_mediaCts.Token);
+            // 🔁 Step 25 — 멀티 PC 대기열 조정(60초 간격 · 다른 PC의 연결/무시/새 행 반영 · 변경 시 Changed → 재조회는 무변경으로 수렴)
+            var nowTick = Environment.TickCount64;
+            if (nowTick - Interlocked.Read(ref _ytReconcileTick) >= 60_000)
+            {
+                Interlocked.Exchange(ref _ytReconcileTick, nowTick);
+                try { await q.ReconcileAsync(null, _mediaCts.Token); }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex) { Program.Log("Workspace.YouTubeUnmatchedReconcile", ex); }
+            }
             var rows = q.GetPending(YtUnmatchedVisible);
             var map = new Dictionary<string, IReadOnlyList<PromptFlowStudio.Services.Pluto.PlutoUnmatchedPairSuggestion>>(StringComparer.Ordinal);
             foreach (var r in rows) map[r.YouTubeVideoId] = await q.SuggestClipsAsync(r.YouTubeVideoId, 2, _mediaCts.Token);
@@ -4776,8 +4789,47 @@
 
     // ── 📋 Step 24 — 게시 전 업로드 패키지 ──
     private PromptFlowStudio.Services.Pluto.PlutoYouTubePublishPack? _publishPack;
+    private PromptFlowStudio.Services.Pluto.PlutoRenderedClipRecord? _publishPackClip;
     private string? _publishPackToast;
     private bool _publishPackBusy;
+
+    /// <summary>🅰️🅱️ Step 25 — 제목 A/B 단일 복사 + 카탈로그에 선택 변형 기록(실측 CTR 귀속 기준).</summary>
+    private async Task CopyPublishTitleAsync(string variant)
+    {
+        if (_publishPackBusy || _publishPack is not { } pack || EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoYouTubePublishPackService)) is not PromptFlowStudio.Services.Pluto.IPlutoYouTubePublishPackService svc) return;
+        _publishPackBusy = true;
+        try
+        {
+            var cand = pack.Candidate(variant);
+            bool copied;
+            try { copied = Clipboard.SetText(cand.Title); }
+            catch (Exception ex) { Program.Log("Workspace.PublishTitleCopy", ex); copied = false; }
+            var recorded = copied && _publishPackClip is { } clip && await svc.RecordSelectionAsync(clip.VideoId, pack, cand.Variant, _mediaCts.Token);
+            _publishPackToast = !copied ? "⚠ 복사 실패" : "📋 제목 " + cand.Variant + " 복사됨" + (recorded ? " · 🅰️🅱️ 게시 변형 기록(" + cand.Framing + ")" : "");
+        }
+        catch (OperationCanceledException) { return; }
+        catch (Exception ex) { Program.Log("Workspace.PublishTitleCopy", ex); _publishPackToast = "⚠ 제목 복사 실패: " + ex.Message; }
+        finally { _publishPackBusy = false; }
+        if (_disposed) return;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    /// <summary>💾 Step 25 — 활성 렌더 영상 옆 {base}_publish_pack.txt 원자 저장.</summary>
+    private async Task SavePublishPackSidecarAsync()
+    {
+        if (_publishPackBusy || _publishPack is not { } pack || EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoYouTubePublishPackService)) is not PromptFlowStudio.Services.Pluto.IPlutoYouTubePublishPackService svc) return;
+        _publishPackBusy = true;
+        try
+        {
+            var r = await svc.WriteSidecarAsync(_publishPackClip?.OutputPath ?? "", pack, _publishPackClip?.VideoId, _mediaCts.Token);
+            _publishPackToast = r.MessageKorean;
+        }
+        catch (OperationCanceledException) { return; }
+        catch (Exception ex) { Program.Log("Workspace.PublishPackSidecar", ex); _publishPackToast = "⚠ 패키지 저장 실패: " + ex.Message; }
+        finally { _publishPackBusy = false; }
+        if (_disposed) return;
+        await InvokeAsync(StateHasChanged);
+    }
 
     /// <summary>📋 활성 렌더(성과 입력 영상 ID → 최근 렌더) → A/B 제목 · 설명 · 고정 댓글 · 해시태그 생성 후 클립보드 복사.</summary>
     private async Task GeneratePublishPackAsync()
@@ -4800,10 +4852,16 @@
             var req = new PromptFlowStudio.Services.Pluto.PlutoPublishPackRequest(theme, title, n, total, hook, tags) { IsShorts = !string.Equals(_perfPlatform, "Instagram Reels", StringComparison.Ordinal) };
             var pack = await svc.GenerateAsync(req, _mediaCts.Token);
             _publishPack = pack;
+            _publishPackClip = clip;
             bool copied;
             try { copied = Clipboard.SetText(pack.ToClipboardText()); }
             catch (Exception ex) { Program.Log("Workspace.PublishPackCopy", ex); copied = false; }
             _publishPackToast = copied ? "📋 업로드 패키지가 복사되었습니다" : "⚠ 복사 실패 — 아래 요약을 참고하세요";
+            // 🅰️🅱️ 전체 패키지 복사 → A/B 둘 다 후보로 기록(게시 후 실제 YouTube 제목으로 판정)
+            if (copied && clip is not null)
+                try { await svc.RecordSelectionAsync(clip.VideoId, pack, "AB", _mediaCts.Token); }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex) { Program.Log("Workspace.PublishPackRecord", ex); }
         }
         catch (OperationCanceledException) { return; }
         catch (Exception ex) { Program.Log("Workspace.PublishPack", ex); _publishPackToast = "⚠ 업로드 패키지 생성 실패: " + ex.Message; }

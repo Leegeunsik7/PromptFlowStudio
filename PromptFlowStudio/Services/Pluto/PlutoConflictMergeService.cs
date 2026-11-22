@@ -46,10 +46,14 @@ public sealed class PlutoConflictMergeService
 
     public string ConflictRoot => Path.Combine(_storage.FallbackRoot, PlutoDriveStorageManager.ConflictFolderName);
 
+    /// <summary>🔁 Step 25 — 핵심 허브 밖 동반 파일 중 의미 병합 지원(핵심 허브 병합 목록 6종은 불변).</summary>
+    public static readonly IReadOnlyList<string> MergeableCompanions = new[] { PlutoYouTubeUnmatchedQueueService.FileName };
+
     public static bool IsMergeable(string? hubFileName)
     {
         if (string.IsNullOrWhiteSpace(hubFileName)) return false;
         for (var i = 0; i < MergeableHubs.Count; i++) if (string.Equals(MergeableHubs[i], hubFileName, StringComparison.OrdinalIgnoreCase)) return true;
+        for (var i = 0; i < MergeableCompanions.Count; i++) if (string.Equals(MergeableCompanions[i], hubFileName, StringComparison.OrdinalIgnoreCase)) return true;
         return false;
     }
 
@@ -182,6 +186,7 @@ public sealed class PlutoConflictMergeService
     public static string? MergeJson(string hubFileName, string? current, string? other)
     {
         if (!IsMergeable(hubFileName)) return null;
+        if (Eq(hubFileName, PlutoYouTubeUnmatchedQueueService.FileName)) return MergeUnmatchedQueue(current, other);
         JsonObject a, b;
         try
         {
@@ -201,6 +206,20 @@ public sealed class PlutoConflictMergeService
     }
 
     private static bool Eq(string x, string y) => string.Equals(x, y, StringComparison.OrdinalIgnoreCase);
+
+    // ── 🔁 Step 25 — 미매칭 대기열: 서비스의 순수 병합 규칙 재사용(행 합집합 · 더 성숙한 스냅샷 · 처리 기록 전파) ──
+
+    private static string? MergeUnmatchedQueue(string? current, string? other)
+    {
+        try
+        {
+            var a = JsonSerializer.Deserialize<PlutoYouTubeUnmatchedQueueService.Snapshot>(current ?? "");
+            var b = JsonSerializer.Deserialize<PlutoYouTubeUnmatchedQueueService.Snapshot>(other ?? "");
+            if (a is null || b is null) return null;
+            return JsonSerializer.Serialize(PlutoYouTubeUnmatchedQueueService.MergeSnapshots(new[] { a, b }, DateTimeOffset.UtcNow));
+        }
+        catch (JsonException) { return null; }
+    }
 
     // ── 실험 장부 — 실험 ID · 판정 완료 > 지표 > 대기 · 변형 영상 경로는 빈 쪽을 채움 ──
 
@@ -248,6 +267,16 @@ public sealed class PlutoConflictMergeService
 
     // ── 렌더 카탈로그 — 영상 ID · 더 최근 렌더 · 학습 완료는 어느 쪽이든 유지 · 최신순 · 용량 ──
 
+    private static readonly string[] TitleAttributionFields =
+        { "SelectedTitleVariant", "PublishedTitleFraming", "PublishedTitleText", "AlternateTitleFraming", "AlternateTitleText", "TitleAttribution" };
+
+    private static int TitleAttributionRank(JsonObject clip)
+    {
+        if (Str(clip, "PublishedTitleText").Length == 0) return 0;
+        var s = Str(clip, "TitleAttribution");
+        return s is PlutoTitleAttributionStates.Confirmed or PlutoTitleAttributionStates.Diverged ? 2 : 1;
+    }
+
     private static JsonObject MergeCatalog(JsonObject a, JsonObject b)
     {
         var map = new Dictionary<string, JsonObject>(StringComparer.OrdinalIgnoreCase);
@@ -265,6 +294,13 @@ public sealed class PlutoConflictMergeService
                 // 📈 반영 워터마크는 앞선 쪽(조회수 → 단계) — 상대 PC가 이미 반영한 성숙도 증분을 다시 적용하지 않음
                 if (rest["YouTubeWatermark"] is JsonObject rw && (pick["YouTubeWatermark"] is not JsonObject pw || WatermarkAhead(rw, pw)))
                     pick["YouTubeWatermark"] = rw.DeepClone();
+                // 🅰️🅱️ Step 25 — 제목 귀속: 실측 판정(Confirmed/Diverged) > 복사 기록 > 없음 · 필드 묶음 단위로 이전(부분 혼합 금지)
+                if (TitleAttributionRank(rest) > TitleAttributionRank(pick))
+                    foreach (var f in TitleAttributionFields)
+                    {
+                        if (rest[f] is { } node) pick[f] = node.DeepClone();
+                        else pick.Remove(f);
+                    }
                 map[id] = pick;
             }
         var list = new List<KeyValuePair<string, JsonObject>>(map);

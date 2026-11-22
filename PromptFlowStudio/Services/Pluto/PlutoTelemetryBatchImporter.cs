@@ -420,6 +420,10 @@ public sealed class PlutoTelemetryBatchImporter : IPlutoTelemetryBatchImporter
         ArgumentNullException.ThrowIfNull(loop);
         ArgumentNullException.ThrowIfNull(clip);
         ArgumentNullException.ThrowIfNull(row);
+        // 🅰️🅱️ Step 25 — 실제 게시 제목으로 A/B 변형 귀속 판정(멱등 · 판정 후 동결) · 실패는 학습과 격리
+        try { await catalog.ResolvePublishedTitleAsync(clip.VideoId, row.Title, ct).ConfigureAwait(false); }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.BatchImport] title attribution: " + ex.Message); }
         var telemetry = BuildTelemetry(clip, plat, row.Hook3sRetention, row.CompletionRate, row.Ctr);
         var now = DateTimeOffset.UtcNow;
         if (clip.YouTubeWatermark is not { } wm)

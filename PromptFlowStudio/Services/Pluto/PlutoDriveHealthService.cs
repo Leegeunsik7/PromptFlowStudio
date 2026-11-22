@@ -69,6 +69,23 @@ public sealed class PlutoDriveHealthService : IPlutoDriveHealthService
     /// <summary>검증 · 미러 · 새 PC 자동 복원 대상 Pluto 핵심 허브 파일 수(Step 17 = 9 · 시리즈 아크 편입).</summary>
     public const int CorePlutoFileCount = 9;
 
+    /// <summary>
+    /// 🔁 Step 25 — 핵심 허브(9종 불변) 밖의 동반 동기화 파일 — 쓰기 반환 · 미러 · 새 PC 복원에만 참여(상태 점검 · 허브 수에는 미포함).
+    /// <c>pluto_youtube_unmatched.json</c>: 미매칭 YouTube 행 대기열(멀티 PC 조정 대상).
+    /// </summary>
+    public static readonly string[] CompanionSyncFiles = { PlutoYouTubeUnmatchedQueueService.FileName };
+
+    /// <summary>🔁 쓰기 반환 · 미러 · 복원 대상 전체 = 핵심 허브 + 동반 파일.</summary>
+    public static readonly string[] SyncFiles = BuildSyncFiles();
+
+    private static string[] BuildSyncFiles()
+    {
+        var all = new string[PlutoFiles.Length + CompanionSyncFiles.Length];
+        PlutoFiles.CopyTo(all, 0);
+        CompanionSyncFiles.CopyTo(all, PlutoFiles.Length);
+        return all;
+    }
+
     public static readonly string[] StudioFiles = { "members.json", AppSettingsManager.FileName };
 
     private readonly AppSettingsManager? _settings;
@@ -178,18 +195,18 @@ public sealed class PlutoDriveHealthService : IPlutoDriveHealthService
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.DriveHealth] members flush: " + ex.Message); }
             ct.ThrowIfCancellationRequested();
             // 🧾 기준선 부트스트랩(내용이 같은 파일만) → ☁️⬆️ 오프라인 쓰기 반환(더 새로운 Drive 사본은 보호)
-            (_storage as PlutoDriveStorageManager)?.BootstrapSyncManifest(PlutoFiles);
-            (_storage as PlutoDriveStorageManager)?.WriteBackNewerLocalToDrive(PlutoFiles);
+            (_storage as PlutoDriveStorageManager)?.BootstrapSyncManifest(SyncFiles);
+            (_storage as PlutoDriveStorageManager)?.WriteBackNewerLocalToDrive(SyncFiles);
             ct.ThrowIfCancellationRequested();
             // Drive 활성 시 ResolveDataPath 가 부재 파일을 로컬 폴백/레거시 사본에서 시드(기존 Drive 파일 덮어쓰기 없음).
             if (_storage is not null && _storage.IsCloudSynced)
-                foreach (var f in PlutoFiles)
+                foreach (var f in SyncFiles)
                 {
                     try { _ = _storage.ResolveDataPath(f); }
                     catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException) { System.Diagnostics.Debug.WriteLine("[Pluto.DriveHealth] seed: " + ex.Message); }
                 }
             // 🔁 Drive → 로컬 미러(부재 시만 · 오프라인/새 PC 복원 대비)
-            (_storage as PlutoDriveStorageManager)?.RestoreCoreHubsToLocal(PlutoFiles);
+            (_storage as PlutoDriveStorageManager)?.RestoreCoreHubsToLocal(SyncFiles);
             ct.ThrowIfCancellationRequested();
             // 🩺 라이브 마운트 왕복 프로브(Drive 비활성/루트 부재 → 디스크 무접촉 생략)
             try { probe = (_storage as PlutoDriveStorageManager)?.ProbeLiveDrive(); }

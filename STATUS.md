@@ -1,15 +1,16 @@
 # Current Project Status
-- Active Milestone: ✅ Step 24 — 미매칭 YouTube 행 원클릭 페어링 · 게시 전 업로드 패키지(A/B 제목) · 감시 장부 유계 정리 완료
+- Active Milestone: ✅ Step 25 — 폐루프 A/B 제목 CTR 귀속 · 영상 옆 업로드 패키지(.txt) · 멀티 PC 미매칭 대기열 조정 완료
 - Build: ✅ Desktop Release `-warnaserror` 0W/0E · ✅ Tests Release 0W/0E · ⚠ Mobile net8.0-ios — `ios` 워크로드 미설치(미검증)
-- Tests: ✅ 1285/1285 — 전체 단일 실행 통과(14분 7초 · 종료 코드 0 · Step 24 신규 `PlutoUnmatchedPairingAndPublishPackTests.cs` 7건)
-- Updated: 2026-11-21 (KST) · 기준 `467d028`
+- Tests: ✅ 1291/1291 — 전체 단일 실행 통과(20분 20초 · 종료 코드 0 · Step 25 신규 `PlutoTitleAttributionAndSidecarTests.cs` 6건)
+- Updated: 2026-11-22 (KST) · 기준 `73ab270`
 
-## Completed — Step 24
-- 📌 `PlutoYouTubeUnmatchedQueueService` — 미매칭 행 텔레메트리 보존(`pluto_youtube_unmatched.json` · 50건 · YouTube ID 중복 제거 · 더 성숙한 스냅샷 우선) · 원클릭 `PairAsync` → ID 1:1 영속 → 폐루프 반영 → 대기열 제거
-- 📋 `PlutoYouTubePublishPackService` — A/B 제목(`n/N편` 보존 · 100자 · 토큰 비절단) · 훅 정렬 설명 · 고정 댓글 CTA · 파레토 해시태그(≤8 · `#shorts`) · 오답 노트 차단 제외 · 아크 메모리 에스컬레이션 훅
-- 🧹 `YouTubeDownloadsAutoWatcherService` — 장부 v2(`{h,t,q}` · v1 이관) · 500건 LRU + 90일 TTL · `ClearQuarantinedAsync` · `PruneLedgerAsync` · `GetHealth`
-- 🖥️ Workspace — 연결 대기 행 + 후보 🔗 버튼 · ✕ 무시 · [📋 업로드 패키지 생성/복사] · [🧯 격리 해제] · DI 데스크톱/모바일 Singleton
-- 🧠 자체 추가 — ① 편 가드가 카탈로그 RenderMode(`시리즈 n/N편`)까지 확인(형제 편 오연결 차단) ② 업로드 제목 연결성 자가 검사(훅이 유사도 희석 시 안전 제목 복귀) ③ 대기열 정합성(기연결 ID 미보존 · 선점 충돌 정리 · 학습 실패 시 보존 후 멱등 재시도) ④ TTL 하한 = 스윕 최대 경과+1일 · 실패 카운터/판정 서명 메모리 유계
+## Completed — Step 25
+- 🅰️🅱️ 카탈로그 `SelectedTitleVariant`·`PublishedTitleFraming`·`PublishedTitleText`(+대체 변형·귀속 상태 · 하위 호환) · [🅰️/🅱️ 제목 복사] · 전체 패키지 복사 = "AB" 기록
+- 📈 프레이밍(outcome-proof · curiosity-question · ending-prompt) 순위 = 확정 클립 워터마크 CTR·조회수 가중 경험적 베이즈 축소 → A=1위 · B=다음 순위(서로 다름 · ≥0.6 연결성 유지)
+- 💾 `WriteSidecarAsync` — `{base}_publish_pack.txt` 영상 옆 원자 기록(UTF-8 BOM · CRLF) · 경로 위생(절대 경로 · `..`/장치 접두 · 영상 확장자 · 링크/폴더 차단)
+- 🔁 `ReconcileAsync` — Drive·로컬 미러·피어 사본 합집합(더 높은 조회수 우선) · 어느 PC 카탈로그든 연결된 ID 정리 · 무변경 무기록 · Workspace 60초 간격
+- ☁️ `CompanionSyncFiles`(대기열) 쓰기 반환·미러·복원 편입(핵심 허브 9종·병합 허브 6종 불변) · 충돌 사본 의미 병합 지원 · 대기열 저장은 저장소 관리자 경유
+- 🧠 자체 추가 — ① 실제 YouTube 제목으로 A/B 판정(교정·Diverged 제외·판정 후 동결) ② 🪦 처리 기록(무시·페어링·연결 · 120일 · 200건)으로 재수집·타 PC·병합 시 부활 차단 ③ 근거 게이트(≥2)·조회수 50 하한·클립당 1표본 ④ 사이드카 링크/폴더 차단
 
 ## Notes
 - ⚠️ `.git` 은 `D:\Program` — `--git-dir=D:\Program\.git --work-tree=D:\Program\PromptFlowStudio` 필요
