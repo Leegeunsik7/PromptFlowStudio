@@ -277,6 +277,20 @@ public sealed class PlutoConflictMergeService
         return s is PlutoTitleAttributionStates.Confirmed or PlutoTitleAttributionStates.Diverged ? 2 : 1;
     }
 
+    /// <summary>🎯 Step 27 — 적용 기획안 출처 필드 묶음(부분 혼합 금지 · 채점 표식은 결과값과 한 묶음).</summary>
+    internal static readonly string[] AppliedBriefFields =
+    {
+        "AppliedBriefId", "AppliedBriefFormat", "AppliedBriefExpectedRetention", "AppliedBriefTitleFraming", "AppliedBriefEvaluated", "AppliedBriefKind",
+        "AppliedBriefHookStyle", "AppliedBriefColorLookId", "AppliedBriefBgmMood", "AppliedBriefTheme", "AppliedBriefAppliedAtUtc", "AppliedBriefSurpriseDelta",
+    };
+
+    /// <summary>🎯 출처 우열 — 채점 완료(2) &gt; 태깅만(1) &gt; 없음(0).</summary>
+    private static int AppliedBriefRank(JsonObject clip)
+    {
+        if (Str(clip, "AppliedBriefId").Length == 0) return 0;
+        return Bool(clip, "AppliedBriefEvaluated") && clip["AppliedBriefSurpriseDelta"] is JsonValue ? 2 : 1;
+    }
+
     private static JsonObject MergeCatalog(JsonObject a, JsonObject b)
     {
         var map = new Dictionary<string, JsonObject>(StringComparer.OrdinalIgnoreCase);
@@ -297,6 +311,13 @@ public sealed class PlutoConflictMergeService
                 // 🅰️🅱️ Step 25 — 제목 귀속: 실측 판정(Confirmed/Diverged) > 복사 기록 > 없음 · 필드 묶음 단위로 이전(부분 혼합 금지)
                 if (TitleAttributionRank(rest) > TitleAttributionRank(pick))
                     foreach (var f in TitleAttributionFields)
+                    {
+                        if (rest[f] is { } node) pick[f] = node.DeepClone();
+                        else pick.Remove(f);
+                    }
+                // 🎯 Step 27 — 기획 출처: 채점 완료 > 태깅 > 없음 · 묶음 단위 이전(상대 PC가 이미 채점한 클립을 다시 채점 · 사후 분석하지 않음)
+                if (AppliedBriefRank(rest) > AppliedBriefRank(pick))
+                    foreach (var f in AppliedBriefFields)
                     {
                         if (rest[f] is { } node) pick[f] = node.DeepClone();
                         else pick.Remove(f);

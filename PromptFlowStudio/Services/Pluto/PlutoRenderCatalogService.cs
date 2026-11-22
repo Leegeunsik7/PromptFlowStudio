@@ -35,6 +35,45 @@ public sealed record PlutoRenderedClipRecord(string VideoId, string Title, strin
 
     /// <summary>🅰️🅱️ 귀속 상태 — <see cref="PlutoTitleAttributionStates"/>(Copied → Confirmed | Diverged).</summary>
     public string? TitleAttribution { get; init; }
+
+    /// <summary>🎯 Step 27 — [기획 즉시 적용]으로 만든 클립의 기획안 ID(미적용 · 레거시 → null).</summary>
+    public string? AppliedBriefId { get; init; }
+
+    /// <summary>🎯 적용 기획안 형식(<c>단편</c> · <c>시리즈 3부작</c>).</summary>
+    public string? AppliedBriefFormat { get; init; }
+
+    /// <summary>🎯 기획 시점 기대 합성 지표(3초·완주·CTR 합성 0~100 · <see cref="PlutoBriefOutcomeAttributionService.Composite"/>).</summary>
+    public double? AppliedBriefExpectedRetention { get; init; }
+
+    /// <summary>🎯 기획안 제목 프레이밍.</summary>
+    public string? AppliedBriefTitleFraming { get; init; }
+
+    /// <summary>🎯 실측 채점 완료(클립당 정확히 1회 · 멀티 PC 병합 시 OR 유지).</summary>
+    public bool AppliedBriefEvaluated { get; init; }
+
+    /// <summary>🎯 기획안 종류(<see cref="PlutoTopicBriefKinds"/> — 활용/탐색 적중률 버킷).</summary>
+    public string? AppliedBriefKind { get; init; }
+
+    /// <summary>🎯 기획안 훅 스타일 라벨(사후 분석 조합 키 — 클립 HookStyle 은 자막 원문일 수 있음).</summary>
+    public string? AppliedBriefHookStyle { get; init; }
+
+    /// <summary>🎯 기획안 룩(사후 분석 조합 키).</summary>
+    public string? AppliedBriefColorLookId { get; init; }
+
+    /// <summary>🎯 기획안 BGM 무드.</summary>
+    public string? AppliedBriefBgmMood { get; init; }
+
+    /// <summary>🎯 기획안 테마(도메인 분류 · 사후 분석 사유).</summary>
+    public string? AppliedBriefTheme { get; init; }
+
+    /// <summary>🎯 적용 시각 — (기획안 ID, 적용 시각) = 기획 결정 1건(시리즈 여러 편은 1건으로 집계).</summary>
+    public DateTimeOffset? AppliedBriefAppliedAtUtc { get; init; }
+
+    /// <summary>🎯 채점 결과 SurpriseDelta = 실측 합성 − 기대(채점 전 → null).</summary>
+    public double? AppliedBriefSurpriseDelta { get; init; }
+
+    /// <summary>🎯 적용 기획안 추적 중.</summary>
+    public bool HasAppliedBrief => !string.IsNullOrEmpty(AppliedBriefId);
 }
 
 /// <summary>🅰️🅱️ Step 25 — 제목 귀속 상태 상수.</summary>
@@ -108,6 +147,9 @@ public interface IPlutoRenderCatalogService
 
     /// <summary>🅰️🅱️ Step 25 — 연결된 실제 YouTube 제목으로 변형 귀속 판정(Confirmed · Diverged · 변형 교정). 변경됨 → true. 기본 구현 = 미지원(false).</summary>
     Task<bool> ResolvePublishedTitleAsync(string clipVideoId, string? realizedTitle, CancellationToken ct = default) => Task.FromResult(false);
+
+    /// <summary>🎯 Step 27 — 적용 기획안 채점 결과를 게이트 안에서 원자적으로 1회 기록(미추적 · 이미 채점 → false = 정확히 1회 CAS). 기본 구현 = 미지원(false).</summary>
+    Task<bool> TryRecordBriefOutcomeAsync(string clipVideoId, double surpriseDelta, CancellationToken ct = default) => Task.FromResult(false);
 }
 
 /// <summary>
@@ -170,6 +212,18 @@ public sealed class PlutoRenderCatalogService : IPlutoRenderCatalogService, IPlu
         public string? AlternateTitleFraming { get; set; }
         public string? AlternateTitleText { get; set; }
         public string? TitleAttribution { get; set; }
+        public string? AppliedBriefId { get; set; }
+        public string? AppliedBriefFormat { get; set; }
+        public double? AppliedBriefExpectedRetention { get; set; }
+        public string? AppliedBriefTitleFraming { get; set; }
+        public bool AppliedBriefEvaluated { get; set; }
+        public string? AppliedBriefKind { get; set; }
+        public string? AppliedBriefHookStyle { get; set; }
+        public string? AppliedBriefColorLookId { get; set; }
+        public string? AppliedBriefBgmMood { get; set; }
+        public string? AppliedBriefTheme { get; set; }
+        public DateTimeOffset? AppliedBriefAppliedAtUtc { get; set; }
+        public double? AppliedBriefSurpriseDelta { get; set; }
     }
 
     /// <summary>워터마크 직렬화 DTO.</summary>
@@ -223,7 +277,31 @@ public sealed class PlutoRenderCatalogService : IPlutoRenderCatalogService, IPlu
             YouTubeVideoId = YouTubeStudioAnalyticsNormalizer.IsYouTubeVideoId(r.YouTubeVideoId?.Trim()) ? r.YouTubeVideoId!.Trim() : null,
             YouTubeWatermark = r.YouTubeWatermark is { Views: >= 0, Stage: >= 0 } w ? w : null,
         };
-        return SanitizeTitleAttribution(clean, r);
+        return SanitizeAppliedBrief(SanitizeTitleAttribution(clean, r), r);
+    }
+
+    private static string? OptField(string? v) { var c = Clip(v); return c.Length > 0 ? c : null; }
+
+    /// <summary>🎯 Step 27 — 기획 출처 정화: ID 없음 · 기대치 비유한 → 전부 해제(부분 상태 금지) · 채점 표식은 결과값과 함께만 유지.</summary>
+    private static PlutoRenderedClipRecord SanitizeAppliedBrief(PlutoRenderedClipRecord clean, PlutoRenderedClipRecord r)
+    {
+        var id = Clip(r.AppliedBriefId);
+        if (id.Length == 0 || r.AppliedBriefExpectedRetention is not { } exp || !double.IsFinite(exp))
+            return clean with
+            {
+                AppliedBriefId = null, AppliedBriefFormat = null, AppliedBriefExpectedRetention = null, AppliedBriefTitleFraming = null, AppliedBriefEvaluated = false,
+                AppliedBriefKind = null, AppliedBriefHookStyle = null, AppliedBriefColorLookId = null, AppliedBriefBgmMood = null, AppliedBriefTheme = null,
+                AppliedBriefAppliedAtUtc = null, AppliedBriefSurpriseDelta = null,
+            };
+        var delta = r.AppliedBriefSurpriseDelta is { } d && double.IsFinite(d) ? Math.Clamp(d, -100.0, 100.0) : (double?)null;
+        var evaluated = r.AppliedBriefEvaluated && delta is not null;
+        return clean with
+        {
+            AppliedBriefId = id, AppliedBriefFormat = OptField(r.AppliedBriefFormat), AppliedBriefExpectedRetention = Math.Clamp(exp, 0.0, 100.0),
+            AppliedBriefTitleFraming = OptField(r.AppliedBriefTitleFraming), AppliedBriefEvaluated = evaluated, AppliedBriefKind = OptField(r.AppliedBriefKind),
+            AppliedBriefHookStyle = OptField(r.AppliedBriefHookStyle), AppliedBriefColorLookId = OptField(r.AppliedBriefColorLookId), AppliedBriefBgmMood = OptField(r.AppliedBriefBgmMood),
+            AppliedBriefTheme = OptField(r.AppliedBriefTheme), AppliedBriefAppliedAtUtc = r.AppliedBriefAppliedAtUtc, AppliedBriefSurpriseDelta = evaluated ? delta : null,
+        };
     }
 
     /// <summary>🅰️🅱️ 제목 귀속 필드 정화 — 변형 ∉ {A,B} 또는 원문 없음 → 전부 해제(부분 상태 금지).</summary>
@@ -254,6 +332,10 @@ public sealed class PlutoRenderCatalogService : IPlutoRenderCatalogService, IPlu
         YouTubeWatermark = d.YouTubeWatermark is { } w ? new PlutoYouTubeIngestWatermark(w.Views, w.Stage, w.HookPct, w.CompletionPct, w.CtrPct, w.UpdatedUtc) : null,
         SelectedTitleVariant = d.SelectedTitleVariant, PublishedTitleFraming = d.PublishedTitleFraming, PublishedTitleText = d.PublishedTitleText,
         AlternateTitleFraming = d.AlternateTitleFraming, AlternateTitleText = d.AlternateTitleText, TitleAttribution = d.TitleAttribution,
+        AppliedBriefId = d.AppliedBriefId, AppliedBriefFormat = d.AppliedBriefFormat, AppliedBriefExpectedRetention = d.AppliedBriefExpectedRetention,
+        AppliedBriefTitleFraming = d.AppliedBriefTitleFraming, AppliedBriefEvaluated = d.AppliedBriefEvaluated, AppliedBriefKind = d.AppliedBriefKind,
+        AppliedBriefHookStyle = d.AppliedBriefHookStyle, AppliedBriefColorLookId = d.AppliedBriefColorLookId, AppliedBriefBgmMood = d.AppliedBriefBgmMood,
+        AppliedBriefTheme = d.AppliedBriefTheme, AppliedBriefAppliedAtUtc = d.AppliedBriefAppliedAtUtc, AppliedBriefSurpriseDelta = d.AppliedBriefSurpriseDelta,
     };
 
     private static ClipDto ToDto(PlutoRenderedClipRecord r) => new()
@@ -264,6 +346,10 @@ public sealed class PlutoRenderCatalogService : IPlutoRenderCatalogService, IPlu
         YouTubeWatermark = r.YouTubeWatermark is { } w ? new WatermarkDto { Views = w.Views, Stage = w.Stage, HookPct = w.HookPct, CompletionPct = w.CompletionPct, CtrPct = w.CtrPct, UpdatedUtc = w.UpdatedUtc } : null,
         SelectedTitleVariant = r.SelectedTitleVariant, PublishedTitleFraming = r.PublishedTitleFraming, PublishedTitleText = r.PublishedTitleText,
         AlternateTitleFraming = r.AlternateTitleFraming, AlternateTitleText = r.AlternateTitleText, TitleAttribution = r.TitleAttribution,
+        AppliedBriefId = r.AppliedBriefId, AppliedBriefFormat = r.AppliedBriefFormat, AppliedBriefExpectedRetention = r.AppliedBriefExpectedRetention,
+        AppliedBriefTitleFraming = r.AppliedBriefTitleFraming, AppliedBriefEvaluated = r.AppliedBriefEvaluated, AppliedBriefKind = r.AppliedBriefKind,
+        AppliedBriefHookStyle = r.AppliedBriefHookStyle, AppliedBriefColorLookId = r.AppliedBriefColorLookId, AppliedBriefBgmMood = r.AppliedBriefBgmMood,
+        AppliedBriefTheme = r.AppliedBriefTheme, AppliedBriefAppliedAtUtc = r.AppliedBriefAppliedAtUtc, AppliedBriefSurpriseDelta = r.AppliedBriefSurpriseDelta,
     };
 
     private async Task EnsureLoadedLockedAsync(CancellationToken ct)
@@ -496,6 +582,14 @@ public sealed class PlutoRenderCatalogService : IPlutoRenderCatalogService, IPlu
     {
         if (string.IsNullOrWhiteSpace(clipVideoId) || string.IsNullOrWhiteSpace(realizedTitle)) return false;
         return await MutateClipAsync(clipVideoId.Trim(), c => PlutoYouTubePublishPackService.ResolveRealizedTitle(c, realizedTitle), ct).ConfigureAwait(false);
+    }
+
+    public async Task<bool> TryRecordBriefOutcomeAsync(string clipVideoId, double surpriseDelta, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(clipVideoId) || !double.IsFinite(surpriseDelta)) return false;
+        var delta = Math.Clamp(surpriseDelta, -100.0, 100.0);
+        return await MutateClipAsync(clipVideoId.Trim(),
+            c => !c.HasAppliedBrief || c.AppliedBriefEvaluated ? c : c with { AppliedBriefEvaluated = true, AppliedBriefSurpriseDelta = delta }, ct).ConfigureAwait(false);
     }
 
     /// <summary>클립 1건을 게이트 안에서 변환(동일 → 무기록) · 변경 → 영속 + 통지.</summary>

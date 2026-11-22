@@ -147,6 +147,11 @@
                     <span class="@(bs.UnresolvedConflictCount > 0 ? "ws-pcore on" : "ws-retry")" data-brain-conflicts="@(bs.UnresolvedConflictCount.ToString(CultureInfo.InvariantCulture))" style="white-space:normal" title="두 PC 가 오프라인에서 같은 기록을 바꿔 Drive 동기화가 갈라진 경우 — 덮이기 전에 보관한 사본 수 · 환경설정에서 키 단위 병합/복원/무시">⚔️ 동기화 충돌: @(bs.ConflictLabel)</span>
                     @* 📺 Step 26 — 실측 유튜브 성과 요약 · 🎯 다음 제작 기획안(1클릭 적용 · 수동 자막 보존) *@
                     <span class="@(bs.RealizedYouTube.HasRealizedData ? "ws-pcore on" : "ws-retry")" data-brain-realized="@(bs.RealizedYouTube.MeasuredVideoCount.ToString(CultureInfo.InvariantCulture))" data-brain-realized-framing="@(bs.RealizedYouTube.LeadingFraming)" style="white-space:normal" title="YouTube ID 로 연결된 영상의 최신 워터마크 — CTR · 3초 유지율 · 완주율을 조회수 가중(1,000회에서 가중치 상한 · 바이럴 1편 독점 방지) · 선두 제목 프레이밍은 실측 귀속 2건부터 축소 CTR 로 판정">📺 실측 유튜브 성과 요약: @(bs.RealizedYouTubeLabel)</span>
+                    @if (bs.BriefHitRate.HasEvidence)
+                    {
+                        @* 📐 Step 27 — 기획안 적중률 요약(적용 기획 실측 채점 1건 이상) *@
+                        <span class="@(bs.BriefHitRate.HitRatePct >= 50.0 ? "ws-pcore on" : "ws-retry")" data-brain-brief-hitrate="@(bs.BriefHitRate.EvaluatedBriefs.ToString(CultureInfo.InvariantCulture))" style="white-space:normal" title="[기획 즉시 적용]으로 만든 영상의 실측 합성 지표(0.4·3초 + 0.4·완주 + 0.2·CTR×10)를 기획 시점 기대치와 비교 — 조회 50회부터 클립당 1회 채점 · 시리즈는 기획 1건으로 집계 · 기대 대비 −12p 이하면 그 훅×룩 조합을 오답 노트에 사후 분석 · 3건부터 활용/탐색 점수 보정">🎯 기획안 적중률 요약: @(bs.BriefHitRateLabel)</span>
+                    }
                     <div class="ws-topic-plans" data-topic-plan-count="@(_topicBriefs.Count.ToString(CultureInfo.InvariantCulture))" style="flex-basis:100%;display:flex;flex-direction:column;gap:4px;font-size:12px">
                         <div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center">
                             <span class="ws-retry">🗺️ 다음 제작 기획안</span>
@@ -3252,6 +3257,7 @@
             }
             Snap("🔭 기획안: " + brief.Title);
             _appliedBriefTitle = brief.Title;
+            _appliedBriefArm = null;   // 🎯 Step 27 — 다른 기획 적용 → 기획 출처 무장 해제(오귀속 방지)
             if (PromptFlowStudio.Services.Pluto.PlutoColorGradingCompiler.TryGetPreset(brief.RecommendedColorLook) is not null) _learnedLookPinned = brief.RecommendedColorLook;
             RefreshMontageLook();
             var bgmNote = await ApplyBgmMoodAsync(brief.RecommendedBgmMood);
@@ -3466,6 +3472,7 @@
     private int _topicPlanSeq;
     /// <summary>📚 기획안이 정한 시리즈 편수(0 → 분할기 기본 3편).</summary>
     private int _plannedSeriesEpisodes;
+    private PromptFlowStudio.Services.Pluto.PlutoAppliedBriefArm? _appliedBriefArm;   // 🎯 Step 27 기획 출처 무장
     /// <summary>✏️ 마지막 수동 편집 직후의 자막 목록 참조 — 현재 자막과 같으면 '직접 고친 자막'(기획 적용이 재생성하지 않음).</summary>
     private object? _cuesManualEditRef;
 
@@ -3515,6 +3522,7 @@
             Snap("🎯 기획: " + brief.Theme);
             _appliedBriefTitle = brief.Theme;
             _plannedSeriesEpisodes = brief.IsSeries ? brief.TotalEpisodes : 0;
+            _appliedBriefArm = PromptFlowStudio.Services.Pluto.PlutoAppliedBriefArm.From(brief, DateTimeOffset.UtcNow);   // 🎯 Step 27 — 다음 렌더 클립에 기획 출처(TTL · 충실도 · 편수 예산)
             if (PromptFlowStudio.Services.Pluto.PlutoColorGradingCompiler.TryGetPreset(brief.ColorLookId) is not null) _learnedLookPinned = brief.ColorLookId;
             RefreshMontageLook();
             var bgmNote = await ApplyBgmMoodAsync(brief.BgmMood);
@@ -3642,6 +3650,9 @@
         }
         var record = new PromptFlowStudio.Services.Pluto.PlutoRenderedClipRecord(_perfVideoId, title, mode, _perfHookStyle, _perfLookId, _perfBgmMood,
             SplitPerfTags(_perfStyleTags), renderedPath, DateTimeOffset.UtcNow, false);
+        // 🎯 Step 27 — [기획 즉시 적용] 출처 찍기(룩/BGM 을 바꿨으면 기획 책임 아님 · 편수 예산 · 48시간 TTL)
+        try { record = PromptFlowStudio.Services.Pluto.PlutoBriefOutcomeAttributionService.StampProvenance(record, _appliedBriefArm, DateTimeOffset.UtcNow, ReferenceEquals(mode, source) ? 0 : _seriesActiveEpisode, out _appliedBriefArm, out _); }
+        catch (Exception ex) { Program.Log("Workspace.BriefProvenance", ex); }
         // ⚡ 시리즈 편은 아크 메모리에 즉시 반영(동기 write-through) — 카탈로그 기록(비동기)이 끝나기 전에 다음 편을 불러와도 이 편의 룩/BGM 이 앵커로 이어진다
         try { if (SeriesArcMemory() is { } arcMem && arcMem.RecordRenderedEpisode(record)) RefreshSeriesSeasonInfo(); }
         catch (Exception ex) { Program.Log("Workspace.SeriesWriteThrough", ex); }
@@ -4751,6 +4762,7 @@
             _ytWatchOn = _ytWatcher.IsEnabled;
             if (_ytWatchOn) _ytWatcher.Start();   // 멱등 · 격리 env(PROMPTFLOW_PLUTO_DRIVE=off 등) → 미기동
             _ = PruneYouTubeLedgerAsync(_ytWatcher);        // 🧹 Step 24 장부 TTL/상한 정리 영속
+            (EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoBriefOutcomeAttributionService)) as PromptFlowStudio.Services.Pluto.IPlutoBriefOutcomeAttributionService)?.Start();   // 🎯 Step 27 — 카탈로그 변경 → 적용 기획 실측 채점(멱등)
         }
         catch (Exception ex) { Program.Log("Workspace.YouTubeAutoWatchAttach", ex); }
     }

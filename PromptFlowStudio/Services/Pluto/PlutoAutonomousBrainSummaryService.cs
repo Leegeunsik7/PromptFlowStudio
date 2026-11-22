@@ -86,6 +86,10 @@ public sealed record PlutoBrainSummarySnapshot(int TotalEvaluatedExperiments, in
     public PlutoRealizedYouTubeSummary RealizedYouTube { get; init; } = PlutoRealizedYouTubeSummary.Empty;
     /// <summary>📺 Step 26 — 실측 유튜브 성과 요약 1줄(결정론 한국어).</summary>
     public string RealizedYouTubeLabel { get; init; } = PlutoAutonomousBrainSummaryService.NoneLabel;
+    /// <summary>📐 Step 27 — 적용 기획안 적중률(카탈로그 채점 결과 파생).</summary>
+    public PlutoBriefHitRateSummary BriefHitRate { get; init; } = PlutoBriefHitRateSummary.Empty;
+    /// <summary>📐 Step 27 — 기획안 적중률 요약 1줄(평가 1건 이상일 때만 본문 노출).</summary>
+    public string BriefHitRateLabel { get; init; } = PlutoAutonomousBrainSummaryService.NoneLabel;
 }
 
 /// <summary>🧠 Pluto 4.6 자율 두뇌 텔레메트리 요약 — 실험 장부 × 적응형 랭커 × 오답 노트 집계.</summary>
@@ -157,6 +161,7 @@ public sealed class PlutoAutonomousBrainSummaryService : IPlutoAutonomousBrainSu
         PlutoContextBackfillReport? backfill = null;
         int conflicts = 0, pendingResolutions = 0;
         var realized = PlutoRealizedYouTubeSummary.Empty;
+        var briefHitRate = PlutoBriefHitRateSummary.Empty;
 
         if (Backfill is not null)
         {
@@ -236,7 +241,12 @@ public sealed class PlutoAutonomousBrainSummaryService : IPlutoAutonomousBrainSu
 
         if (Catalog is not null)
         {
-            try { realized = PlutoRealizedYouTubeSummary.Compute(await Catalog.GetRecentClipsAsync(PlutoRenderCatalogService.Capacity, ct).ConfigureAwait(false)); }
+            try
+            {
+                var clips = await Catalog.GetRecentClipsAsync(PlutoRenderCatalogService.Capacity, ct).ConfigureAwait(false);
+                realized = PlutoRealizedYouTubeSummary.Compute(clips);
+                briefHitRate = PlutoBriefHitRateSummary.Compute(clips);   // 📐 Step 27 — 같은 스냅샷에서 파생(별도 카운터 없음)
+            }
             catch (OperationCanceledException) { throw; }
             catch (Exception ex) { Program.Log("Pluto.BrainSummary.Realized", ex); }   // [부분 구제]
         }
@@ -277,6 +287,8 @@ public sealed class PlutoAutonomousBrainSummaryService : IPlutoAutonomousBrainSu
             Backfill = backfill,
             RealizedYouTube = realized,
             RealizedYouTubeLabel = realized.ToLabel(),
+            BriefHitRate = briefHitRate,
+            BriefHitRateLabel = briefHitRate.ToLabel(),
         };
     }
 

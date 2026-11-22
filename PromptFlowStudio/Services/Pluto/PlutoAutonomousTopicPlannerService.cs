@@ -32,6 +32,10 @@ public sealed record PlutoTopicBrief(int Rank, string BriefId, string Kind, stri
     public bool IsColdStart { get; init; }
     /// <summary>이어가기 · 재시작 대상 시리즈 키(그 밖 → 빈 문자열).</summary>
     public string SeriesKey { get; init; } = string.Empty;
+    /// <summary>📏 Step 27 — 기획 시점 기대 합성 지표(0~100 · <see cref="PlutoBriefOutcomeAttributionService.Composite"/>) — 실측 채점 기준선.</summary>
+    public double ExpectedComposite { get; init; }
+    /// <summary>📏 기대치가 채널 실측에 근거(아니면 사전값).</summary>
+    public bool ExpectedEvidenced { get; init; }
 }
 
 /// <summary>🎯 Step 26 — 기획 합성 입력(순수 · 결정론 · 테스트 가능).</summary>
@@ -44,6 +48,10 @@ public sealed record PlutoTopicPlannerInputs
     public IReadOnlyList<PlutoTitleFramingStat> FramingRanking { get; init; } = Array.Empty<PlutoTitleFramingStat>();
     public IReadOnlyList<PlutoSeriesArcReport> SeriesArcs { get; init; } = Array.Empty<PlutoSeriesArcReport>();
     public IReadOnlySet<string>? Suppressed { get; init; }
+    /// <summary>🩻 Step 27 — 오답 노트 차단 조합 키(<c>pair:</c> · <c>domain_hook:</c> — 기획 사후 분석 포함).</summary>
+    public IReadOnlySet<string>? SuppressedComposites { get; init; }
+    /// <summary>📐 Step 27 — 기획안 적중률(null → 카탈로그 <see cref="RecentClips"/>에서 파생).</summary>
+    public PlutoBriefHitRateSummary? HitRate { get; init; }
     public IReadOnlyList<PlutoRenderedClipRecord> RecentClips { get; init; } = Array.Empty<PlutoRenderedClipRecord>();
     public string? SeedTheme { get; init; }
     public DateTimeOffset NowUtc { get; init; }
@@ -190,11 +198,11 @@ public sealed class PlutoAutonomousTopicPlannerService : IPlutoAutonomousTopicPl
         IReadOnlyList<PlutoRenderedClipRecord> clips = Array.Empty<PlutoRenderedClipRecord>();
         IReadOnlyList<PlutoTitleFramingStat> framing = Array.Empty<PlutoTitleFramingStat>();
         IReadOnlyList<PlutoSeriesArcReport> arcs = Array.Empty<PlutoSeriesArcReport>();
-        IReadOnlySet<string>? suppressed = null;
+        IReadOnlySet<string>? suppressed = null, composites = null;
 
         if (_notebook is not null)
         {
-            try { await _notebook.EnsureLoadedAsync(ct).ConfigureAwait(false); suppressed = _notebook.GetSuppressedTokens(); }
+            try { await _notebook.EnsureLoadedAsync(ct).ConfigureAwait(false); suppressed = _notebook.GetSuppressedTokens(); composites = _notebook.GetSuppressedCompositeKeys(); }
             catch (OperationCanceledException) { throw; }
             catch (Exception ex) { Program.Log("Pluto.TopicPlanner.Notebook", ex); }   // [부분 구제]
         }
@@ -244,7 +252,7 @@ public sealed class PlutoAutonomousTopicPlannerService : IPlutoAutonomousTopicPl
         return Synthesize(new PlutoTopicPlannerInputs
         {
             Hooks = hooks, Looks = looks, BgmMoods = bgms, StyleTags = tags, FramingRanking = framing, SeriesArcs = arcs,
-            Suppressed = suppressed, RecentClips = clips, SeedTheme = seedTheme, NowUtc = UtcNowProvider?.Invoke() ?? DateTimeOffset.UtcNow, MaxBriefs = maxBriefs,
+            Suppressed = suppressed, SuppressedComposites = composites, RecentClips = clips, SeedTheme = seedTheme, NowUtc = UtcNowProvider?.Invoke() ?? DateTimeOffset.UtcNow, MaxBriefs = maxBriefs,
         });
 
         IReadOnlyList<PlutoRankedOption> RankSafe(PlutoPatternKind kind, string? domain)
@@ -435,6 +443,16 @@ public sealed class PlutoAutonomousTopicPlannerService : IPlutoAutonomousTopicPl
                 topTags, framing, 0, framingEvidenced, 0.7 * h.FinalScore * (1.0 - fat), coldStart, blockedCount, null, h, ""));
         }
 
+        // ── 🩻 Step 27 사후 분석 조합 가드 · 📐 적중률 보정 ──
+        var seedDomain = string.IsNullOrWhiteSpace(inputs.SeedTheme) ? null : PromptDomainClassifier.Classify(inputs.SeedTheme).ToString();
+        var hitRate = inputs.HitRate ?? PlutoBriefHitRateSummary.Compute(inputs.RecentClips);
+        for (var i = candidates.Count - 1; i >= 0; i--)
+        {
+            var guarded = GuardComposites(candidates[i], inputs.SuppressedComposites, looks, seedDomain);
+            if (guarded is null) { candidates.RemoveAt(i); continue; }
+            candidates[i] = Calibrate(guarded, hitRate);
+        }
+
         candidates.Sort(static (a, b) =>
         {
             var c = b.Score.CompareTo(a.Score);
@@ -471,9 +489,54 @@ public sealed class PlutoAutonomousTopicPlannerService : IPlutoAutonomousTopicPl
                 }
                 b = b with { Theme = theme, RationaleKorean = rationale };
             }
-            result.Add(b with { Rank = i + 1 });
+            // 🆔 Step 27 — 최종 내용(배정 테마 · 다양성 교체 룩/BGM · 편 번호)으로 ID 재발급 → 다른 기획이 같은 ID 로 성과를 공유하지 않음
+            var expected = PlutoBriefOutcomeAttributionService.EstimateExpectedComposite(b.Kind, b.HookStyle, inputs.RecentClips, out var evidenced, out var hookN);
+            b = b with
+            {
+                Rank = i + 1,
+                BriefId = BriefIdOf(b.Kind, b.Theme, b.HookStyle, b.ColorLookId, b.BgmMood, b.SeriesKey, b.NextEpisodeNumber),
+                ExpectedComposite = expected,
+                ExpectedEvidenced = evidenced,
+                RationaleKorean = b.RationaleKorean + " · 📏 기대 합성 " + expected.ToString("0.0", Inv) + "p"
+                    + (evidenced ? (hookN > 0 ? "(훅 실측 " + hookN.ToString(Inv) + "편 수축)" : "(채널 기준선)") : "(사전)"),
+            };
+            result.Add(b);
         }
         return result;
+    }
+
+    /// <summary>
+    /// 🩻 Step 27 — 오답 노트 차단 조합 가드: (훅, 룩) 쌍 차단 → 차단되지 않은 대안 룩으로 교체(없음 → 탈락) ·
+    /// (도메인, 훅) 차단 → 탈락(그 맥락에서 실측 붕괴한 정확한 조합만 회피 · 훅 자체는 다른 맥락에서 계속 사용).
+    /// </summary>
+    public static PlutoTopicBrief? GuardComposites(PlutoTopicBrief b, IReadOnlySet<string>? composites, IReadOnlyList<PlutoRankedOption> looks, string? seedDomain)
+    {
+        if (composites is not { Count: > 0 } || b.HookStyle.Length == 0) return b;
+        var domain = b.Theme.Length > 0 ? PromptDomainClassifier.Classify(b.Theme).ToString() : seedDomain;
+        if (domain is not null && PlutoPairAttribution.DomainHookKey(domain, b.HookStyle) is { } dh && composites.Contains(dh)) return null;
+        if (PlutoPairAttribution.PairKey(b.HookStyle, b.ColorLookId) is not { } pair || !composites.Contains(pair)) return b;
+        foreach (var l in looks)
+        {
+            if (PlutoPairAttribution.PairKey(b.HookStyle, l.DisplayLabel) is { } alt && !composites.Contains(alt))
+                return b with { ColorLookId = l.DisplayLabel, RationaleKorean = b.RationaleKorean + " · 🩻 사후 분석 조합(훅×" + b.ColorLookId + ") 회피 → 룩 " + l.DisplayLabel };
+        }
+        return null;
+    }
+
+    /// <summary>📐 Step 27 — 적중률 보정: 활용(파레토) ×<see cref="PlutoBriefHitRateSummary.ExploitFactor"/> · 탐색/경험적 베이즈 ×<see cref="PlutoBriefHitRateSummary.ExploreFactor"/>(평가 3건 미만 → 무보정).</summary>
+    public static PlutoTopicBrief Calibrate(PlutoTopicBrief b, PlutoBriefHitRateSummary? hitRate)
+    {
+        if (hitRate is null || !hitRate.IsCalibrating) return b;
+        double f;
+        if (b.Kind == PlutoTopicBriefKinds.ParetoExploit) f = hitRate.ExploitFactor;
+        else if (b.Kind is PlutoTopicBriefKinds.UpsideExplore or PlutoTopicBriefKinds.ColdStartPrior) f = hitRate.ExploreFactor;
+        else return b;   // 시리즈 이어가기/재시작은 구조적 우선순위 유지
+        if (Math.Abs(f - 1.0) < PlutoAdaptivePatternRanker.Epsilon) return b;
+        return b with
+        {
+            Score = b.Score * f,
+            RationaleKorean = b.RationaleKorean + " · 📐 기획 적중률 " + hitRate.Hits.ToString(Inv) + "/" + hitRate.EvaluatedBriefs.ToString(Inv) + " → ×" + f.ToString("0.00", Inv),
+        };
     }
 
     /// <summary>🧩 이미 선택된 (비시리즈) 기획안과 훅이 겹치면 탈락 · (룩, BGM)이 모두 같으면 미사용 대안 룩 → BGM 순으로 교체(불가 → 탈락).</summary>
@@ -637,7 +700,7 @@ public sealed class PlutoAutonomousTopicPlannerService : IPlutoAutonomousTopicPl
     {
         var f = framing.Count > 0 ? framing[Math.Clamp(framingIndex, 0, framing.Count - 1)] : new PlutoTitleFramingStat(PlutoTitleFramings.OutcomeProof, 0, 0, 0, 0);
         var rationale = BuildRationale(kind, leadReason, hookOpt, f, framingEvidenced, framingIndex, coldStart, blockedCount);
-        var id = BriefIdOf(kind, theme, hook, look, bgm, seriesKey);
+        var id = BriefIdOf(kind, theme, hook, look, bgm, seriesKey, next);
         return new PlutoTopicBrief(0, id, kind, theme, angle, FormatFor(total), total, next, hook, look, bgm, tags, f.Framing, framingEvidenced && f.Samples > 0, score, rationale)
         {
             IsColdStart = coldStart,
@@ -669,10 +732,11 @@ public sealed class PlutoAutonomousTopicPlannerService : IPlutoAutonomousTopicPl
         return sb.ToString();
     }
 
-    private static string BriefIdOf(string kind, string theme, string hook, string look, string bgm, string seriesKey)
+    /// <summary>🆔 기획안 ID(FNV-1a · 종류 · 테마 · 훅 · 룩 · BGM · 시리즈 키 · 편 번호).</summary>
+    public static string BriefIdOf(string kind, string theme, string hook, string look, string bgm, string seriesKey, int nextEpisode)
     {
         var h = 2166136261u;
-        foreach (var s in new[] { kind, theme, hook, look, bgm, seriesKey })
+        foreach (var s in new[] { kind, theme, hook, look, bgm, seriesKey, nextEpisode.ToString(Inv) })
         {
             foreach (var ch in s) { h ^= ch; h *= 16777619u; }
             h ^= '|'; h *= 16777619u;
