@@ -4,6 +4,8 @@
 @inject MemberRegistryService Members
 @inject NavigationManager Nav
 @inject PromptFlowStudio.Services.Pluto.IPlutoDriveHealthService DriveHealth
+@inject PromptFlowStudio.Services.Pluto.IPlutoSystemDiagnosticService PlutoDiagnostics
+@inject PromptFlowStudio.Services.Platform.IClipboardService Clipboard
 @using PromptFlowStudio.Services.Pluto
 @using System.Globalization
 
@@ -88,6 +90,7 @@ else
                     }
                 </div>
                 <button class="dh-btn" disabled="@_driveBusy" @onclick="VerifyDriveAsync">@(_driveBusy ? "⏳ 검증 중…" : "🔄 지금 전체 드라이브 백업 검증")</button>
+                <button class="dh-btn" data-pluto-diagnostic-copy="1" disabled="@_diagBusy" @onclick="CopyPlutoDiagnosticAsync" title="9 허브 Drive 동기화 · 충돌 · 실측 YouTube · 기획 적중률 · 4축 파레토 · 오답 노트 가드(감쇠 잔여 벌점)를 Markdown 으로 복사 — 절대 경로는 파일명만 남김">@(_diagBusy ? "⏳ 진단 수집 중…" : "[🩺 플루토 진단 리포트 복사]")</button>
             </div>
             @if (_drive?.LiveProbe is { } lp)
             {
@@ -106,6 +109,7 @@ else
                         <button class="dh-btn" data-conflict-dismiss="1" disabled="@_driveBusy" @onclick="() => ResolveConflict(cRef, 3)" title="사본을 지우고 현재 기록을 유지합니다">🗑️ 무시</button>
                     </div>
                 }
+                @if (_diagToast is { } dgt) { <div class="dh-sum" role="status" data-pluto-diagnostic-toast="1">@(dgt)</div> }
                 @if (_conflictToast is { } ct) { <div class="dh-err" role="status" data-conflict-toast="1">@(ct)</div> }
             </div>
             @if (_drive is { } r2)
@@ -258,6 +262,23 @@ else
         catch (Exception ex) { Program.Log("Settings.ConflictResolve", ex); _conflictToast = "⚠ 처리 실패: " + ex.Message; }
         finally { _driveBusy = false; }
         RefreshConflicts();
+    }
+
+    // ── 🩺 Step 28 — 통합 Pluto 진단 스냅샷(클립보드) ──
+    private bool _diagBusy;
+    private string? _diagToast;
+
+    private async Task CopyPlutoDiagnosticAsync()
+    {
+        if (_diagBusy) return;
+        _diagBusy = true;
+        try
+        {
+            var md = await PlutoDiagnostics.BuildSnapshotMarkdownAsync();
+            _diagToast = Clipboard.SetText(md) ? "🩺 플루토 진단 리포트를 복사했습니다(" + md.Length.ToString(CultureInfo.InvariantCulture) + "자)" : "⚠ 클립보드 복사에 실패했습니다";
+        }
+        catch (Exception ex) { Program.Log("Settings.PlutoDiagnostic", ex); _diagToast = "⚠ 진단 수집 실패: " + ex.Message; }
+        finally { _diagBusy = false; }
     }
 
     private async Task VerifyDriveAsync()

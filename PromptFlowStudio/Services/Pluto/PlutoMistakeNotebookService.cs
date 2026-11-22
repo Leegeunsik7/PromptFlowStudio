@@ -9,7 +9,22 @@ using System.Threading.Tasks;
 namespace PromptFlowStudio.Services.Pluto;
 
 /// <summary>🛡️ 오답 노트 활성 가드 스냅샷 — 패턴 키 · 실패 차원 · 한국어 진단 사유 · 현재 유효 벌점 · 최근 기록 시각.</summary>
-public sealed record PlutoMistakeRuleSnapshot(string PatternKey, string FailureDimension, string DiagnosticReasonKorean, double PenaltyWeight, DateTimeOffset RecordedAtUtc);
+public sealed record PlutoMistakeRuleSnapshot(string PatternKey, string FailureDimension, string DiagnosticReasonKorean, double PenaltyWeight, DateTimeOffset RecordedAtUtc)
+{
+    /// <summary>🩻 Step 28 — 자동 사후 분석(기획안 실측 미달) 출처 여부.</summary>
+    public bool IsPostMortem { get; init; }
+    /// <summary>⏳ 이 규칙에 적용되는 반감기(일) — 사후 분석 30 · 그 밖 21.</summary>
+    public double HalfLifeDays { get; init; } = PlutoMistakeNotebookService.HalfLifeDays;
+    /// <summary>⏳ 재범 없을 때 자연 해제(&lt; 해제 임계)까지 남은 일수.</summary>
+    public double DaysUntilRelease { get; init; }
+}
+
+/// <summary>🌱 Step 28 — 유기적 복권 결과(감쇠된 조합 키 · 클립 중복/인과 위반으로 건너뛴 키 수).</summary>
+public sealed record PlutoRehabilitationResult(IReadOnlyList<string> AttenuatedKeys, int SkippedDuplicate, int SkippedCausality)
+{
+    public static readonly PlutoRehabilitationResult None = new(Array.Empty<string>(), 0, 0);
+    public bool Any => AttenuatedKeys.Count > 0;
+}
 
 /// <summary>
 /// 🛡️ Pluto 오답 노트 — 👎/소프트 스킵 패턴 토큰(바이럴 태그 · 카메라 앵글 · BGM 무드)에 벌점 누적 → 21일 반감기 감쇠 →
@@ -57,6 +72,17 @@ public interface IPlutoMistakeNotebookService
     /// <summary>⏳ 시간 감쇠 현황(추적 · 가드 · 회복 중 · 감쇠율 · 다음 자연 해제 예상).</summary>
     PlutoMistakeDecayStatus GetDecayStatus() => PlutoMistakeDecayStatus.Empty;
 
+    /// <summary>🩻 Step 28 — 자동 사후 분석 벌점(30일 반감기 출처 표식 · 기본 구현 → 구조화 진단 벌점).</summary>
+    Task RecordPostMortemMistakeAsync(IEnumerable<string> tokens, double penaltyWeight, string failureDimension, string? reason = null, CancellationToken ct = default)
+        => RecordDiagnosedMistakeAsync(tokens, penaltyWeight, failureDimension, reason, ct);
+
+    /// <summary>
+    /// 🌱 Step 28 — 유기적 복권: 벌점 조합 키(<c>pair:</c> · <c>domain_hook:</c>)를 쓴 클립이 기대 대비 ≥ <see cref="PlutoMistakeNotebookService.RehabilitationDeltaPoints"/>p 초과 달성 →
+    /// 유효 벌점 × <see cref="PlutoMistakeNotebookService.RehabilitationFactor"/>(클립당 1회 · 벌점 기록 이후 렌더된 클립만). 기본 구현 = 미지원.
+    /// </summary>
+    Task<PlutoRehabilitationResult> RecordOrganicRecoveryAsync(IEnumerable<string> compositeKeys, string clipId, double surpriseDelta, DateTime clipRenderedUtc, CancellationToken ct = default)
+        => Task.FromResult(PlutoRehabilitationResult.None);
+
     /// <summary>상태 변경 통지(백그라운드 스레드 가능).</summary>
     event Action? Changed;
 }
@@ -81,6 +107,18 @@ public sealed class PlutoMistakeNotebookService : IPlutoMistakeNotebookService, 
     public const string FileName = "pluto_mistake_notebook.json";
     /// <summary>⏳ 벌점 반감기(일) — 재범 없으면 21일마다 절반으로 감쇠해 점진 복권.</summary>
     public const double HalfLifeDays = 21.0;
+    /// <summary>⏳ Step 28 — 자동 사후 분석 벌점 반감기(일).</summary>
+    public const double PostMortemHalfLifeDays = 30.0;
+    /// <summary>🌱 유기적 복권 최소 SurpriseDelta(포인트).</summary>
+    public const double RehabilitationDeltaPoints = 8.0;
+    /// <summary>🌱 복권 1회당 유효 벌점 배수(2.0 → 0.7 &lt; 해제 임계 0.8 → 갓 생긴 사후 분석 차단도 1회로 해제).</summary>
+    public const double RehabilitationFactor = 0.35;
+    /// <summary>🌱 엔트리당 복권 클립 ID 보관 상한(FIFO).</summary>
+    public const int MaxRehabilitatedClipIds = 32;
+    /// <summary>엔트리 출처 — 자동 사후 분석 · 피드백(👎 · 스킵 · 진단).</summary>
+    public const string OriginPostMortem = "postmortem", OriginFeedback = "feedback";
+    /// <summary>Step 27 사후 분석 사유 접두(레거시 출처 추론 — <see cref="PlutoBriefOutcomeAttributionService.PostMortemReasonPrefix"/>와 동일).</summary>
+    public const string LegacyPostMortemReasonPrefix = "brief-postmortem: ";
     /// <summary>회복 중 판정 최소 유효 벌점(미만 → 사실상 소멸).</summary>
     public const double RecoveringFloor = 0.05;
     public const double BlockThreshold = 1.8;
@@ -161,7 +199,31 @@ public sealed class PlutoMistakeNotebookService : IPlutoMistakeNotebookService, 
         public string? FailureDimension { get; set; }
         /// <summary>🩺 한국어 진단 사유(구버전 파일 → null).</summary>
         public string? DiagnosticReason { get; set; }
+        /// <summary>🩻 Step 28 출처(<see cref="OriginPostMortem"/> · <see cref="OriginFeedback"/> · 구버전 → null = 사유 접두로 추론).</summary>
+        public string? Origin { get; set; }
+        /// <summary>🌱 마지막 벌점 가산 시각(인과 가드 · 구버전 → null = <see cref="LastUtc"/>).</summary>
+        public DateTime? PenalizedAtUtc { get; set; }
+        /// <summary>🌱 이미 복권에 반영한 클립 ID(클립당 1회).</summary>
+        public List<string>? RehabilitatedClipIds { get; set; }
     }
+
+    /// <summary>🩻 자동 사후 분석 엔트리 — 명시 출처 우선 · 레거시(출처 없음)는 조합 키 + Step 27 사유 접두로 추론.</summary>
+    public static bool IsAutomatedPostMortem(Entry e)
+    {
+        if (e is null) return false;
+        if (e.Origin is { Length: > 0 } o) return string.Equals(o, OriginPostMortem, StringComparison.Ordinal);
+        return PlutoPairAttribution.IsCompositeKey(e.Label) && e.LastReason is { } r && r.StartsWith(LegacyPostMortemReasonPrefix, StringComparison.Ordinal);
+    }
+
+    /// <summary>⏳ 엔트리별 반감기(사후 분석 30일 · 그 밖 21일).</summary>
+    public static double HalfLifeOf(Entry e) => IsAutomatedPostMortem(e) ? PostMortemHalfLifeDays : HalfLifeDays;
+
+    /// <summary>엔트리 유효 벌점(엔트리별 반감기).</summary>
+    public static double DecayOf(Entry e, DateTime nowUtc) => Decay(e.RawPenalty, e.LastUtc, nowUtc, HalfLifeOf(e));
+
+    /// <summary>⏳ 유효 벌점 → 해제 임계 미만까지 남은 일수(이미 미만 → 0).</summary>
+    public static double DaysUntilRelease(double effective, double halfLifeDays)
+        => effective > ReleaseThreshold && double.IsFinite(effective) ? Math.Max(0.0, halfLifeDays * Math.Log2(effective / ReleaseThreshold)) : 0.0;
 
     /// <summary>영속 스냅샷(버전 필드로 향후 스키마 확장).</summary>
     public sealed class Snapshot
@@ -171,12 +233,16 @@ public sealed class PlutoMistakeNotebookService : IPlutoMistakeNotebookService, 
     }
 
     /// <summary>P_eff = P_raw × 0.5^(Δt_days / 21) — 음수 Δt(시계 역행) → 감쇠 없음.</summary>
-    public static double Decay(double raw, DateTime lastUtc, DateTime nowUtc)
+    public static double Decay(double raw, DateTime lastUtc, DateTime nowUtc) => Decay(raw, lastUtc, nowUtc, HalfLifeDays);
+
+    /// <summary>P_eff = P_raw × 0.5^(Δt_days / halfLife) — 반감기 비정상 → 기본 21일.</summary>
+    public static double Decay(double raw, DateTime lastUtc, DateTime nowUtc, double halfLifeDays)
     {
         if (!(raw > 0) || !double.IsFinite(raw)) return 0;
         var days = (nowUtc - lastUtc).TotalDays;
         if (!(days > 0)) return raw;
-        return raw * Math.Pow(0.5, days / HalfLifeDays);
+        var hl = double.IsFinite(halfLifeDays) && halfLifeDays > 0 ? halfLifeDays : HalfLifeDays;
+        return raw * Math.Pow(0.5, days / hl);
     }
 
     /// <summary>슈미트 트리거 — 해제 상태는 ≥ 차단 임계에서만 차단 · 차단 상태는 &lt; 해제 임계에서만 해제.</summary>
@@ -252,12 +318,15 @@ public sealed class PlutoMistakeNotebookService : IPlutoMistakeNotebookService, 
     }
 
     public Task RecordNegativeFeedbackAsync(IEnumerable<string> tokens, double penaltyWeight = DislikePenalty, string? reason = null, CancellationToken ct = default)
-        => RecordCoreAsync(tokens, penaltyWeight, null, reason, ct);
+        => RecordCoreAsync(tokens, penaltyWeight, null, reason, OriginFeedback, ct);
 
     public Task RecordDiagnosedMistakeAsync(IEnumerable<string> tokens, double penaltyWeight, string failureDimension, string? reason = null, CancellationToken ct = default)
-        => RecordCoreAsync(tokens, penaltyWeight, NormalizeDimension(failureDimension), reason, ct);
+        => RecordCoreAsync(tokens, penaltyWeight, NormalizeDimension(failureDimension), reason, OriginFeedback, ct);
 
-    private async Task RecordCoreAsync(IEnumerable<string> tokens, double penaltyWeight, string? dimension, string? reason, CancellationToken ct)
+    public Task RecordPostMortemMistakeAsync(IEnumerable<string> tokens, double penaltyWeight, string failureDimension, string? reason = null, CancellationToken ct = default)
+        => RecordCoreAsync(tokens, penaltyWeight, NormalizeDimension(failureDimension), reason, OriginPostMortem, ct);
+
+    private async Task RecordCoreAsync(IEnumerable<string> tokens, double penaltyWeight, string? dimension, string? reason, string origin, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(tokens);
         if (!double.IsFinite(penaltyWeight) || penaltyWeight <= 0) throw new ArgumentOutOfRangeException(nameof(penaltyWeight));
@@ -272,11 +341,13 @@ public sealed class PlutoMistakeNotebookService : IPlutoMistakeNotebookService, 
                 var key = Normalize(raw);
                 if (key is null || !seen.Add(key)) continue;
                 if (!_entries.TryGetValue(key, out var e)) { e = new Entry { Label = key }; _entries[key] = e; }
-                var decayed = Decay(e.RawPenalty, e.LastUtc, now);
+                var decayed = DecayOf(e, now);   // ⏳ 기존 출처의 반감기로 재기준 → 그 뒤 출처 전환(유효 벌점 연속)
                 var settled = NextSuppressedState(e.IsSuppressed, decayed);   // 🩹 감쇠로 이미 해제됐어야 할 낡은 래치를 먼저 정산(조회 유무와 무관한 히스테리시스)
                 var eff = decayed + penaltyWeight;
                 e.RawPenalty = eff;
                 e.LastUtc = now;
+                e.PenalizedAtUtc = now;
+                e.Origin = origin;
                 e.Hits++;
                 if (reason is { Length: > 0 }) e.LastReason = reason.Length > MaxTokenLength ? reason[..MaxTokenLength] : reason;
                 if (dimension is not null || e.FailureDimension is null)   // 일반 벌점은 기존 구조화 진단을 덮지 않음
@@ -307,7 +378,7 @@ public sealed class PlutoMistakeNotebookService : IPlutoMistakeNotebookService, 
             {
                 var key = Normalize(raw);
                 if (key is null || !seen.Add(key) || !_entries.TryGetValue(key, out var e)) continue;   // 미추적 토큰 → 상쇄 대상 없음
-                var decayed = Decay(e.RawPenalty, e.LastUtc, now);
+                var decayed = DecayOf(e, now);
                 var eff = Math.Max(0.0, decayed - reliefWeight);
                 e.IsSuppressed = NextSuppressedState(NextSuppressedState(e.IsSuppressed, decayed), eff);
                 if (eff <= 0 && !e.IsSuppressed) _entries.Remove(key);   // 완전 상쇄 → 노트에서 삭제
@@ -326,7 +397,7 @@ public sealed class PlutoMistakeNotebookService : IPlutoMistakeNotebookService, 
     {
         var key = Normalize(token);
         if (key is null) return 0;
-        lock (_sync) return _entries.TryGetValue(key, out var e) ? Decay(e.RawPenalty, e.LastUtc, asOfUtc) : 0;
+        lock (_sync) return _entries.TryGetValue(key, out var e) ? DecayOf(e, asOfUtc) : 0;
     }
 
     /// <summary>토큰 차단 여부(감쇠 반영 · 해제 임계 미만 → 해제 전이).</summary>
@@ -337,7 +408,7 @@ public sealed class PlutoMistakeNotebookService : IPlutoMistakeNotebookService, 
         lock (_sync)
         {
             if (!_entries.TryGetValue(key, out var e) || !e.IsSuppressed) return false;
-            e.IsSuppressed = NextSuppressedState(true, Decay(e.RawPenalty, e.LastUtc, _utcNow()));
+            e.IsSuppressed = NextSuppressedState(true, DecayOf(e, _utcNow()));
             return e.IsSuppressed;
         }
     }
@@ -358,7 +429,7 @@ public sealed class PlutoMistakeNotebookService : IPlutoMistakeNotebookService, 
             {
                 var e = kv.Value;
                 if (!e.IsSuppressed) continue;
-                e.IsSuppressed = NextSuppressedState(true, Decay(e.RawPenalty, e.LastUtc, now));   // 반감기 경과 → 자연 해제
+                e.IsSuppressed = NextSuppressedState(true, DecayOf(e, now));   // 반감기 경과 → 자연 해제
                 if (e.IsSuppressed && PlutoPairAttribution.IsCompositeKey(e.Label) == composite) set.Add(e.Label);
             }
         }
@@ -378,14 +449,14 @@ public sealed class PlutoMistakeNotebookService : IPlutoMistakeNotebookService, 
             foreach (var kv in _entries)
             {
                 var e = kv.Value;
-                var eff = Decay(e.RawPenalty, e.LastUtc, now);
+                var eff = DecayOf(e, now);
                 if (double.IsFinite(e.RawPenalty) && e.RawPenalty > 0) { raw += e.RawPenalty; effSum += eff; }
                 if (e.IsSuppressed) e.IsSuppressed = NextSuppressedState(true, eff);
                 if (e.IsSuppressed)
                 {
                     guards++;
                     if (PlutoPairAttribution.IsCompositeKey(e.Label)) composite++;
-                    var days = Math.Max(0.0, HalfLifeDays * Math.Log2(eff / ReleaseThreshold));   // eff × 0.5^(d / HL) = 해제 임계
+                    var days = DaysUntilRelease(eff, HalfLifeOf(e));   // eff × 0.5^(d / HL) = 해제 임계
                     if (nextRelease is null || days < nextRelease.Value) nextRelease = days;
                 }
                 else if (eff >= RecoveringFloor) recovering++;
@@ -408,7 +479,7 @@ public sealed class PlutoMistakeNotebookService : IPlutoMistakeNotebookService, 
             {
                 var e = kv.Value;
                 if (!e.IsSuppressed) continue;
-                var eff = Decay(e.RawPenalty, e.LastUtc, now);
+                var eff = DecayOf(e, now);
                 e.IsSuppressed = NextSuppressedState(true, eff);
                 if (e.IsSuppressed && !PlutoPairAttribution.IsCompositeKey(e.Label)) list.Add((e.Label, eff));   // 조합 키는 LLM 제약 문구에서 제외
             }
@@ -445,12 +516,16 @@ public sealed class PlutoMistakeNotebookService : IPlutoMistakeNotebookService, 
             {
                 var e = kv.Value;
                 if (!e.IsSuppressed) continue;
-                var eff = Decay(e.RawPenalty, e.LastUtc, now);
+                var eff = DecayOf(e, now);
                 e.IsSuppressed = NextSuppressedState(true, eff);
                 if (!e.IsSuppressed) continue;
                 var dim = NormalizeDimension(e.FailureDimension);
                 var reason = string.IsNullOrWhiteSpace(e.DiagnosticReason) ? DiagnosticReasonFor(dim) : e.DiagnosticReason;
-                list.Add((new PlutoMistakeRuleSnapshot(e.Label, dim, reason, Math.Round(eff, 2, MidpointRounding.AwayFromZero), new DateTimeOffset(e.LastUtc, TimeSpan.Zero)), e.LastUtc));
+                var hl = HalfLifeOf(e);
+                list.Add((new PlutoMistakeRuleSnapshot(e.Label, dim, reason, Math.Round(eff, 2, MidpointRounding.AwayFromZero), new DateTimeOffset(e.LastUtc, TimeSpan.Zero))
+                {
+                    IsPostMortem = IsAutomatedPostMortem(e), HalfLifeDays = hl, DaysUntilRelease = Math.Round(DaysUntilRelease(eff, hl), 1, MidpointRounding.AwayFromZero),
+                }, e.LastUtc));
             }
         }
         list.Sort(static (a, b) => { var c = b.At.CompareTo(a.At); return c != 0 ? c : string.CompareOrdinal(a.Rule.PatternKey, b.Rule.PatternKey); });
@@ -458,6 +533,51 @@ public sealed class PlutoMistakeNotebookService : IPlutoMistakeNotebookService, 
         var result = new PlutoMistakeRuleSnapshot[n];
         for (var i = 0; i < n; i++) result[i] = list[i].Rule;
         return result;
+    }
+
+    public async Task<PlutoRehabilitationResult> RecordOrganicRecoveryAsync(IEnumerable<string> compositeKeys, string clipId, double surpriseDelta, DateTime clipRenderedUtc, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(compositeKeys);
+        var clip = Normalize(clipId);
+        if (clip is null || !double.IsFinite(surpriseDelta) || surpriseDelta < RehabilitationDeltaPoints) return PlutoRehabilitationResult.None;
+        if (clipRenderedUtc.Kind != DateTimeKind.Utc)
+            clipRenderedUtc = clipRenderedUtc.Kind == DateTimeKind.Local ? clipRenderedUtc.ToUniversalTime() : DateTime.SpecifyKind(clipRenderedUtc, DateTimeKind.Utc);
+        await EnsureLoadedAsync(ct).ConfigureAwait(false);
+        List<string>? attenuated = null;
+        int dup = 0, causal = 0;
+        lock (_sync)
+        {
+            var now = _utcNow();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var raw in compositeKeys)
+            {
+                var key = Normalize(raw);
+                if (key is null || !PlutoPairAttribution.IsCompositeKey(key) || !seen.Add(key) || !_entries.TryGetValue(key, out var e)) continue;   // 조합 키만 · 미추적 → 대상 없음
+                var decayed = DecayOf(e, now);
+                if (decayed < RecoveringFloor) continue;
+                if (ContainsClip(e.RehabilitatedClipIds, clip)) { dup++; continue; }   // 🔁 클립당 1회
+                if (clipRenderedUtc <= (e.PenalizedAtUtc ?? e.LastUtc)) { causal++; continue; }   // ⏱️ 벌점 이전에 렌더된 클립은 그 벌점을 반박하지 못함
+                var eff = decayed * RehabilitationFactor;
+                e.IsSuppressed = NextSuppressedState(NextSuppressedState(e.IsSuppressed, decayed), eff);
+                e.RawPenalty = eff;
+                e.LastUtc = now;
+                var ids = e.RehabilitatedClipIds ??= new List<string>(2);
+                ids.Add(clip);
+                if (ids.Count > MaxRehabilitatedClipIds) ids.RemoveRange(0, ids.Count - MaxRehabilitatedClipIds);
+                (attenuated ??= new List<string>(2)).Add(e.Label);
+            }
+        }
+        if (attenuated is null) return dup + causal == 0 ? PlutoRehabilitationResult.None : new PlutoRehabilitationResult(Array.Empty<string>(), dup, causal);
+        await PersistAsync(ct).ConfigureAwait(false);   // 실패 → [부분 구제] 메모리 복권 유지
+        RaiseChanged();
+        return new PlutoRehabilitationResult(attenuated, dup, causal);
+    }
+
+    private static bool ContainsClip(List<string>? ids, string clip)
+    {
+        if (ids is null) return false;
+        for (var i = 0; i < ids.Count; i++) if (string.Equals(ids[i], clip, StringComparison.OrdinalIgnoreCase)) return true;
+        return false;
     }
 
     public async Task<bool> RemoveMistakeRuleAsync(string patternKey, CancellationToken ct = default)

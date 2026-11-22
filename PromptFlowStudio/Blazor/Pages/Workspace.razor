@@ -508,6 +508,21 @@
         <p class="ws-sub">프롬프트를 입력하면 통의만상(Wan 2.1)이 5초 영상을 생성합니다.</p>
     </header>
 
+    @* 🔮 Step 28 — 렌더 전 셋업 예측 · 오답 노트 위험 배지(헤더 밖 · 기획안 없이 고른 조합도 평가 · 룩이 원인인 차단만 원클릭 안전 룩 교체) *@
+    @if (CurrentSetupForecast() is { } sfc)
+    {
+        <div class="ws-setup-forecast" data-setup-forecast="@(sfc.PredictedScore.ToString("0.0", CultureInfo.InvariantCulture))" data-setup-forecast-tier="@(sfc.ConfidenceTier)" data-setup-forecast-blocked="@(sfc.IsBlocked ? "1" : "0")" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;font-size:12px;margin:4px 0">
+            <span class="@(sfc.IsBlocked ? "ws-retry" : "ws-pcore on")" role="status" title="예상 합성 = 훅 기대치(채널 기준선 수축) + 0.5 × 룩·BGM·렌더 모드 리프트 − 오답 노트 벌점 × 5(최대 15) · 신뢰 = 일치 실측 표본 수(3건 보통 · 8건 높음)">@(sfc.ToBadgeLabel())</span>
+            @if (sfc.WarningKorean is { } sfw) { <span class="ws-retry" data-setup-forecast-warning="1">@(sfw)</span> }
+            @if (sfc.SafeLookId is { } sfl)
+            {
+                var safeLook = sfl;
+                <button class="ws-back" data-setup-forecast-swap="@(safeLook)" disabled="@(_forecastSwapBusy || _montageBusy || State.IsBusy)" @onclick="() => ApplySafeLookSwapAsync(safeLook)" title="차단 조합을 피하는 룩으로 고정하고 몽타주 프리뷰를 다시 구성(직접 고친 자막은 보존)">[🔁 안전 룩 @(safeLook)(으)로 교체]</button>
+            }
+            @if (_forecastToast is { } fct) { <span class="ws-retry" role="status" data-setup-forecast-toast="1">@(fct)</span> }
+        </div>
+    }
+
     @if (!State.Enabled)
     {
         <div class="ws-warn">
@@ -3475,6 +3490,66 @@
     private PromptFlowStudio.Services.Pluto.PlutoAppliedBriefArm? _appliedBriefArm;   // 🎯 Step 27 기획 출처 무장
     /// <summary>✏️ 마지막 수동 편집 직후의 자막 목록 참조 — 현재 자막과 같으면 '직접 고친 자막'(기획 적용이 재생성하지 않음).</summary>
     private object? _cuesManualEditRef;
+
+    // ── 🔮 Step 28 — 렌더 전 셋업 예측 · 위험 배지 ──
+    private PromptFlowStudio.Services.Pluto.PlutoSetupForecast? _setupForecast;
+    private string? _fcTheme, _fcHook, _fcLook, _fcBgm;
+    private long _fcAtMs;
+    private bool _fcWarmed, _forecastSwapBusy;
+    private string? _forecastToast;
+    /// <summary>예측 재평가 최소 간격(입력 동일 시 · 렌더마다 재계산 방지).</summary>
+    private const long ForecastRefreshMs = 2000;
+
+    /// <summary>예측 훅 = 무장된 기획 훅 → 학습 1위 훅 → 성과 입력 훅(사후 분석 조합 키와 같은 라벨 체계).</summary>
+    private string ForecastHook() => _appliedBriefArm is { HookStyle.Length: > 0 } arm ? arm.HookStyle : _adaptiveRec is { } rec ? rec.TopHook.DisplayLabel : _perfHookStyle;
+
+    private PromptFlowStudio.Services.Pluto.PlutoSetupForecast? CurrentSetupForecast()
+    {
+        if (_disposed || EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoBriefOutcomeAttributionService)) is not PromptFlowStudio.Services.Pluto.IPlutoBriefOutcomeAttributionService svc) return null;
+        var theme = string.IsNullOrWhiteSpace(_appliedBriefTitle) ? _prompt : _appliedBriefTitle;
+        var hook = ForecastHook();
+        var look = _montageLook;
+        var bgm = CurrentBgmMood();
+        var nowMs = Environment.TickCount64;
+        if (_setupForecast is not null && nowMs - _fcAtMs < ForecastRefreshMs && string.Equals(theme, _fcTheme, StringComparison.Ordinal) && string.Equals(hook, _fcHook, StringComparison.Ordinal)
+            && string.Equals(look, _fcLook, StringComparison.Ordinal) && string.Equals(bgm, _fcBgm, StringComparison.Ordinal)) return _setupForecast;
+        if (!_fcWarmed) { _fcWarmed = true; _ = WarmSetupForecastAsync(svc); }
+        try { _setupForecast = svc.EvaluateSetupForecast(theme, hook, look, bgm, "몽타주"); }
+        catch (Exception ex) { Program.Log("Workspace.SetupForecast", ex); _setupForecast = null; }
+        (_fcTheme, _fcHook, _fcLook, _fcBgm, _fcAtMs) = (theme, hook, look, bgm, nowMs);
+        return _setupForecast;
+    }
+
+    /// <summary>예측용 카탈로그 스냅샷 1회 선적재(예외 전파 금지) → 다시 그리기.</summary>
+    private async Task WarmSetupForecastAsync(PromptFlowStudio.Services.Pluto.IPlutoBriefOutcomeAttributionService svc)
+    {
+        try { await svc.RefreshForecastCacheAsync(_mediaCts.Token); }
+        catch (OperationCanceledException) { return; }
+        catch (Exception ex) { Program.Log("Workspace.SetupForecastWarm", ex); return; }
+        if (_disposed) return;
+        _setupForecast = null;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    /// <summary>🔁 원클릭 안전 룩 교체 — 룩 고정 → 몽타주 룩 재해석 → (직접 고친 자막이 없을 때만) 프리뷰 재구성.</summary>
+    private async Task ApplySafeLookSwapAsync(string safeLook)
+    {
+        if (_disposed || _forecastSwapBusy || _montageBusy || State.IsBusy || PromptFlowStudio.Services.Pluto.PlutoColorGradingCompiler.TryGetPreset(safeLook) is null) return;
+        _forecastSwapBusy = true;
+        try
+        {
+            _learnedLookPinned = safeLook;
+            RefreshMontageLook();
+            if (_montagePhotos.Count >= 2 && !CuesManuallyEdited) await RefreshMontagePreviewAsync();
+            _setupForecast = null;
+            _forecastToast = "🔁 안전 룩 " + _montageLook + "(으)로 교체" + (_appliedBriefArm is not null ? " · 기획 룩과 달라져 이 클립은 기획 채점에서 제외돼요" : "");
+        }
+        catch (OperationCanceledException) { return; }
+        catch (Exception ex) { Program.Log("Workspace.SetupForecastSwap", ex); _forecastToast = "⚠ 룩 교체 실패: " + ex.Message; }
+        finally { _forecastSwapBusy = false; }
+        if (_disposed) return;
+        await InvokeAsync(StateHasChanged);
+    }
 
     private bool CuesManuallyEdited => _montageCues is { Count: > 0 } && ReferenceEquals(_montageCues, _cuesManualEditRef);
 

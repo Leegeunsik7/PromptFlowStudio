@@ -59,6 +59,9 @@ public sealed record PlutoBriefVerdict(string ClipVideoId, string BriefId, doubl
 /// <summary>🎯 채점 스윕 결과.</summary>
 public sealed record PlutoBriefSweepResult(int EvaluatedCount, int HitCount, int PostMortemCount, IReadOnlyList<PlutoBriefVerdict> Verdicts)
 {
+    /// <summary>🌱 Step 28 — 이번 스윕에서 유기적 복권된 조합 키.</summary>
+    public IReadOnlyList<string> RehabilitatedKeys { get; init; } = Array.Empty<string>();
+
     public static readonly PlutoBriefSweepResult Empty = new(0, 0, 0, Array.Empty<PlutoBriefVerdict>());
 }
 
@@ -153,8 +156,59 @@ public interface IPlutoBriefOutcomeAttributionService
     /// <summary>마지막 스윕(없음 → null).</summary>
     PlutoBriefSweepResult? LastSweep { get; }
 
+    /// <summary>
+    /// 🔮 Step 28 — 렌더 전 셋업 예측(기획안 없이 고른 현재 Workspace 조합 포함) — 0~100 예상 합성 · 신뢰 등급 · 오답 노트 활성 벌점/차단 · 안전 룩 대안.
+    /// 마지막 카탈로그 스냅샷(스윕 · <see cref="RefreshForecastCacheAsync"/>)으로 동기 평가.
+    /// </summary>
+    PlutoSetupForecast EvaluateSetupForecast(string? theme, string? hook, string? look, string? bgm, string? renderMode);
+
+    /// <summary>🔮 예측용 카탈로그 스냅샷 갱신(기본 구현 = 없음).</summary>
+    Task RefreshForecastCacheAsync(CancellationToken ct = default) => Task.CompletedTask;
+
     /// <summary>채점 발생 통지(백그라운드 스레드 가능).</summary>
     event Action? Changed;
+}
+
+/// <summary>🔮 Step 28 — 예측 신뢰 등급(실측 표본 기반).</summary>
+public static class PlutoForecastConfidence
+{
+    /// <summary>실측 근거 없음 → 사전값.</summary>
+    public const string Prior = "Prior";
+    public const string Low = "Low";
+    public const string Medium = "Medium";
+    public const string High = "High";
+
+    /// <summary>등급 → 한국어 라벨.</summary>
+    public static string Korean(string? tier) => tier switch
+    {
+        High => "높음",
+        Medium => "보통",
+        Low => "낮음",
+        _ => "사전값",
+    };
+}
+
+/// <summary>
+/// 🔮 Step 28 — 렌더 전 셋업 예측. <see cref="PredictedScore"/> = 0~100 예상 합성 지표(오답 노트 벌점 차감 반영) ·
+/// <see cref="IsBlocked"/> = 활성 오답 가드(조합 키 · 단일 특성) · <see cref="SafeLookId"/> = 룩 교체로 해소 가능한 차단일 때만 대안 룩.
+/// </summary>
+public sealed record PlutoSetupForecast(double PredictedScore, double BaseScore, string ConfidenceTier, int EvidenceSamples, double ActivePenalty, bool IsBlocked,
+    string? BlockedKey, bool LookSwapFixesBlock, string? SafeLookId, string? WarningKorean)
+{
+    private static readonly CultureInfo Inv = CultureInfo.InvariantCulture;
+
+    public static readonly PlutoSetupForecast Prior = new(PlutoBriefOutcomeAttributionService.PriorComposite, PlutoBriefOutcomeAttributionService.PriorComposite,
+        PlutoForecastConfidence.Prior, 0, 0.0, false, null, false, null, null);
+
+    /// <summary>배지 1줄(결정론 한국어).</summary>
+    public string ToBadgeLabel()
+    {
+        var s = "🔮 예상 " + PredictedScore.ToString("0", Inv) + "점 · 신뢰 " + PlutoForecastConfidence.Korean(ConfidenceTier);
+        if (EvidenceSamples > 0) s += "(" + EvidenceSamples.ToString(Inv) + "건)";
+        if (IsBlocked) s += " · 🛡️ 차단 " + (BlockedKey ?? "") + " ⚖" + ActivePenalty.ToString("0.00", Inv);
+        else if (ActivePenalty >= PlutoMistakeNotebookService.RecoveringFloor) s += " · ⏳ 회복 중 벌점 ⚖" + ActivePenalty.ToString("0.00", Inv);
+        return s;
+    }
 }
 
 /// <summary>
@@ -194,6 +248,7 @@ public sealed class PlutoBriefOutcomeAttributionService : IPlutoBriefOutcomeAttr
     private int _started;
     private int _sweepScheduled;
     private int _disposed;
+    private IReadOnlyList<PlutoRenderedClipRecord>? _clipCache;
 
     public PlutoBriefOutcomeAttributionService(IPlutoRenderCatalogService catalog, IPlutoMistakeNotebookService? notebook)
     {
@@ -235,6 +290,10 @@ public sealed class PlutoBriefOutcomeAttributionService : IPlutoBriefOutcomeAttr
     /// 실측 없음 → <see cref="PriorComposite"/>(evidenced = false).
     /// </summary>
     public static double EstimateExpectedComposite(string? kind, string? hookStyle, IReadOnlyList<PlutoRenderedClipRecord>? clips, out bool evidenced, out int hookSamples)
+        => EstimateExpectedComposite(kind, hookStyle, clips, null, out evidenced, out hookSamples);
+
+    /// <summary>📏 <paramref name="excludeVideoId"/> 클립을 표본에서 뺀 기대 합성(leave-one-out — 자기 성과가 자기 기대치를 끌어올려 놀람을 상쇄하지 않도록).</summary>
+    public static double EstimateExpectedComposite(string? kind, string? hookStyle, IReadOnlyList<PlutoRenderedClipRecord>? clips, string? excludeVideoId, out bool evidenced, out int hookSamples)
     {
         evidenced = false;
         hookSamples = 0;
@@ -244,6 +303,7 @@ public sealed class PlutoBriefOutcomeAttributionService : IPlutoBriefOutcomeAttr
             for (var i = 0; i < clips.Count; i++)
             {
                 var c = clips[i];
+                if (excludeVideoId is not null && c is not null && string.Equals(c.VideoId, excludeVideoId, StringComparison.OrdinalIgnoreCase)) continue;
                 if (!TryMeasured(c, out var comp, out var w)) continue;
                 wSum += w;
                 wComp += w * comp;
@@ -330,6 +390,151 @@ public sealed class PlutoBriefOutcomeAttributionService : IPlutoBriefOutcomeAttr
         return keys;
     }
 
+    // ── 🌱 Step 28 — 유기적 복권 ──
+
+    /// <summary>
+    /// 🌱 복권 판정용 SurpriseDelta(순수) — 조회 ≥ <see cref="MinViews"/> · 지표 유효일 때만.
+    /// 기획 클립 = 채점 결과(<paramref name="justGradedDelta"/> 우선) · 커스텀 클립(기획 없음) = 실측 − leave-one-out 훅 기대치.
+    /// 기획기는 차단 조합을 제안하지 않으므로 커스텀 셋업 경로가 없으면 복권은 도달 불가.
+    /// </summary>
+    public static double? OrganicSurpriseOf(PlutoRenderedClipRecord? clip, IReadOnlyList<PlutoRenderedClipRecord>? clips, double? justGradedDelta = null)
+    {
+        if (clip?.YouTubeWatermark is not { } wm || wm.Views < MinViews || !TryMeasured(clip, out var realized, out _)) return null;
+        if (clip.HasAppliedBrief)
+        {
+            var d = justGradedDelta ?? (clip.AppliedBriefEvaluated ? clip.AppliedBriefSurpriseDelta : null);
+            return d is { } v && double.IsFinite(v) ? v : null;
+        }
+        var expected = EstimateExpectedComposite(null, clip.HookStyle, clips, clip.VideoId, out _, out _);
+        return Math.Round(realized - expected, 2, MidpointRounding.AwayFromZero);
+    }
+
+    // ── 🔮 Step 28 — 렌더 전 셋업 예측 ──
+
+    /// <summary>예측 감점 = min(<see cref="ForecastMaxPenaltyPoints"/>, 유효 벌점 × <see cref="ForecastPenaltyPointsPerUnit"/>).</summary>
+    public const double ForecastPenaltyPointsPerUnit = 5.0, ForecastMaxPenaltyPoints = 15.0;
+    /// <summary>룩 · BGM · 렌더 모드 리프트 가중(훅 기대치와 이중 계산 방지).</summary>
+    public const double ForecastSideLiftWeight = 0.5;
+
+    private static readonly string[] s_lookPresets =
+    {
+        PlutoColorGradingCompiler.GoldenHourWarmName, PlutoColorGradingCompiler.VintageFilm16mmName, PlutoColorGradingCompiler.NaturalPastelName,
+    };
+
+    /// <summary>
+    /// 🔮 셋업 예측(순수 · 결정론). 기대 = 훅 기대치(채널 기준선 수축) + 0.5 × (룩 · BGM · 렌더 모드 수축 리프트) − 오답 노트 감점.
+    /// 차단 = 조합 키(<c>pair:</c>훅+룩 · <c>domain_hook:</c>) 또는 단일 특성(룩 · 훅 · BGM)이 활성 가드. 룩 교체 대안은 룩이 원인인 차단일 때만.
+    /// </summary>
+    public static PlutoSetupForecast EvaluateSetupForecast(string? theme, string? hook, string? look, string? bgm, string? renderMode,
+        IReadOnlyList<PlutoRenderedClipRecord>? clips, IPlutoMistakeNotebookService? notebook)
+    {
+        var expected = EstimateExpectedComposite(null, hook, clips, null, out var evidenced, out var hookSamples);
+        var baseline = ChannelBaseline(clips);
+        var lookPreset = PlutoColorGradingCompiler.TryGetPreset(look);
+        var lookLabel = lookPreset?.PresetName ?? (string.IsNullOrWhiteSpace(look) ? null : look.Trim());
+        var lookLift = Lift(clips, 1, lookLabel, baseline, out var lookSamples);
+        var bgmKey = string.IsNullOrWhiteSpace(bgm) || bgm is "none" or "custom" ? null : bgm;
+        var bgmLift = Lift(clips, 2, bgmKey, baseline, out var bgmSamples);
+        var modeLift = Lift(clips, 3, renderMode, baseline, out _);
+        var raw = expected + ForecastSideLiftWeight * (lookLift + bgmLift + modeLift);
+        var samples = hookSamples + lookSamples + bgmSamples;
+        var tier = !evidenced ? PlutoForecastConfidence.Prior : samples >= 8 ? PlutoForecastConfidence.High : samples >= 3 ? PlutoForecastConfidence.Medium : PlutoForecastConfidence.Low;
+
+        // 🛡️ 오답 노트
+        double penalty = 0;
+        string? blockedKey = null, worstKey = null;
+        var lookFixable = false;
+        string? safeLook = null;
+        if (notebook is not null)
+        {
+            try
+            {
+                var composite = notebook.GetSuppressedCompositeKeys();
+                var single = notebook.GetSuppressedTokens();
+                var pair = PlutoPairAttribution.PairKey(hook, lookLabel);
+                var dh = string.IsNullOrWhiteSpace(theme) ? null : PlutoPairAttribution.DomainHookKey(PromptDomainClassifier.Classify(theme).ToString(), hook);
+                Consider(notebook, pair, composite, true, ref penalty, ref worstKey, ref blockedKey, ref lookFixable);
+                Consider(notebook, dh, composite, false, ref penalty, ref worstKey, ref blockedKey, ref lookFixable);
+                if (blockedKey is null && lookPreset is not null && PlutoColorGradingCompiler.IsSuppressed(lookPreset, notebook)) { blockedKey = lookPreset.PresetName; lookFixable = true; penalty = Math.Max(penalty, notebook.GetEffectivePenalty(lookPreset.PresetName)); }
+                if (blockedKey is null && !string.IsNullOrWhiteSpace(hook) && single.Contains(hook.Trim())) { blockedKey = hook.Trim(); penalty = Math.Max(penalty, notebook.GetEffectivePenalty(hook)); }
+                if (blockedKey is null && bgmKey is not null && single.Contains(bgmKey.Trim())) { blockedKey = bgmKey.Trim(); penalty = Math.Max(penalty, notebook.GetEffectivePenalty(bgmKey)); }
+                // 🔁 룩 교체 대안 — 룩이 원인인 차단(pair · 룩 단일 가드)만 · domain_hook / 훅 / BGM 차단은 룩을 바꿔도 그대로이므로 제안하지 않음
+                if (blockedKey is not null && lookFixable && !HasNonLookBlock(notebook, dh, composite, hook, bgmKey, single))
+                {
+                    double bestLift = double.NegativeInfinity;
+                    foreach (var cand in s_lookPresets)
+                    {
+                        if (lookPreset is not null && string.Equals(cand, lookPreset.PresetName, StringComparison.OrdinalIgnoreCase)) continue;
+                        var candPreset = PlutoColorGradingCompiler.TryGetPreset(cand);
+                        if (candPreset is null || PlutoColorGradingCompiler.IsSuppressed(candPreset, notebook)) continue;
+                        if (PlutoPairAttribution.PairKey(hook, cand) is { } cp && (composite.Contains(cp) || notebook.GetEffectivePenalty(cp) >= PlutoMistakeNotebookService.ReleaseThreshold)) continue;
+                        var l = Lift(clips, 1, cand, baseline, out _);
+                        if (l > bestLift) { bestLift = l; safeLook = cand; }
+                    }
+                }
+            }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Forecast] notebook: " + ex.Message); }   // [부분 구제] 벌점 없이 예측
+        }
+        var deduction = penalty >= PlutoMistakeNotebookService.RecoveringFloor ? Math.Min(ForecastMaxPenaltyPoints, penalty * ForecastPenaltyPointsPerUnit) : 0.0;
+        var baseScore = Math.Round(Math.Clamp(raw, 0.0, 100.0), 1, MidpointRounding.AwayFromZero);
+        var predicted = Math.Round(Math.Clamp(raw - deduction, 0.0, 100.0), 1, MidpointRounding.AwayFromZero);
+        string? warning = null;
+        if (blockedKey is not null)
+            warning = "🛡️ 오답 노트 차단 조합: " + blockedKey + (safeLook is not null ? " — 룩을 " + safeLook + "(으)로 바꾸면 해소" : lookFixable ? " — 차단 없는 대안 룩이 없어요" : " — 룩 교체로는 해소되지 않아요(훅/테마 변경 필요)");
+        else if (deduction > 0 && worstKey is not null)
+            warning = "⏳ 회복 중인 오답 벌점: " + worstKey + " (−" + deduction.ToString("0.0", Inv) + "점)";
+        return new PlutoSetupForecast(predicted, baseScore, tier, samples, Math.Round(penalty, 2, MidpointRounding.AwayFromZero), blockedKey is not null,
+            blockedKey, lookFixable, safeLook, warning);
+    }
+
+    private static void Consider(IPlutoMistakeNotebookService nb, string? key, IReadOnlySet<string> composite, bool isPair, ref double penalty, ref string? worstKey, ref string? blockedKey, ref bool lookFixable)
+    {
+        if (key is null) return;
+        var eff = nb.GetEffectivePenalty(key);
+        if (eff > penalty) { penalty = eff; worstKey = key; }
+        if (blockedKey is null && composite.Contains(key)) { blockedKey = key; lookFixable = isPair; }
+    }
+
+    private static bool HasNonLookBlock(IPlutoMistakeNotebookService nb, string? dh, IReadOnlySet<string> composite, string? hook, string? bgm, IReadOnlySet<string> single)
+        => (dh is not null && composite.Contains(dh))
+            || (!string.IsNullOrWhiteSpace(hook) && single.Contains(hook.Trim()))
+            || (bgm is not null && single.Contains(bgm.Trim()));
+
+    /// <summary>채널 기준선(조회수 가중 · 실측 없음 → 사전값).</summary>
+    private static double ChannelBaseline(IReadOnlyList<PlutoRenderedClipRecord>? clips)
+    {
+        double wSum = 0, wComp = 0;
+        if (clips is not null)
+            for (var i = 0; i < clips.Count; i++)
+                if (TryMeasured(clips[i], out var comp, out var w)) { wSum += w; wComp += w * comp; }
+        return wSum > 0 ? wComp / wSum : PriorComposite;
+    }
+
+    /// <summary>차원(1 = 룩 · 2 = BGM · 3 = 렌더 모드) 일치 클립의 기준선 대비 수축 리프트 = Σw(c − base) / (Σw + k).</summary>
+    private static double Lift(IReadOnlyList<PlutoRenderedClipRecord>? clips, int dim, string? value, double baseline, out int samples)
+    {
+        samples = 0;
+        if (clips is null || string.IsNullOrWhiteSpace(value)) return 0.0;
+        var key = dim == 1 ? (PlutoColorGradingCompiler.TryGetPreset(value)?.PresetName ?? value.Trim()) : PlutoRenderCatalogService.NormalizeKey(value);
+        double w = 0, acc = 0;
+        for (var i = 0; i < clips.Count; i++)
+        {
+            var c = clips[i];
+            if (!TryMeasured(c, out var comp, out var cw)) continue;
+            var match = dim switch
+            {
+                1 => string.Equals(PlutoColorGradingCompiler.TryGetPreset(c!.ColorLookId)?.PresetName ?? c.ColorLookId?.Trim(), key, StringComparison.OrdinalIgnoreCase),
+                2 => string.Equals(PlutoRenderCatalogService.NormalizeKey(c!.BgmMood), key, StringComparison.Ordinal),
+                _ => string.Equals(PlutoRenderCatalogService.NormalizeKey(c!.RenderMode), key, StringComparison.Ordinal),
+            };
+            if (!match) continue;
+            w += cw;
+            acc += cw * (comp - baseline);
+            samples++;
+        }
+        return w > 0 ? acc / (w + ShrinkStrength) : 0.0;
+    }
+
     // ── 서비스 ──
 
     public void Start()
@@ -361,10 +566,12 @@ public sealed class PlutoBriefOutcomeAttributionService : IPlutoBriefOutcomeAttr
         if (Volatile.Read(ref _disposed) != 0) return PlutoBriefSweepResult.Empty;
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         List<PlutoBriefVerdict>? verdicts = null;
+        List<string>? rehabilitated = null;
         int hits = 0, postMortems = 0;
         try
         {
             var clips = await _catalog.GetRecentClipsAsync(PlutoRenderCatalogService.Capacity, ct).ConfigureAwait(false);
+            Volatile.Write(ref _clipCache, clips);   // 🔮 렌더 전 예측 스냅샷
             // 이미 사후 분석된 기획 결정(같은 결정의 다른 편이 심각 미달로 채점됨) → 중복 벌점 금지
             var postMortemDecisions = new HashSet<string>(StringComparer.Ordinal);
             foreach (var c in clips)
@@ -385,7 +592,7 @@ public sealed class PlutoBriefOutcomeAttributionService : IPlutoBriefOutcomeAttr
                     {
                         try
                         {
-                            await _notebook.RecordDiagnosedMistakeAsync(keys, PostMortemPenalty, dimension,
+                            await _notebook.RecordPostMortemMistakeAsync(keys, PostMortemPenalty, dimension,
                                 PostMortemReasonPrefix + verdict.BriefId + " Δ" + verdict.SurpriseDelta.ToString("0.0", Inv) + "p", ct).ConfigureAwait(false);
                             recorded = true;
                             postMortems++;
@@ -397,14 +604,62 @@ public sealed class PlutoBriefOutcomeAttributionService : IPlutoBriefOutcomeAttr
                 }
                 (verdicts ??= new List<PlutoBriefVerdict>(4)).Add(verdict);
             }
+            if (_notebook is not null) rehabilitated = await RehabilitateAsync(clips, verdicts, postMortemDecisions, ct).ConfigureAwait(false);
         }
         finally { _gate.Release(); }
-        if (verdicts is null) return PlutoBriefSweepResult.Empty;
-        var result = new PlutoBriefSweepResult(verdicts.Count, hits, postMortems, verdicts);
+        if (verdicts is null && rehabilitated is null) return PlutoBriefSweepResult.Empty;
+        var result = verdicts is null
+            ? PlutoBriefSweepResult.Empty with { RehabilitatedKeys = rehabilitated! }
+            : new PlutoBriefSweepResult(verdicts.Count, hits, postMortems, verdicts) { RehabilitatedKeys = (IReadOnlyList<string>?)rehabilitated ?? Array.Empty<string>() };
         Volatile.Write(ref _last, result);
         try { Changed?.Invoke(); }
         catch (Exception ex) { Program.Log("Pluto.BriefOutcome.Changed", ex); }
         return result;
+    }
+
+    /// <summary>
+    /// 🌱 유기적 복권 패스(<see cref="_gate"/> 보유) — 조회 ≥ 50 · SurpriseDelta ≥ +8 클립의 조합 키 중 벌점이 남은 것만 노트에 전달
+    /// (클립당 1회 · 벌점 이후 렌더 여부는 노트가 판정). 개별 실패 격리.
+    /// </summary>
+    private async Task<List<string>?> RehabilitateAsync(IReadOnlyList<PlutoRenderedClipRecord> clips, List<PlutoBriefVerdict>? verdicts, HashSet<string> postMortemDecisions, CancellationToken ct)
+    {
+        List<string>? result = null;
+        for (var i = 0; i < clips.Count; i++)
+        {
+            ct.ThrowIfCancellationRequested();
+            var c = clips[i];
+            if (c is null) continue;
+            if (c.HasAppliedBrief && postMortemDecisions.Contains(DecisionKeyOf(c))) continue;   // 🧮 사후 분석된 기획 결정의 형제 편은 그 판정을 뒤집지 못함
+            double? graded = null;
+            if (verdicts is not null)
+                for (var j = 0; j < verdicts.Count; j++)
+                    if (string.Equals(verdicts[j].ClipVideoId, c.VideoId, StringComparison.OrdinalIgnoreCase)) { graded = verdicts[j].SurpriseDelta; break; }
+            if (OrganicSurpriseOf(c, clips, graded) is not { } delta || delta < PlutoMistakeNotebookService.RehabilitationDeltaPoints) continue;
+            var keys = PostMortemKeysOf(c);
+            var penalized = false;
+            for (var k = 0; k < keys.Count && !penalized; k++) penalized = _notebook!.GetEffectivePenalty(keys[k]) >= PlutoMistakeNotebookService.RecoveringFloor;
+            if (!penalized) continue;
+            try
+            {
+                var r = await _notebook!.RecordOrganicRecoveryAsync(keys, c.VideoId, delta, c.RenderedAtUtc.UtcDateTime, ct).ConfigureAwait(false);
+                if (r.Any) (result ??= new List<string>(2)).AddRange(r.AttenuatedKeys);
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) { Program.Log("Pluto.BriefOutcome.Rehabilitate", ex); }   // [부분 구제] 다음 클립 계속
+        }
+        return result;
+    }
+
+    public PlutoSetupForecast EvaluateSetupForecast(string? theme, string? hook, string? look, string? bgm, string? renderMode)
+    {
+        try { return EvaluateSetupForecast(theme, hook, look, bgm, renderMode, Volatile.Read(ref _clipCache), _notebook); }
+        catch (Exception ex) { Program.Log("Pluto.BriefOutcome.Forecast", ex); return PlutoSetupForecast.Prior; }   // [부분 구제]
+    }
+
+    public async Task RefreshForecastCacheAsync(CancellationToken ct = default)
+    {
+        if (Volatile.Read(ref _disposed) != 0) return;
+        Volatile.Write(ref _clipCache, await _catalog.GetRecentClipsAsync(PlutoRenderCatalogService.Capacity, ct).ConfigureAwait(false));
     }
 
     public async Task<PlutoBriefHitRateSummary> GetHitRateAsync(CancellationToken ct = default)
