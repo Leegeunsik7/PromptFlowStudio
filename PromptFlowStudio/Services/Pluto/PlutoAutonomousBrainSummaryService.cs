@@ -82,6 +82,10 @@ public sealed record PlutoBrainSummarySnapshot(int TotalEvaluatedExperiments, in
     public string ConflictLabel { get; init; } = PlutoAutonomousBrainSummaryService.NoneLabel;
     /// <summary>🧬 BGM · 태그 과거 이력 소급 결과(미연결 → null).</summary>
     public PlutoContextBackfillReport? Backfill { get; init; }
+    /// <summary>📺 Step 26 — 실측 유튜브 성과(연결 영상 · 조회수 가중 CTR/유지율 · 선두 제목 프레이밍).</summary>
+    public PlutoRealizedYouTubeSummary RealizedYouTube { get; init; } = PlutoRealizedYouTubeSummary.Empty;
+    /// <summary>📺 Step 26 — 실측 유튜브 성과 요약 1줄(결정론 한국어).</summary>
+    public string RealizedYouTubeLabel { get; init; } = PlutoAutonomousBrainSummaryService.NoneLabel;
 }
 
 /// <summary>🧠 Pluto 4.6 자율 두뇌 텔레메트리 요약 — 실험 장부 × 적응형 랭커 × 오답 노트 집계.</summary>
@@ -114,6 +118,9 @@ public sealed class PlutoAutonomousBrainSummaryService : IPlutoAutonomousBrainSu
 
     /// <summary>🧬 BGM · 태그 컨텍스트 알파 과거 이력 소급(미연결 → 생략) — 랭커 집계 '이전'에 1회 보장.</summary>
     public IPlutoContextAlphaBackfillService? Backfill { get; init; }
+
+    /// <summary>📺 Step 26 — 렌더 카탈로그(YouTube 연결 · 워터마크 → 실측 성과 요약 · 미연결 → '연결 영상 없음').</summary>
+    public IPlutoRenderCatalogService? Catalog { get; init; }
 
     /// <summary>⚔️ 충돌 1줄(결정론).</summary>
     public static string BuildConflictLabel(int unresolved, int pending)
@@ -149,6 +156,7 @@ public sealed class PlutoAutonomousBrainSummaryService : IPlutoAutonomousBrainSu
         var coldStart = PlutoColdStartTransferStatus.Empty;
         PlutoContextBackfillReport? backfill = null;
         int conflicts = 0, pendingResolutions = 0;
+        var realized = PlutoRealizedYouTubeSummary.Empty;
 
         if (Backfill is not null)
         {
@@ -226,6 +234,13 @@ public sealed class PlutoAutonomousBrainSummaryService : IPlutoAutonomousBrainSu
             catch (Exception ex) { Program.Log("Pluto.BrainSummary.SeriesArc", ex); }   // [부분 구제]
         }
 
+        if (Catalog is not null)
+        {
+            try { realized = PlutoRealizedYouTubeSummary.Compute(await Catalog.GetRecentClipsAsync(PlutoRenderCatalogService.Capacity, ct).ConfigureAwait(false)); }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) { Program.Log("Pluto.BrainSummary.Realized", ex); }   // [부분 구제]
+        }
+
         var winRate = evaluated > 0 ? Math.Round(challengerWins * 100.0 / evaluated, 1, MidpointRounding.AwayFromZero) : 0.0;
         return new PlutoBrainSummarySnapshot(evaluated, pending, winRate, hook, look, bgm, guards, BuildHypothesisBanner(evaluated, pending, winRate, hook, look, bgm, guards))
         {
@@ -260,6 +275,8 @@ public sealed class PlutoAutonomousBrainSummaryService : IPlutoAutonomousBrainSu
             PendingConflictResolutions = pendingResolutions,
             ConflictLabel = BuildConflictLabel(conflicts, pendingResolutions),
             Backfill = backfill,
+            RealizedYouTube = realized,
+            RealizedYouTubeLabel = realized.ToLabel(),
         };
     }
 

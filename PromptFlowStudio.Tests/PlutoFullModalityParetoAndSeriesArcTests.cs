@@ -669,7 +669,7 @@ public sealed class PlutoFullModalityParetoAndSeriesArcTests : IDisposable
         {
             var di = File.ReadAllText(Path.Combine(RepoRoot(), file));
             Assert.Equal(1, CountOf(di, "AddSingleton<PromptFlowStudio.Services.Pluto.IPlutoSeriesArcMemoryService>(sp => new PromptFlowStudio.Services.Pluto.PlutoSeriesArcMemoryService("));
-            Assert.Equal(2, CountOf(di, "SeriesArc = sp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoSeriesArcMemoryService)) as PromptFlowStudio.Services.Pluto.IPlutoSeriesArcMemoryService"));
+            Assert.Equal(3, CountOf(di, "SeriesArc = sp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoSeriesArcMemoryService)) as PromptFlowStudio.Services.Pluto.IPlutoSeriesArcMemoryService"));   // + Step 26 주제 기획기
         }
         Assert.Equal("pluto_series_arc.json", PlutoSeriesArcMemoryService.FileName);
         Assert.Equal(9, PlutoDriveHealthService.CorePlutoFileCount);                                  // Step 17 — 아크가 핵심 허브(검증 · 미러 · 새 PC 복원)에 편입

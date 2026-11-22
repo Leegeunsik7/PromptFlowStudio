@@ -145,6 +145,24 @@
                     <span class="@(bs.SeriesArc.DropOffSeriesCount > 0 ? "ws-pcore on" : "ws-retry")" data-brain-series-arc="@(bs.SeriesArc.TrackedSeriesCount.ToString(CultureInfo.InvariantCulture))" style="white-space:normal" title="시리즈 편별 유지 지수 = (3초 유지율 + 완주율) / 2 — 연속 편 사이 변화가 −5p 이하면 이탈로 보고 다음 편에 궁금증 훅 · 클리프행어 아웃트로를 권고 · 앞선 편의 룩/BGM 앵커는 그대로 유지 · 같은 테마로 다시 만든 시리즈는 시즌으로 분리">📺 시리즈 아크: @(bs.SeriesArcLabel)</span>
                     <span class="@(bs.ColdStartTransfer.IsTransferActive ? "ws-pcore on" : "ws-retry")" data-brain-coldstart="@(bs.ColdStartTransfer.ColdStartContextCount.ToString(CultureInfo.InvariantCulture))" style="white-space:normal" title="계층적 경험적 베이즈: 표본이 적은 (도메인·포맷) 컨텍스트는 지역 추정을 검증된 전역 패턴 사후로 수축 — α = 지역 시행 / (지역 시행 + 사전 강도) · 지역 시행 3건부터는 지역 데이터만 사용 · 챌린저 B 는 톰슨–UCB 하이브리드 추첨">🧬 콜드스타트 전이: @(bs.ColdStartTransferLabel)</span>
                     <span class="@(bs.UnresolvedConflictCount > 0 ? "ws-pcore on" : "ws-retry")" data-brain-conflicts="@(bs.UnresolvedConflictCount.ToString(CultureInfo.InvariantCulture))" style="white-space:normal" title="두 PC 가 오프라인에서 같은 기록을 바꿔 Drive 동기화가 갈라진 경우 — 덮이기 전에 보관한 사본 수 · 환경설정에서 키 단위 병합/복원/무시">⚔️ 동기화 충돌: @(bs.ConflictLabel)</span>
+                    @* 📺 Step 26 — 실측 유튜브 성과 요약 · 🎯 다음 제작 기획안(1클릭 적용 · 수동 자막 보존) *@
+                    <span class="@(bs.RealizedYouTube.HasRealizedData ? "ws-pcore on" : "ws-retry")" data-brain-realized="@(bs.RealizedYouTube.MeasuredVideoCount.ToString(CultureInfo.InvariantCulture))" data-brain-realized-framing="@(bs.RealizedYouTube.LeadingFraming)" style="white-space:normal" title="YouTube ID 로 연결된 영상의 최신 워터마크 — CTR · 3초 유지율 · 완주율을 조회수 가중(1,000회에서 가중치 상한 · 바이럴 1편 독점 방지) · 선두 제목 프레이밍은 실측 귀속 2건부터 축소 CTR 로 판정">📺 실측 유튜브 성과 요약: @(bs.RealizedYouTubeLabel)</span>
+                    <div class="ws-topic-plans" data-topic-plan-count="@(_topicBriefs.Count.ToString(CultureInfo.InvariantCulture))" style="flex-basis:100%;display:flex;flex-direction:column;gap:4px;font-size:12px">
+                        <div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center">
+                            <span class="ws-retry">🗺️ 다음 제작 기획안</span>
+                            <button class="ws-back" data-topic-plan-refresh="1" @onclick="RefreshTopicPlanAsync" disabled="@(_topicPlanBusy)" title="파레토 승자 × 실측 제목 프레이밍 × 미완 시리즈 × 오답 노트 차단 × 최근 반복 피로를 합성해 최대 3건 재제안">[🔄 다시 제안]</button>
+                            @if (_topicPlanToast is { } tpt) { <span class="ws-retry" role="status" data-topic-plan-toast="1">@(tpt)</span> }
+                        </div>
+                        @foreach (var tb in _topicBriefs)
+                        {
+                            var brief = tb;
+                            <div class="@(brief.Kind == PromptFlowStudio.Services.Pluto.PlutoTopicBriefKinds.SeriesContinuation ? "ws-pcore on" : "ws-retry")" data-topic-plan="@(brief.BriefId)" data-topic-kind="@(brief.Kind)" style="white-space:normal">
+                                <b>#@(brief.Rank.ToString(CultureInfo.InvariantCulture)) @(brief.Format) · @(brief.Theme)</b> — @(brief.Angle) · 훅 '@(brief.HookStyle)' · 룩 @(brief.ColorLookId) · BGM @(brief.BgmMood) · 제목 @(brief.TitleFraming)
+                                <div style="opacity:.85">@(brief.RationaleKorean)</div>
+                                <button class="ws-back" data-topic-plan-apply="@(brief.BriefId)" @onclick="() => ApplyTopicBriefAsync(brief)" disabled="@(_topicPlanBusy || _montageBusy || State.IsBusy)" title="테마 · 시리즈 편수 · 훅/룩/BGM/스타일 토큰을 한 번에 세팅 — 직접 고친 자막은 덮지 않음">[🎯 기획 즉시 적용]</button>
+                            </div>
+                        }
+                    </div>
                     @* 🛡️ 오답 노트 활성 가드 인스펙터 — 패턴 · 유효 벌점 · 진단 사유 · [해제](오탐 용서) *@
                     <div class="ws-brain-guards" data-mistake-inspector="@(_mistakeRules.Count.ToString(CultureInfo.InvariantCulture))" style="flex-basis:100%;display:flex;flex-wrap:wrap;gap:4px;align-items:center;font-size:12px">
                         <span class="ws-retry">🛡️ 오답 노트 활성 가드</span>
@@ -2894,6 +2912,7 @@
                 RecomposeSeriesCues();
             }
             else _montageCues = PromptFlowStudio.Services.Pluto.PlutoSeriesSubtitleOverlay.EditPlain(cues, index, text);
+            _cuesManualEditRef = _montageCues;   // 🎯 기획 1클릭 적용이 직접 고친 자막을 재생성하지 않도록 표식
         }
         catch (Exception ex) { Program.Log("Workspace.CueEdit", ex); }
     }
@@ -2998,7 +3017,7 @@
         {
             var prompt = _prompt ?? "";
             var theme = prompt.Length > 40 ? prompt[..40] : prompt;
-            var result = await planner.BuildSeriesAsync(_curationPool.ToArray(), theme, 3, _mediaCts.Token);
+            var result = await planner.BuildSeriesAsync(_curationPool.ToArray(), theme, _plannedSeriesEpisodes >= 2 ? _plannedSeriesEpisodes : 3, _mediaCts.Token);   // 🎯 기획안 편수(없음 → 3편)
             if (_disposed) return;
             _series = result;
             _seriesEpisodeOutputs.Clear();
@@ -3435,6 +3454,84 @@
         catch (OperationCanceledException) { return; }   // 페이지 이탈
         catch (Exception ex) { Program.Log("Workspace.BrainSummary", ex); return; }
         finally { if (seq == _brainSeq) _brainBusy = false; }
+        if (_disposed) return;
+        if (_brainOpen) await LoadTopicPlanAsync();   // 🎯 Step 26 — 두뇌 리포트와 함께 다음 기획안 갱신(예외 내부 격리)
+        await InvokeAsync(StateHasChanged);
+    }
+
+    // ── 🎯 Step 26 — 자율 렌더 전 주제 · 시리즈 기획(두뇌 리포트 본문 · 1클릭 적용) ──
+    private IReadOnlyList<PromptFlowStudio.Services.Pluto.PlutoTopicBrief> _topicBriefs = Array.Empty<PromptFlowStudio.Services.Pluto.PlutoTopicBrief>();
+    private bool _topicPlanBusy;
+    private string? _topicPlanToast;
+    private int _topicPlanSeq;
+    /// <summary>📚 기획안이 정한 시리즈 편수(0 → 분할기 기본 3편).</summary>
+    private int _plannedSeriesEpisodes;
+    /// <summary>✏️ 마지막 수동 편집 직후의 자막 목록 참조 — 현재 자막과 같으면 '직접 고친 자막'(기획 적용이 재생성하지 않음).</summary>
+    private object? _cuesManualEditRef;
+
+    private bool CuesManuallyEdited => _montageCues is { Count: > 0 } && ReferenceEquals(_montageCues, _cuesManualEditRef);
+
+    private async Task RefreshTopicPlanAsync()
+    {
+        await LoadTopicPlanAsync();
+        if (_disposed) return;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    /// <summary>🎯 다음 기획안 재합성(세대 가드 · 예외 전파 금지 · 서비스 미등록 → 생략).</summary>
+    private async Task LoadTopicPlanAsync()
+    {
+        if (_disposed || EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoAutonomousTopicPlannerService)) is not PromptFlowStudio.Services.Pluto.IPlutoAutonomousTopicPlannerService planner) return;
+        var seq = ++_topicPlanSeq;
+        _topicPlanBusy = true;
+        try
+        {
+            var seed = _prompt ?? "";
+            if (seed.Length > 60) seed = seed[..60];
+            var briefs = await planner.ProposeAsync(seed, PromptFlowStudio.Services.Pluto.PlutoAutonomousTopicPlannerService.DefaultMaxBriefs, _mediaCts.Token);
+            if (_disposed || seq != _topicPlanSeq) return;
+            _topicBriefs = briefs;
+            if (briefs.Count == 0) _topicPlanToast = "⚠ 오답 노트를 피한 기획안을 찾지 못했어요.";
+        }
+        catch (OperationCanceledException) { return; }   // 페이지 이탈
+        catch (Exception ex) { Program.Log("Workspace.TopicPlan", ex); _topicPlanToast = "⚠ 기획 제안 실패: " + ex.Message; }
+        finally { if (seq == _topicPlanSeq) _topicPlanBusy = false; }
+    }
+
+    /// <summary>🎯 [기획 즉시 적용] — 테마 · 시리즈 편수 · 룩 고정 · BGM · 학습 추천 갱신 · (직접 고친 자막이 없을 때만) 몽타주 재구성.</summary>
+    private async Task ApplyTopicBriefAsync(PromptFlowStudio.Services.Pluto.PlutoTopicBrief brief)
+    {
+        if (brief is null || _topicPlanBusy || _montageBusy || State.IsBusy) return;
+        _topicPlanBusy = true;
+        try
+        {
+            Snap("기획 적용 전");
+            _prompt = PromptFlowStudio.Services.Pluto.PlutoAutonomousTopicPlannerService.BuildReadyPrompt(brief);
+            if (PromptFlowStudio.Services.Pluto.PromptDomainClassifier.IsGeneralBrief(_prompt, brief.Theme))
+            {
+                _babyExplicit = false;
+                SyncDomainNegativeBox();
+            }
+            Snap("🎯 기획: " + brief.Theme);
+            _appliedBriefTitle = brief.Theme;
+            _plannedSeriesEpisodes = brief.IsSeries ? brief.TotalEpisodes : 0;
+            if (PromptFlowStudio.Services.Pluto.PlutoColorGradingCompiler.TryGetPreset(brief.ColorLookId) is not null) _learnedLookPinned = brief.ColorLookId;
+            RefreshMontageLook();
+            var bgmNote = await ApplyBgmMoodAsync(brief.BgmMood);
+            _abPlan = null;
+            _abPlanSource = null;
+            await RefreshAdaptiveRecommendationAsync();
+            var cueNote = "";
+            if (_montagePhotos.Count >= 2)
+            {
+                if (CuesManuallyEdited) cueNote = " · ✏️ 직접 고친 자막 보존";
+                else await RefreshMontagePreviewAsync();
+            }
+            _topicPlanToast = "🎯 '" + brief.Theme + "' " + brief.Format + " 세팅 · 룩 " + _montageLook + bgmNote + " · 훅 '" + brief.HookStyle + "' · 제목 " + brief.TitleFraming + cueNote;
+        }
+        catch (OperationCanceledException) { return; }   // 페이지 이탈
+        catch (Exception ex) { Program.Log("Workspace.TopicPlanApply", ex); _topicPlanToast = "⚠ 기획 적용 실패: " + ex.Message; }
+        finally { _topicPlanBusy = false; }
         if (_disposed) return;
         await InvokeAsync(StateHasChanged);
     }
