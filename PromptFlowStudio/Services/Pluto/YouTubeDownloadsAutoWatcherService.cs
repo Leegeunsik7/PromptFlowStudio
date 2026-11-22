@@ -165,7 +165,12 @@ public sealed class YouTubeDownloadsAutoWatcherService : IYouTubeDownloadsAutoWa
     private Task _lastWork = Task.CompletedTask;
 
     public YouTubeDownloadsAutoWatcherService(IPlutoTelemetryBatchImporter importer, YouTubeDownloadsWatcherOptions? options = null)
+        : this(importer, options, null) { }
+
+    /// <summary>🎯 Step 29 — <paramref name="briefOutcomes"/> 연결 시 학습 영향이 있는 수집(자동 · 수동) 직후 기획 채점 · 유기적 복권 스윕.</summary>
+    public YouTubeDownloadsAutoWatcherService(IPlutoTelemetryBatchImporter importer, YouTubeDownloadsWatcherOptions? options, IPlutoBriefOutcomeAttributionService? briefOutcomes)
     {
+        _briefOutcomes = briefOutcomes;
         _importer = importer ?? throw new ArgumentNullException(nameof(importer));
         _opt = options ?? new YouTubeDownloadsWatcherOptions();
         _explicitDirectory = !string.IsNullOrWhiteSpace(_opt.Directory);
@@ -444,8 +449,15 @@ public sealed class YouTubeDownloadsAutoWatcherService : IYouTubeDownloadsAutoWa
 
     // ── 준비 게이트 → 수집 ──
 
-    /// <summary>파일 1건 처리. 학습 영향 이벤트를 발행했으면 true.</summary>
+    /// <summary>파일 1건 처리. 학습 영향 이벤트를 발행했으면 true → 🎯 Step 29 수집 게이트 해제 후 기획 채점 · 유기적 복권 스윕(격리).</summary>
     private async Task<bool> ProcessPathAsync(string path, CancellationToken ct)
+    {
+        var impact = await ProcessPathCoreAsync(path, ct).ConfigureAwait(false);
+        if (impact) await TriggerPostIngestSweepAsync().ConfigureAwait(false);
+        return impact;
+    }
+
+    private async Task<bool> ProcessPathCoreAsync(string path, CancellationToken ct)
     {
         var bytes = await ReadWhenReadyAsync(path, ct).ConfigureAwait(false);
         if (bytes is null) return false;
@@ -599,14 +611,78 @@ public sealed class YouTubeDownloadsAutoWatcherService : IYouTubeDownloadsAutoWa
         ArgumentNullException.ThrowIfNull(bytes);
         ArgumentNullException.ThrowIfNull(import);
         var sha = ComputeSha256Hex(bytes);
+        T result;
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
             var r = await import(ct).ConfigureAwait(false);
             await RecordAsync(sha, rejected: false, ct).ConfigureAwait(false);   // 수동 반영분 → 감시기 재수집/재토스트 차단
-            return r;
+            result = r;
         }
         finally { _gate.Release(); }
+        // 🎯 Step 29 — 수동 가져오기도 카탈로그 실측을 갱신 → 게이트 밖에서 채점 · 복권 스윕(학습 0건으로 확인된 결과만 생략)
+        if (result is not PlutoTelemetryBatchImportResult br || br.MatchedAndLearnedCount + br.MaturityDeltaCount > 0)
+            await TriggerPostIngestSweepAsync().ConfigureAwait(false);
+        return result;
+    }
+
+    // ── 🎯 Step 29 — 수집 후 자동 채점 · 유기적 복권 스윕(단일 비행 · 후행 1회 재실행 · 실패 격리) ──
+
+    private readonly IPlutoBriefOutcomeAttributionService? _briefOutcomes;
+    private bool _postSweepRunning, _postSweepDirty;   // _sync 보호
+    private Task _postSweepTask = Task.CompletedTask;
+    private long _postSweepRuns, _postSweepFailures;
+
+    /// <summary>수집 후 스윕 실행 횟수(코얼레싱 후).</summary>
+    public long PostIngestSweepCount => Interlocked.Read(ref _postSweepRuns);
+    /// <summary>수집 후 스윕 실패 횟수(격리됨 · 수집 장부 · 격리 판정에 영향 없음).</summary>
+    public long PostIngestSweepFailureCount => Interlocked.Read(ref _postSweepFailures);
+    /// <summary>마지막 수집 후 스윕 결과(없음 → null).</summary>
+    public PlutoBriefSweepResult? LastPostIngestSweep { get; private set; }
+
+    /// <summary>
+    /// 단일 비행 — 실행 중이면 '더러움'만 표시하고 진행 중 작업을 반환(그 작업이 끝나기 전 후행 1회 재실행 → 트리거 유실 없음 · 무한 적층 없음).
+    /// 반환 작업은 결코 실패하지 않는다(예외 격리 · 폐기 시 조용히 종료).
+    /// </summary>
+    private Task TriggerPostIngestSweepAsync()
+    {
+        if (_briefOutcomes is null) return Task.CompletedTask;
+        lock (_sync)
+        {
+            if (_disposed) return Task.CompletedTask;
+            if (_postSweepRunning) { _postSweepDirty = true; return _postSweepTask; }
+            _postSweepRunning = true;
+            _postSweepDirty = false;
+            _postSweepTask = Task.Run(PostIngestSweepLoopAsync);
+            return _postSweepTask;
+        }
+    }
+
+    private async Task PostIngestSweepLoopAsync()
+    {
+        while (true)
+        {
+            CancellationToken token;
+            try { token = _life.Token; }
+            catch (ObjectDisposedException) { lock (_sync) _postSweepRunning = false; return; }
+            try
+            {
+                var r = await _briefOutcomes!.EvaluatePendingBriefOutcomesAndRehabilitationAsync(token).ConfigureAwait(false);
+                LastPostIngestSweep = r;
+                Interlocked.Increment(ref _postSweepRuns);
+            }
+            catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException) { lock (_sync) _postSweepRunning = false; return; }
+            catch (Exception ex)
+            {
+                Interlocked.Increment(ref _postSweepFailures);
+                System.Diagnostics.Debug.WriteLine("[Pluto.DownloadsWatcher] post-ingest sweep: " + ex.Message);   // 콜백 예외 격리
+            }
+            lock (_sync)
+            {
+                if (!_postSweepDirty || _disposed) { _postSweepRunning = false; return; }
+                _postSweepDirty = false;
+            }
+        }
     }
 
     // ── 이벤트 발행(구독자 격리) ──
@@ -837,6 +913,9 @@ public sealed class YouTubeDownloadsAutoWatcherService : IYouTubeDownloadsAutoWa
         Stop();
         try { _life.Cancel(); } catch (ObjectDisposedException) { }
         try { await work.ConfigureAwait(false); } catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException) { }
+        Task post;
+        lock (_sync) post = _postSweepTask;
+        await post.ConfigureAwait(false);   // 🎯 Step 29 — 진행 중 수집 후 스윕 종료 대기(취소 · 예외 격리 → 실패 없음)
         Dispose();
     }
 }

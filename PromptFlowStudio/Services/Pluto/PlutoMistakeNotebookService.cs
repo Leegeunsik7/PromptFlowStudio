@@ -26,6 +26,14 @@ public sealed record PlutoRehabilitationResult(IReadOnlyList<string> AttenuatedK
     public bool Any => AttenuatedKeys.Count > 0;
 }
 
+/// <summary>🌱 Step 29 — 복권 장부 ↔ 오답 노트 조정 결과(재생 · 세대 가드 · 포화 가드 · 레거시 역충전 수).</summary>
+public sealed record PlutoLedgerReconcileResult(int Replayed, int SkippedEpoch, int SkippedSaturated, int Backfilled)
+{
+    public static readonly PlutoLedgerReconcileResult None = new(0, 0, 0, 0);
+    /// <summary>엔트리 또는 장부가 바뀜(영속 필요).</summary>
+    public bool Changed => Replayed + Backfilled > 0;
+}
+
 /// <summary>
 /// 🛡️ Pluto 오답 노트 — 👎/소프트 스킵 패턴 토큰(바이럴 태그 · 카메라 앵글 · BGM 무드)에 벌점 누적 → 21일 반감기 감쇠 →
 /// 슈미트 트리거 히스테리시스(차단 ≥ 1.8 · 해제 &lt; 0.8)로 자율 회피. 👍/채택은 벌점 상쇄.
@@ -261,9 +269,162 @@ public sealed class PlutoMistakeNotebookService : IPlutoMistakeNotebookService, 
             _readOnly = status == PlutoLoadStatus.Unreadable;
             var map = BuildMap(data);
             lock (_sync) _entries = map;
+            await LoadLedgerAndReconcileCoreAsync(ct).ConfigureAwait(false);   // 🌱 Step 29 — 다른 PC 복권 재생
             _loaded = true;
         }
         finally { _gate.Release(); }
+        await FlushReconcileAsync(ct).ConfigureAwait(false);
+    }
+
+    // ── 🌱 Step 29 — 복권 장부(동반 동기화 · 합집합) ──
+
+    private Dictionary<string, PlutoRehabilitationLedger.Record> _ledger = new(StringComparer.OrdinalIgnoreCase);   // _sync 보호
+    private volatile bool _ledgerReadOnly;   // 장부 잠김(적재 불가) → 덮어쓰기 금지
+    private int _reconcileDirty;             // 재생/역충전 후 미영속
+    private PlutoLedgerReconcileResult _lastReconcile = PlutoLedgerReconcileResult.None;
+
+    /// <summary>복권 장부 경로 — Drive 볼트 동반 파일 · 경로 지정 생성자는 노트 옆 <c>{stem}_rehab_ledger.json</c>(기본 파일명이면 <see cref="PlutoRehabilitationLedger.FileName"/>).</summary>
+    public string LedgerStoragePath
+    {
+        get
+        {
+            if (_storage is not null) return _storage.ResolveDataPath(PlutoRehabilitationLedger.FileName);
+            var stem = Path.GetFileNameWithoutExtension(_path);
+            var name = string.Equals(Path.GetFileName(_path), FileName, StringComparison.OrdinalIgnoreCase) ? PlutoRehabilitationLedger.FileName : stem + "_rehab_ledger.json";
+            return Path.Combine(Path.GetDirectoryName(_path) ?? string.Empty, name);
+        }
+    }
+
+    /// <summary>마지막 적재/재적재 장부 조정 결과(진단 · 테스트).</summary>
+    public PlutoLedgerReconcileResult LastLedgerReconcile => Volatile.Read(ref _lastReconcile);
+
+    /// <summary>복권 장부 기록 수.</summary>
+    public int LedgerCount
+    {
+        get { lock (_sync) return _ledger.Count; }
+    }
+
+    /// <summary>(키, 클립) 복권이 장부에 있는지(대소문자 무시).</summary>
+    public bool LedgerContains(string compositeKey, string clipId)
+    {
+        if (Normalize(compositeKey) is not { } k || Normalize(clipId) is not { } c) return false;
+        lock (_sync) return _ledger.ContainsKey(PlutoRehabilitationLedger.IdOf(k, c));
+    }
+
+    /// <summary>장부 스냅샷(결정론 순서).</summary>
+    public PlutoRehabilitationLedger.Snapshot GetLedgerSnapshot()
+    {
+        List<PlutoRehabilitationLedger.Record> recs;
+        lock (_sync) recs = new List<PlutoRehabilitationLedger.Record>(_ledger.Values);
+        return PlutoRehabilitationLedger.Merge(new[] { new PlutoRehabilitationLedger.Snapshot { Records = recs } });
+    }
+
+    /// <summary>
+    /// (<see cref="_gate"/> 보유) 대기 병합 승격 → 디스크 장부 ∪ 메모리 장부(성장 전용 · 기록 실패분 보존) → 조정.
+    /// 장부 잠김 → 메모리 장부 유지 + 이번 세션 장부 덮어쓰기 금지.
+    /// </summary>
+    private async Task LoadLedgerAndReconcileCoreAsync(CancellationToken ct)
+    {
+        PlutoHotReload.PromotePending(_storage, PlutoRehabilitationLedger.FileName);
+        var (disk, status) = await PlutoJsonStore.TryLoadAsync<PlutoRehabilitationLedger.Snapshot>(LedgerStoragePath, "Pluto.RehabLedger", ct).ConfigureAwait(false);
+        _ledgerReadOnly = status == PlutoLoadStatus.Unreadable;
+        lock (_sync)
+        {
+            var merged = PlutoRehabilitationLedger.Merge(new[] { disk, new PlutoRehabilitationLedger.Snapshot { Records = new List<PlutoRehabilitationLedger.Record>(_ledger.Values) } });
+            var map = new Dictionary<string, PlutoRehabilitationLedger.Record>(StringComparer.OrdinalIgnoreCase);
+            foreach (var r in merged.Records!) map[PlutoRehabilitationLedger.IdOf(r.Key, r.ClipId)] = r;
+            _ledger = map;
+            var result = ReconcileLocked(_utcNow());
+            Volatile.Write(ref _lastReconcile, result);
+            if (result.Changed) Volatile.Write(ref _reconcileDirty, 1);
+        }
+    }
+
+    /// <summary>
+    /// 🔀 장부 ↔ 엔트리 조정(<see cref="_sync"/> 보유) —
+    ///   ① 재생: 장부에 있고 엔트리 목록에 없는 (키, 클립) → × 0.35 1회(같은 PC 계보의 원시 벌점과 목록은 한 쌍이므로 '목록 부재 = 미반영').
+    ///   ② ⏱️ 세대 가드: 클립 렌더 ≤ 엔트리 현재 벌점 시각(다른 PC 의 새 벌점이 이김) · 렌더 시각 미상 → 재생 안 함.
+    ///   ③ 🧱 포화 가드: 엔트리 목록이 FIFO 상한에 닿음 → '목록 부재'가 미반영을 증명하지 못함 → 재생 안 함.
+    ///   ④ 역충전: 엔트리 목록에만 있는(레거시 Step 28) 클립 → 장부에 기록(렌더 시각 미상).
+    /// </summary>
+    private PlutoLedgerReconcileResult ReconcileLocked(DateTime now)
+    {
+        int replayed = 0, epoch = 0, saturated = 0, backfilled = 0;
+        List<PlutoRehabilitationLedger.Record>? sorted = null;
+        if (_ledger.Count > 0)
+        {
+            sorted = new List<PlutoRehabilitationLedger.Record>(_ledger.Values);
+            sorted.Sort(static (x, y) => { var c = x.AppliedAtUtc.CompareTo(y.AppliedAtUtc); return c != 0 ? c : string.CompareOrdinal(PlutoRehabilitationLedger.IdOf(x.Key, x.ClipId), PlutoRehabilitationLedger.IdOf(y.Key, y.ClipId)); });
+        }
+        if (sorted is not null)
+            foreach (var r in sorted)
+            {
+                if (!_entries.TryGetValue(r.Key, out var e) || ContainsClip(e.RehabilitatedClipIds, r.ClipId)) continue;
+                if ((e.RehabilitatedClipIds?.Count ?? 0) >= MaxRehabilitatedClipIds) { saturated++; continue; }
+                if (r.ClipRenderedUtc == default || r.ClipRenderedUtc <= (e.PenalizedAtUtc ?? e.LastUtc)) { epoch++; continue; }
+                var decayed = DecayOf(e, now);
+                if (decayed < RecoveringFloor) continue;
+                ApplyRehabilitationLocked(e, decayed, r.ClipId, now);
+                replayed++;
+            }
+        foreach (var e in _entries.Values)
+        {
+            if (e.RehabilitatedClipIds is not { Count: > 0 } ids || Normalize(e.Label) is not { } label) continue;
+            foreach (var clip in ids)
+            {
+                if (Normalize(clip) is not { } c) continue;
+                var id = PlutoRehabilitationLedger.IdOf(label, c);
+                if (_ledger.ContainsKey(id)) continue;
+                _ledger[id] = new PlutoRehabilitationLedger.Record { Key = label, ClipId = c, AppliedAtUtc = e.LastUtc };
+                backfilled++;
+            }
+        }
+        return replayed + epoch + saturated + backfilled == 0 ? PlutoLedgerReconcileResult.None : new PlutoLedgerReconcileResult(replayed, epoch, saturated, backfilled);
+    }
+
+    /// <summary>복권 1회 적용(<see cref="_sync"/> 보유) — 히스테리시스 정산 → × 0.35 → 목록 FIFO.</summary>
+    private static void ApplyRehabilitationLocked(Entry e, double decayed, string clip, DateTime now)
+    {
+        var eff = decayed * RehabilitationFactor;
+        e.IsSuppressed = NextSuppressedState(NextSuppressedState(e.IsSuppressed, decayed), eff);
+        e.RawPenalty = eff;
+        e.LastUtc = now;
+        var ids = e.RehabilitatedClipIds ??= new List<string>(2);
+        ids.Add(clip);
+        if (ids.Count > MaxRehabilitatedClipIds) ids.RemoveRange(0, ids.Count - MaxRehabilitatedClipIds);
+    }
+
+    /// <summary>조정 결과 영속(게이트 밖) — 노트 → 장부 순(중간 실패해도 다음 적재의 역충전/재생이 수렴).</summary>
+    private async Task FlushReconcileAsync(CancellationToken ct)
+    {
+        if (Interlocked.Exchange(ref _reconcileDirty, 0) == 0) return;
+        await PersistAsync(ct).ConfigureAwait(false);
+        await PersistLedgerAsync(ct).ConfigureAwait(false);
+        RaiseChanged();
+    }
+
+    /// <summary>장부 원자 기록(실패/잠김 → false · [부분 구제] 메모리 장부 유지).</summary>
+    private async Task<bool> PersistLedgerAsync(CancellationToken ct)
+    {
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try { return await WriteLedgerCoreAsync(ct).ConfigureAwait(false); }
+        finally { _gate.Release(); }
+    }
+
+    /// <summary>장부 기록 본체(호출자가 <see cref="_gate"/> 보유).</summary>
+    private async Task<bool> WriteLedgerCoreAsync(CancellationToken ct)
+    {
+        try
+        {
+            if (_ledgerReadOnly) return false;
+            string json;
+            lock (_sync) json = JsonSerializer.Serialize(PlutoRehabilitationLedger.Merge(new[] { new PlutoRehabilitationLedger.Snapshot { Records = new List<PlutoRehabilitationLedger.Record>(_ledger.Values) } }), JsonOpts);
+            return _storage is not null
+                ? await _storage.WriteAllTextAtomicAsync(PlutoRehabilitationLedger.FileName, json, ct).ConfigureAwait(false)
+                : await PlutoJsonStore.WriteAtomicAsync(LedgerStoragePath, json, "Pluto.RehabLedger", ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.RehabLedger] persist: " + ex.Message); return false; }
     }
 
     private static Dictionary<string, Entry> BuildMap(Snapshot? data)
@@ -298,6 +459,7 @@ public sealed class PlutoMistakeNotebookService : IPlutoMistakeNotebookService, 
             if (!await ReloadCoreAsync(ct).ConfigureAwait(false)) return false;
         }
         finally { _gate.Release(); }
+        await FlushReconcileAsync(ct).ConfigureAwait(false);
         RaiseChanged();
         return true;
     }
@@ -313,6 +475,7 @@ public sealed class PlutoMistakeNotebookService : IPlutoMistakeNotebookService, 
         if (status != PlutoLoadStatus.Ok || data is null) return false;
         var map = BuildMap(data);
         lock (_sync) _entries = map;
+        await LoadLedgerAndReconcileCoreAsync(ct).ConfigureAwait(false);   // 🌱 병합본 노트 + 병합본 장부 → 재생
         _loaded = true;
         return true;
     }
@@ -545,6 +708,7 @@ public sealed class PlutoMistakeNotebookService : IPlutoMistakeNotebookService, 
         await EnsureLoadedAsync(ct).ConfigureAwait(false);
         List<string>? attenuated = null;
         int dup = 0, causal = 0;
+        var ledgerChanged = false;
         lock (_sync)
         {
             var now = _utcNow();
@@ -556,19 +720,23 @@ public sealed class PlutoMistakeNotebookService : IPlutoMistakeNotebookService, 
                 var decayed = DecayOf(e, now);
                 if (decayed < RecoveringFloor) continue;
                 if (ContainsClip(e.RehabilitatedClipIds, clip)) { dup++; continue; }   // 🔁 클립당 1회
+                var ledgerId = PlutoRehabilitationLedger.IdOf(key, clip);
+                var inLedger = _ledger.ContainsKey(ledgerId);
+                // 🧱 Step 29 — 목록이 FIFO 상한에 닿았는데 장부엔 있음 → 목록에서 밀려난 기반영 클립(재감쇠 금지)
+                if (inLedger && (e.RehabilitatedClipIds?.Count ?? 0) >= MaxRehabilitatedClipIds) { dup++; continue; }
                 if (clipRenderedUtc <= (e.PenalizedAtUtc ?? e.LastUtc)) { causal++; continue; }   // ⏱️ 벌점 이전에 렌더된 클립은 그 벌점을 반박하지 못함
-                var eff = decayed * RehabilitationFactor;
-                e.IsSuppressed = NextSuppressedState(NextSuppressedState(e.IsSuppressed, decayed), eff);
-                e.RawPenalty = eff;
-                e.LastUtc = now;
-                var ids = e.RehabilitatedClipIds ??= new List<string>(2);
-                ids.Add(clip);
-                if (ids.Count > MaxRehabilitatedClipIds) ids.RemoveRange(0, ids.Count - MaxRehabilitatedClipIds);
+                ApplyRehabilitationLocked(e, decayed, clip, now);
+                if (!inLedger)
+                {
+                    _ledger[ledgerId] = new PlutoRehabilitationLedger.Record { Key = key, ClipId = clip, ClipRenderedUtc = clipRenderedUtc, AppliedAtUtc = now, SurpriseDelta = surpriseDelta };
+                    ledgerChanged = true;
+                }
                 (attenuated ??= new List<string>(2)).Add(e.Label);
             }
         }
         if (attenuated is null) return dup + causal == 0 ? PlutoRehabilitationResult.None : new PlutoRehabilitationResult(Array.Empty<string>(), dup, causal);
         await PersistAsync(ct).ConfigureAwait(false);   // 실패 → [부분 구제] 메모리 복권 유지
+        if (ledgerChanged) await PersistLedgerAsync(ct).ConfigureAwait(false);   // 🌱 Step 29 — 동반 장부(노트 다음 · 중간 실패 → 다음 적재 역충전)
         RaiseChanged();
         return new PlutoRehabilitationResult(attenuated, dup, causal);
     }
@@ -616,7 +784,11 @@ public sealed class PlutoMistakeNotebookService : IPlutoMistakeNotebookService, 
             if (_readOnly) return false;
             if (_hasUnappliedDiskUpdate)   // 🚧 펜스 — 디스크 병합본 재적재 먼저 · 여전히 잠김 → 덮어쓰기 포기
             {
-                if (await ReloadCoreAsync(ct).ConfigureAwait(false)) return true;   // 메모리 = 디스크 병합본(재기록 불필요)
+                if (await ReloadCoreAsync(ct).ConfigureAwait(false))
+                {
+                    if (Interlocked.Exchange(ref _reconcileDirty, 0) == 0) return true;   // 메모리 = 디스크 병합본(재기록 불필요)
+                    await WriteLedgerCoreAsync(ct).ConfigureAwait(false);   // 🌱 병합 장부 재생분 → 노트와 함께 기록
+                }
                 if (_hasUnappliedDiskUpdate) { System.Diagnostics.Debug.WriteLine("[Pluto.Mistake] save aborted — write fence"); return false; }
             }
             string json;

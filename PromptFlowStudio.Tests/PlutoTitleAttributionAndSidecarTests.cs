@@ -334,7 +334,7 @@ public sealed class PlutoTitleAttributionAndSidecarTests : IDisposable
         Assert.Equal(6, PlutoConflictMergeService.MergeableHubs.Count);
         Assert.DoesNotContain(PlutoYouTubeUnmatchedQueueService.FileName, PlutoDriveHealthService.PlutoFiles);
         Assert.Contains(PlutoYouTubeUnmatchedQueueService.FileName, PlutoDriveHealthService.SyncFiles);
-        Assert.Equal(PlutoDriveHealthService.PlutoFiles.Length + 1, PlutoDriveHealthService.SyncFiles.Length);
+        Assert.Equal(PlutoDriveHealthService.PlutoFiles.Length + PlutoDriveHealthService.CompanionSyncFiles.Length, PlutoDriveHealthService.SyncFiles.Length);   // Step 29 — 복권 장부 동반 편입
     }
 
     // ── ⑥ 자체 추가 #3 — 근거 게이트 · 조회수 가중 축소 · 클립당 1표본(멀티 PC/재수집 이중 집계 차단) ──

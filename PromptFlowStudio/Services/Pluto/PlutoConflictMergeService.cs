@@ -47,7 +47,7 @@ public sealed class PlutoConflictMergeService
     public string ConflictRoot => Path.Combine(_storage.FallbackRoot, PlutoDriveStorageManager.ConflictFolderName);
 
     /// <summary>🔁 Step 25 — 핵심 허브 밖 동반 파일 중 의미 병합 지원(핵심 허브 병합 목록 6종은 불변).</summary>
-    public static readonly IReadOnlyList<string> MergeableCompanions = new[] { PlutoYouTubeUnmatchedQueueService.FileName };
+    public static readonly IReadOnlyList<string> MergeableCompanions = new[] { PlutoYouTubeUnmatchedQueueService.FileName, PlutoRehabilitationLedger.FileName };   // 🌱 Step 29 복권 장부
 
     public static bool IsMergeable(string? hubFileName)
     {
@@ -187,6 +187,7 @@ public sealed class PlutoConflictMergeService
     {
         if (!IsMergeable(hubFileName)) return null;
         if (Eq(hubFileName, PlutoYouTubeUnmatchedQueueService.FileName)) return MergeUnmatchedQueue(current, other);
+        if (Eq(hubFileName, PlutoRehabilitationLedger.FileName)) return MergeRehabLedger(current, other);
         JsonObject a, b;
         try
         {
@@ -217,6 +218,20 @@ public sealed class PlutoConflictMergeService
             var b = JsonSerializer.Deserialize<PlutoYouTubeUnmatchedQueueService.Snapshot>(other ?? "");
             if (a is null || b is null) return null;
             return JsonSerializer.Serialize(PlutoYouTubeUnmatchedQueueService.MergeSnapshots(new[] { a, b }, DateTimeOffset.UtcNow));
+        }
+        catch (JsonException) { return null; }
+    }
+
+    // ── 🌱 Step 29 — 복권 장부: (키, 클립) 합집합 · 최초 적용 유지(교환/멱등 → 두 PC 수렴 · 이중 0.35 없음) ──
+
+    private static string? MergeRehabLedger(string? current, string? other)
+    {
+        try
+        {
+            var a = JsonSerializer.Deserialize<PlutoRehabilitationLedger.Snapshot>(current ?? "");
+            var b = JsonSerializer.Deserialize<PlutoRehabilitationLedger.Snapshot>(other ?? "");
+            if (a?.Records is null || b?.Records is null) return null;   // 형태 불일치(다른 허브 · {}) → 병합 거부
+            return JsonSerializer.Serialize(PlutoRehabilitationLedger.Merge(new[] { a, b }), Compact);
         }
         catch (JsonException) { return null; }
     }

@@ -165,6 +165,12 @@ public interface IPlutoBriefOutcomeAttributionService
     /// <summary>🔮 예측용 카탈로그 스냅샷 갱신(기본 구현 = 없음).</summary>
     Task RefreshForecastCacheAsync(CancellationToken ct = default) => Task.CompletedTask;
 
+    /// <summary>
+    /// 🎯 Step 29 — YouTube Studio 내보내기 수집(자동 감시 · 수동) 직후 호출: 새로 성숙한 클립(조회 ≥ <see cref="PlutoBriefOutcomeAttributionService.MinViews"/>) 채점 ·
+    /// 유기적 복권을 즉시 수행(멱등 — 클립당 채점 CAS · 복권 클립당 1회). 기본 구현 = <see cref="SweepAsync"/>.
+    /// </summary>
+    Task<PlutoBriefSweepResult> EvaluatePendingBriefOutcomesAndRehabilitationAsync(CancellationToken ct = default) => SweepAsync(ct);
+
     /// <summary>채점 발생 통지(백그라운드 스레드 가능).</summary>
     event Action? Changed;
 }
@@ -560,6 +566,9 @@ public sealed class PlutoBriefOutcomeAttributionService : IPlutoBriefOutcomeAttr
             catch (Exception ex) { Volatile.Write(ref _sweepScheduled, 0); Program.Log("Pluto.BriefOutcome.AutoSweep", ex); }   // 콜백 예외 격리
         });
     }
+
+    /// <summary>🎯 Step 29 — 수집 직후 스윕(카탈로그 변경 디바운스를 기다리지 않음 · 예측 캐시도 함께 갱신).</summary>
+    public Task<PlutoBriefSweepResult> EvaluatePendingBriefOutcomesAndRehabilitationAsync(CancellationToken ct = default) => SweepAsync(ct);
 
     public async Task<PlutoBriefSweepResult> SweepAsync(CancellationToken ct = default)
     {

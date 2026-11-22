@@ -73,7 +73,7 @@ public sealed class PlutoDriveHealthService : IPlutoDriveHealthService
     /// 🔁 Step 25 — 핵심 허브(9종 불변) 밖의 동반 동기화 파일 — 쓰기 반환 · 미러 · 새 PC 복원에만 참여(상태 점검 · 허브 수에는 미포함).
     /// <c>pluto_youtube_unmatched.json</c>: 미매칭 YouTube 행 대기열(멀티 PC 조정 대상).
     /// </summary>
-    public static readonly string[] CompanionSyncFiles = { PlutoYouTubeUnmatchedQueueService.FileName };
+    public static readonly string[] CompanionSyncFiles = { PlutoYouTubeUnmatchedQueueService.FileName, PlutoRehabilitationLedger.FileName };   // 🌱 Step 29 — <c>pluto_rehab_ledger.json</c>: 유기적 복권 장부(합집합 병합)
 
     /// <summary>🔁 쓰기 반환 · 미러 · 복원 대상 전체 = 핵심 허브 + 동반 파일.</summary>
     public static readonly string[] SyncFiles = BuildSyncFiles();

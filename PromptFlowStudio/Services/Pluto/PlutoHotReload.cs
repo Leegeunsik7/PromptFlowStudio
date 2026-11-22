@@ -95,10 +95,15 @@ public static class PlutoHotReload
     public static IPlutoHotReloadable? Find(IReadOnlyList<IPlutoHotReloadable>? hubs, string? hubFileName)
     {
         if (hubs is null || string.IsNullOrWhiteSpace(hubFileName)) return null;
+        var target = OwnerHubOf(hubFileName);
         for (var i = 0; i < hubs.Count; i++)
-            if (hubs[i] is { } h && string.Equals(h.HubFileName, hubFileName, StringComparison.OrdinalIgnoreCase)) return h;
+            if (hubs[i] is { } h && string.Equals(h.HubFileName, target, StringComparison.OrdinalIgnoreCase)) return h;
         return null;
     }
+
+    /// <summary>🌱 Step 29 — 동반 파일 → 소유 허브(복권 장부 → 오답 노트 · 그 밖 → 자기 자신). 장부 병합은 노트 재적재가 승격 · 재생한다.</summary>
+    public static string OwnerHubOf(string hubFileName)
+        => string.Equals(hubFileName, PlutoRehabilitationLedger.FileName, StringComparison.OrdinalIgnoreCase) ? PlutoMistakeNotebookService.FileName : hubFileName;
 
     /// <summary>
     /// 🧩 복원 사본 형태 검증(순수) — 6대 허브는 자기 루트 컬렉션을 가져야 한다(<c>{}</c> · 다른 허브 파일 · 배열 루트로 학습 상태 전체를 지우는 복원 차단).
@@ -115,6 +120,7 @@ public static class PlutoHotReload
         catch (JsonException) { return false; }
         if (Eq(hubFileName, PlutoExperimentLedgerService.FileName)) return root["Experiments"] is JsonArray;
         if (Eq(hubFileName, PlutoMistakeNotebookService.FileName)) return root["Entries"] is JsonObject;
+        if (Eq(hubFileName, PlutoRehabilitationLedger.FileName)) return root["Records"] is JsonArray;   // 🌱 Step 29
         if (Eq(hubFileName, PlutoRenderCatalogService.FileName)) return root["Clips"] is JsonArray;
         if (Eq(hubFileName, PlutoSeriesArcMemoryService.FileName)) return root["Series"] is JsonArray;
         if (Eq(hubFileName, PlutoMetaCalibrationService.FileName)) return root["Window"] is JsonArray || root["Attributions"] is JsonObject;

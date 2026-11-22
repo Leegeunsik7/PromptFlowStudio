@@ -91,6 +91,7 @@ else
                 </div>
                 <button class="dh-btn" disabled="@_driveBusy" @onclick="VerifyDriveAsync">@(_driveBusy ? "⏳ 검증 중…" : "🔄 지금 전체 드라이브 백업 검증")</button>
                 <button class="dh-btn" data-pluto-diagnostic-copy="1" disabled="@_diagBusy" @onclick="CopyPlutoDiagnosticAsync" title="9 허브 Drive 동기화 · 충돌 · 실측 YouTube · 기획 적중률 · 4축 파레토 · 오답 노트 가드(감쇠 잔여 벌점)를 Markdown 으로 복사 — 절대 경로는 파일명만 남김">@(_diagBusy ? "⏳ 진단 수집 중…" : "[🩺 플루토 진단 리포트 복사]")</button>
+                <button class="dh-btn" data-pluto-diagnostic-save="1" disabled="@_diagBusy" @onclick="SavePlutoDiagnosticFileAsync" title="같은 진단 리포트를 로컬 앱 데이터 진단 폴더에 pluto_diagnostic_날짜_시각.md(UTF-8)로 원자 저장 — 기존 파일 · 폴더 · 링크는 덮지 않음 · 절대 경로는 파일명만 남김">@(_diagBusy ? "⏳ 진단 수집 중…" : "[💾 진단서 파일 저장(.md)]")</button>
             </div>
             @if (_drive?.LiveProbe is { } lp)
             {
@@ -278,6 +279,20 @@ else
             _diagToast = Clipboard.SetText(md) ? "🩺 플루토 진단 리포트를 복사했습니다(" + md.Length.ToString(CultureInfo.InvariantCulture) + "자)" : "⚠ 클립보드 복사에 실패했습니다";
         }
         catch (Exception ex) { Program.Log("Settings.PlutoDiagnostic", ex); _diagToast = "⚠ 진단 수집 실패: " + ex.Message; }
+        finally { _diagBusy = false; }
+    }
+
+    // ── 💾 Step 29 — 진단서 파일 저장(.md · 원자 · 덮어쓰기 없음) ──
+    private async Task SavePlutoDiagnosticFileAsync()
+    {
+        if (_diagBusy) return;
+        _diagBusy = true;
+        try
+        {
+            var r = await PlutoDiagnostics.ExportSnapshotMarkdownFileAsync();
+            _diagToast = r.MessageKorean;
+        }
+        catch (Exception ex) { Program.Log("Settings.PlutoDiagnosticSave", ex); _diagToast = "⚠ 진단서 저장 실패: " + PromptFlowStudio.Services.Pluto.PlutoSystemDiagnosticService.RedactPaths(ex.Message); }
         finally { _diagBusy = false; }
     }
 

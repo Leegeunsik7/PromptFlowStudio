@@ -14,6 +14,18 @@ public interface IPlutoSystemDiagnosticService
     /// <summary>9 허브 Drive 동기화 · 충돌 · 실측 YouTube · 기획 적중률 · 4축 파레토 선두 · 제목 프레이밍 · 오답 노트 활성 가드(감쇠 잔여 벌점)를 Markdown 으로 집계.
     /// 섹션별 실패는 해당 섹션에 경고만 남기고 나머지는 계속([부분 구제]) · 취소만 전파.</summary>
     Task<string> BuildSnapshotMarkdownAsync(CancellationToken ct = default);
+
+    /// <summary>
+    /// 💾 Step 29 — 진단 스냅샷을 <c>pluto_diagnostic_{yyyyMMdd_HHmmss}.md</c>(UTF-8 BOM)로 원자 저장.
+    /// <paramref name="directory"/> 생략 → 로컬 앱 데이터 진단 폴더. 기존 파일 · 디렉터리 · 심볼릭 링크는 절대 덮지 않음(같은 초 → <c>_2</c> 접미).
+    /// </summary>
+    Task<PlutoDiagnosticExportResult> ExportSnapshotMarkdownFileAsync(string? directory = null, CancellationToken ct = default);
+}
+
+/// <summary>💾 Step 29 — 진단 스냅샷 파일 저장 결과(메시지에는 절대 경로를 넣지 않음).</summary>
+public sealed record PlutoDiagnosticExportResult(bool Ok, string? FullPath, string? FileName, long Bytes, string MessageKorean)
+{
+    public static PlutoDiagnosticExportResult Fail(string message) => new(false, null, null, 0, message);
 }
 
 /// <summary>🩺 진단 스냅샷 원천(순수 렌더러 입력) — null = 해당 허브 미연결.</summary>
@@ -244,6 +256,98 @@ public sealed class PlutoSystemDiagnosticService : IPlutoSystemDiagnosticService
         _ => "태그",
     };
 
+    // ── 💾 Step 29 — 진단서 파일 저장(.md) ──
+
+    public const string ExportFilePrefix = "pluto_diagnostic_", ExportFileExtension = ".md";
+    /// <summary>같은 초 충돌 시 접미 최대값(<c>_2</c> … <c>_99</c>).</summary>
+    public const int MaxExportSuffix = 99;
+
+    /// <summary>기본 저장 폴더 — 로컬 앱 데이터 <c>PromptFlowStudio/Pluto/diagnostics</c>.</summary>
+    public static string DefaultExportDirectory()
+        => Path.Combine(global::PromptFlowStudio.Services.Platform.AppDataPaths.LocalAppData, "PromptFlowStudio", "Pluto", "diagnostics");
+
+    /// <summary>파일명(InvariantCulture · 접미 1 → 없음).</summary>
+    public static string ExportFileNameFor(DateTime stamp, int suffix = 1)
+        => ExportFilePrefix + stamp.ToString("yyyyMMdd_HHmmss", Inv) + (suffix > 1 ? "_" + suffix.ToString(Inv) : string.Empty) + ExportFileExtension;
+
+    public async Task<PlutoDiagnosticExportResult> ExportSnapshotMarkdownFileAsync(string? directory = null, CancellationToken ct = default)
+    {
+        var md = await BuildSnapshotMarkdownAsync(ct).ConfigureAwait(false);
+        var stamp = _utcNow();
+        stamp = (stamp.Kind == DateTimeKind.Unspecified ? DateTime.SpecifyKind(stamp, DateTimeKind.Utc) : stamp).ToLocalTime();
+        return await Task.Run(() => WriteSnapshotFile(directory, md, stamp, ct), ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// 💾 원자 저장(순수 BCL · 동기) — ① 저장 폴더 검증: 절대 경로만 · 잘못된 문자 거부 · 파일이 자리한 경로 · 재분석 지점(심볼릭 링크/정션) 폴더 거부
+    /// ② 같은 폴더 임시 파일(CreateNew · BOM · 디스크 플러시) ③ <c>File.Move(overwrite: false)</c> — 대상이 파일 · 디렉터리 · 링크(끊긴 링크 포함)로
+    /// 점유돼 있으면 다음 접미로(덮어쓰기 · 링크 따라가기 없음) ④ 실패 → 임시 파일 정리 + 실패 결과(예외 비전파 · 취소만 전파).
+    /// </summary>
+    public static PlutoDiagnosticExportResult WriteSnapshotFile(string? directory, string markdown, DateTime stamp, CancellationToken ct = default)
+    {
+        string dir;
+        try
+        {
+            if (string.IsNullOrWhiteSpace(directory)) dir = DefaultExportDirectory();
+            else
+            {
+                var d = directory.Trim();
+                if (d.IndexOfAny(Path.GetInvalidPathChars()) >= 0 || !Path.IsPathFullyQualified(d)) return PlutoDiagnosticExportResult.Fail("⚠ 저장 폴더는 절대 경로여야 합니다");
+                dir = Path.GetFullPath(d);
+            }
+            if (File.Exists(dir)) return PlutoDiagnosticExportResult.Fail("⚠ 저장 위치가 파일입니다 — 폴더를 지정하세요");
+            var di = new DirectoryInfo(dir);
+            if (di.Exists && (di.Attributes & FileAttributes.ReparsePoint) != 0) return PlutoDiagnosticExportResult.Fail("⚠ 저장 폴더가 심볼릭 링크/정션이라 거부했습니다");
+            Directory.CreateDirectory(dir);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException or System.Security.SecurityException)
+        {
+            return PlutoDiagnosticExportResult.Fail("⚠ 저장 폴더를 준비하지 못했습니다: " + RedactPaths(ex.Message));
+        }
+
+        var bom = Encoding.UTF8.GetPreamble();
+        var body = Encoding.UTF8.GetBytes(markdown ?? string.Empty);
+        var tmp = Path.Combine(dir, "." + ExportFilePrefix + Guid.NewGuid().ToString("N") + ".tmp");
+        try
+        {
+            using (var fs = new FileStream(tmp, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.None))
+            {
+                fs.Write(bom, 0, bom.Length);
+                fs.Write(body, 0, body.Length);
+                fs.Flush(true);
+            }
+            for (var suffix = 1; suffix <= MaxExportSuffix; suffix++)
+            {
+                ct.ThrowIfCancellationRequested();
+                var name = ExportFileNameFor(stamp, suffix);
+                var target = Path.Combine(dir, name);
+                if (IsPathOccupied(target)) continue;   // 🔒 파일 · 디렉터리 · 링크 → 다음 접미
+                try { File.Move(tmp, target, overwrite: false); }
+                catch (IOException) when (IsPathOccupied(target)) { continue; }   // 경합 — 그 사이 생김
+                return new PlutoDiagnosticExportResult(true, target, name, bom.Length + body.LongLength, "💾 진단서를 저장했습니다: " + name);
+            }
+            return PlutoDiagnosticExportResult.Fail("⚠ 같은 시각 진단서가 너무 많습니다 — 잠시 후 다시 시도하세요");
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
+        {
+            return PlutoDiagnosticExportResult.Fail("⚠ 진단서 저장 실패: " + RedactPaths(ex.Message));
+        }
+        finally
+        {
+            try { if (File.Exists(tmp)) File.Delete(tmp); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { System.Diagnostics.Debug.WriteLine("[Pluto.Diagnostic] tmp cleanup: " + ex.Message); }
+        }
+    }
+
+    /// <summary>경로가 무엇이든(파일 · 디렉터리 · 끊긴 링크 포함) 점유됐는지 — 링크 자체 속성으로 판정(대상 추적 없음).</summary>
+    private static bool IsPathOccupied(string path)
+    {
+        try { _ = File.GetAttributes(path); return true; }
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException) { return false; }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return true; }   // 판별 불가 → 점유로 간주(덮어쓰기 금지)
+    }
+
     /// <summary>🔒 표 셀 안전화 — 절대 경로 가림 → <c>|</c> 이스케이프 → 개행 공백화.</summary>
     public static string Cell(string? text)
     {
@@ -273,7 +377,20 @@ public sealed class PlutoSystemDiagnosticService : IPlutoSystemDiagnosticService
             var start = i;
             while (i < text.Length && !char.IsWhiteSpace(text[i])) i++;
             var token = text.Substring(start, i - start);
-            sb.Append(IsAbsolutePath(token) ? RedactedPathPrefix + LeafOf(token) : token);
+            if (!IsAbsolutePath(token)) { sb.Append(token); continue; }
+            // 🔒 Step 29 — 공백 포함 경로(예: G:\내 드라이브\DATA) 이어 붙이기: 공백 1칸 뒤 같은 구분자를 가진 비절대 토큰은 같은 경로의 연속
+            var sep = token.IndexOf('\\') >= 0 ? '\\' : '/';
+            while (i + 1 < text.Length && text[i] == ' ' && !char.IsWhiteSpace(text[i + 1]))
+            {
+                var j = i + 1;
+                var k = j;
+                while (k < text.Length && !char.IsWhiteSpace(text[k])) k++;
+                var next = text.Substring(j, k - j);
+                if (next.IndexOf(sep) < 0 || IsAbsolutePath(next)) break;
+                token = token + " " + next;
+                i = k;
+            }
+            sb.Append(RedactedPathPrefix + LeafOf(token));
         }
         return sb.ToString();
     }
