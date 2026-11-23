@@ -328,8 +328,8 @@ public sealed class PlutoMultiLanguageRuntimeIntegrationTests : IDisposable
     [Fact]
     public async Task FlywheelSelfTest_PassesAllEightStages_IncludingMultiLanguageStage_WithoutTouchingLiveState()
     {
-        Assert.Equal(8, PlutoFlywheelSelfTestService.StageCount);
-        Assert.Equal(8, PlutoFlywheelSelfTestService.StageNames.Length);
+        Assert.Equal(9, PlutoFlywheelSelfTestService.StageCount);
+        Assert.Equal(9, PlutoFlywheelSelfTestService.StageNames.Length);
         Assert.Contains("다국어", PlutoFlywheelSelfTestService.StageNames[7], StringComparison.Ordinal);
         var live = Sub("live");
         var liveFile = Path.Combine(live, PlutoRenderCatalogService.FileName);
@@ -340,7 +340,7 @@ public sealed class PlutoMultiLanguageRuntimeIntegrationTests : IDisposable
         var rep = await svc.RunAsync();
         var why = string.Join(" / ", Array.ConvertAll(new List<PlutoFlywheelStageResult>(rep.Stages).ToArray(), s => s.Index + ":" + s.StatusLabel + ":" + s.Detail));
         Assert.True(rep.AllPassed, why);
-        Assert.Equal(8, rep.Stages.Count);
+        Assert.Equal(9, rep.Stages.Count);
         Assert.True(rep.Stages[7].Passed, why);
         Assert.Contains("ja-JP", rep.Stages[7].Detail, StringComparison.Ordinal);
         Assert.DoesNotContain(parent, rep.Stages[7].Detail, StringComparison.OrdinalIgnoreCase);

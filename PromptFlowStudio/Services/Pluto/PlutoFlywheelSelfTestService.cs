@@ -49,7 +49,7 @@ public interface IPlutoFlywheelSelfTestService
 /// </summary>
 public sealed class PlutoFlywheelSelfTestService : IPlutoFlywheelSelfTestService
 {
-    public const int StageCount = 8;
+    public const int StageCount = 9;
     public const string SandboxPrefix = "pfs_flywheel_selftest_";
     public const string SandboxMarkerFileName = ".pluto_selftest_sandbox";
 
@@ -63,6 +63,7 @@ public sealed class PlutoFlywheelSelfTestService : IPlutoFlywheelSelfTestService
         "🌱 유기적 복권 · 멀티 PC 장부 재생",
         "🩺 진단 Markdown 스냅샷",
         "🌐 다국어 채널 분기 · 일/서 수집",
+        "☁️ 기동 선조정 · 블랙박스 진단",
     };
 
     private const string Theme = "가을 숲 산책";
@@ -159,7 +160,8 @@ public sealed class PlutoFlywheelSelfTestService : IPlutoFlywheelSelfTestService
         4 => StageGradingAsync(c, ct),
         5 => StageRehabilitationAsync(c, ct),
         6 => StageDiagnosticAsync(c, ct),
-        _ => StageMultiLanguageAsync(c, ct),
+        7 => StageMultiLanguageAsync(c, ct),
+        _ => StageStartupSyncAsync(c, ct),
     };
 
     // ── ① 🧭 토픽 플래너 ──
@@ -410,6 +412,78 @@ public sealed class PlutoFlywheelSelfTestService : IPlutoFlywheelSelfTestService
         foreach (var r in locales) if (r.Locale == "ja-JP") jaRow = r.LinkedCount;
         Require(jaRow == 1, "로캘 분해 JA 연결 수 불일치");
         return "ja-JP 줄 " + wrap.Lines.Count.ToString(CultureInfo.InvariantCulture) + " · 변형 " + variantId + " · 사이드카 · " + summary;
+    }
+
+    // ── ⑨ ☁️ 기동 선조정 · 블랙박스 진단(Step 38) ──
+
+    private const string YtPeer = "ytSELFPEER9", YtKeep = "ytSELFKEEP9";
+    private const string LeakKey = "AIzaSySELFTEST9LEAK0123456789abcd";
+
+    private static async Task<string> StageStartupSyncAsync(Context c, CancellationToken ct)
+    {
+        // (a) 모사 Drive — 다른 PC 가 Drive 카탈로그에 YouTube ID 를 이미 연결 · 이 PC 대기열엔 같은 ID + 미연결 1건
+        var s9 = Path.Combine(c.Root, "s9");
+        var primary = Path.Combine(s9, "gdrive", PlutoDriveStorageManager.SubFolder);
+        var local = Path.Combine(s9, "local");
+        Directory.CreateDirectory(primary);
+        Directory.CreateDirectory(local);
+        using (var peer = new PlutoRenderCatalogService(Path.Combine(primary, PlutoRenderCatalogService.FileName)))
+        {
+            await peer.RecordRenderedClipAsync(new PlutoRenderedClipRecord("selftest-peer", "첫눈 오는 골목 산책", "몽타주", "pov-walk", PlutoColorGradingCompiler.NaturalPastelName, "Lullaby",
+                new[] { "autumn" }, "", new DateTimeOffset(T0), false), ct).ConfigureAwait(false);
+            Require(await peer.TryBindYouTubeVideoIdAsync("selftest-peer", YtPeer, ct).ConfigureAwait(false) == PlutoYouTubeBindResult.Bound, "다른 PC 연결 모사 실패");
+        }
+        var storage = new PlutoDriveStorageManager(primary, local);   // 🔒 레거시 시드 없음 · 기본 경로 미사용
+        using var mine = new PlutoRenderCatalogService(Path.Combine(s9, "pcA", PlutoRenderCatalogService.FileName));
+        using var queue = new PlutoYouTubeUnmatchedQueueService(storage, mine, c.Loop, () => new DateTimeOffset(c.Clock.Now));
+        var at = new DateTimeOffset(T0);
+        var queued = await queue.EnqueueAsync(new[]
+        {
+            new PlutoUnmatchedYouTubeRow(new YouTubeAnalyticsRow(YtPeer, "첫눈 오는 골목 산책", at.AddDays(1), 300, 66, false, 48, 48, 5.0, false), "unmatched", "Table data.csv", at),
+            new PlutoUnmatchedYouTubeRow(new YouTubeAnalyticsRow(YtKeep, "아직 미연결 영상", at.AddDays(1), 120, 66, false, 48, 48, 5.0, false), "unmatched", "Table data.csv", at),
+        }, ct).ConfigureAwait(false);
+        Require(queued == 2, "미매칭 대기열 적재 실패");
+
+        // (b) 단일 비행 · 멱등 — 동시 2회 + 재호출 3회째도 같은 결과(본체 1회) · 가짜 환경(격리 스위치 무관 · 결정론)
+        PlutoStartupDriveSyncReport r1;
+        using (var sync = new PlutoStartupDriveSyncService(storage, () => queue, null, null, static _ => null))
+        {
+            var t1 = sync.RunOnceAsync(ct);
+            var t2 = sync.RunOnceAsync(ct);
+            r1 = await t1.ConfigureAwait(false);
+            var r2 = await t2.ConfigureAwait(false);
+            var r3 = await sync.RunOnceAsync(ct).ConfigureAwait(false);
+            Require(ReferenceEquals(r1, r2) && ReferenceEquals(r1, r3) && sync.RunCount == 1, "기동 선조정 단일 비행/멱등 위반");
+        }
+        Require(r1.Attempted && r1.DriveError is null && r1.UnmatchedError is null, "기동 선조정 실패: " + (r1.DriveError ?? r1.UnmatchedError ?? r1.DriveSkipReason ?? "—"));
+        Require(r1.Unmatched is { PrunedLinked: 1, Remaining: 1 } && queue.IsResolved(YtPeer), "다른 PC 연결 ID 대기열 정리 실패");
+        var pending = queue.GetPending();
+        Require(pending.Count == 1 && pending[0].YouTubeVideoId == YtKeep, "미연결 행이 잘못 정리됨");
+
+        // (c) 블랙박스 진단 6 섹션 — 용어집 요약 · 최근 자율 활동(비밀값 · 경로 가림)
+        using var arc = new PlutoSeriesArcMemoryService(Path.Combine(s9, "arc", PlutoSeriesArcMemoryService.FileName));
+        Require(await arc.UpsertGlossaryEntryAsync(Theme, new PlutoGlossaryEntry("숲길", "Forest Trail", "森の小道", "Sendero del bosque"), ct).ConfigureAwait(false), "용어집 등록 실패");
+        using var feed = new PlutoAutonomousActivityFeedService(Path.Combine(s9, "feed", PlutoAutonomousActivityFeedService.FeedFileName));
+        Require(feed.Record(PlutoActivityKind.DriveSync, r1.SummaryKorean), "활동 피드 기록 실패");
+        Require(feed.Record(PlutoActivityKind.ApiPause, "API 정지 key=" + LeakKey + " " + Path.Combine(s9, "clip|final.mp4")), "활동 피드 기록 실패");
+        var drive = new SandboxDriveHealth(new PlutoDriveHealthService { LocalMirrorRoot = c.LocalDir }, c.DriveDir, c.StudioDir);
+        var diag = new PlutoSystemDiagnosticService(drive, c.Catalog, c.Notebook, null, () => c.Clock.Now) { SeriesArc = arc, ActivityFeed = feed };
+        var md = await diag.BuildSnapshotMarkdownAsync(ct).ConfigureAwait(false);
+        var last = -1;
+        foreach (var h in new[] { "## 1. ", "## 2. ", "## 3. ", "## 4. ", PlutoSystemDiagnosticService.GlossaryHeading, PlutoSystemDiagnosticService.ActivityHeading })
+        {
+            var at2 = md.IndexOf(h, StringComparison.Ordinal);
+            Require(at2 > last, "진단 섹션 누락/순서 이상: " + h);
+            last = at2;
+        }
+        var glossary = md[md.IndexOf(PlutoSystemDiagnosticService.GlossaryHeading, StringComparison.Ordinal)..md.IndexOf(PlutoSystemDiagnosticService.ActivityHeading, StringComparison.Ordinal)];
+        Require(glossary.Contains("활성 시리즈 용어집 1개", StringComparison.Ordinal), "§5 용어집 요약 누락");
+        var activity = md[md.IndexOf(PlutoSystemDiagnosticService.ActivityHeading, StringComparison.Ordinal)..];
+        Require(activity.Contains("DriveSync", StringComparison.Ordinal) && activity.Contains("ApiPause", StringComparison.Ordinal), "§6 최근 자율 활동 누락");
+        Require(md.IndexOf("AIzaSySELFTEST9", StringComparison.Ordinal) < 0, "진단서에 비밀값 노출");
+        Require(md.IndexOf(c.Root, StringComparison.OrdinalIgnoreCase) < 0 && md.IndexOf(s9, StringComparison.OrdinalIgnoreCase) < 0, "진단서에 샌드박스 절대 경로 노출");
+        return "선조정 1회(정리 " + r1.Unmatched!.PrunedLinked.ToString(CultureInfo.InvariantCulture) + " · 잔류 " + r1.Unmatched.Remaining.ToString(CultureInfo.InvariantCulture)
+            + ") · 진단 6섹션 " + md.Length.ToString(CultureInfo.InvariantCulture) + "자 · 비밀값/경로 가림";
     }
 
     /// <summary>진단 서비스가 인자 없는 <c>CheckHealth()</c> 로 라이브 Drive/계정 폴더를 보지 않도록 샌드박스 폴더로 고정.</summary>

@@ -4355,9 +4355,8 @@ public class TitanReleaseTests
             var seq = new System.Buffers.ReadOnlySequence<byte>(data);
             var cutSum = 0;
             for (var i = 0; i < 16; i++) cutSum += Master.CloudDeltaAssetSyncEngine.FindCut(seq, p, true);
-            var a0 = GC.GetAllocatedBytesForCurrentThread();
-            for (var i = 0; i < 256; i++) cutSum += Master.CloudDeltaAssetSyncEngine.FindCut(seq, p, true);
-            Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - a0);
+            // Step 39 — 정상 상태 측정(계층 JIT/OSR 1회성 전이 흡수 · 진짜 할당은 매 창 재현 → 실패 유지)
+            Assert.Equal(0, SteadyStateAllocation.MinBytes(() => { for (var i = 0; i < 256; i++) cutSum += Master.CloudDeltaAssetSyncEngine.FindCut(seq, p, true); }));
             Assert.True(cutSum > 0);
 
             using var zs = new Master.ZeroTrustSecurityShieldService(Path.Combine(root, "zs"), () => seed, null, null, false);

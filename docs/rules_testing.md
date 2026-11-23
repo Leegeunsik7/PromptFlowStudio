@@ -50,3 +50,10 @@
 - 선행 단계 순서 검증은 대상 서비스의 동기 이벤트(예: 대기열 `Changed`) 안에서 후행 서비스 상태(감시기 `IsRunning` · 폴러 `IsAutoSyncArmed`)를 포착.
 - 외부 마운트 대기 상한은 `WaitAsync(상한, TimeProvider, ct)` — 수동 시계 `ActiveTimers` 증가를 `SpinWait.SpinUntil` 로 확인한 뒤 `Advance`(타이머 생성 전 진행 경합 차단). 다른 타이머가 있는 시계는 공유하지 말 것.
 - 피드 스팸 검증: "조용한 재시작"은 같은 영속 파일로 피드를 재생성해 건수 불변을 단언(영속 중복 키).
+
+## 무할당 단언 · 원클릭 일괄 (Step 39)
+- 스레드 국소 무할당 단언(`GetAllocatedBytesForCurrentThread`)은 직렬 컬렉션만으로 안정되지 않는다 — 측정값은 다른 스레드 할당과 무관하고, 전체 실행에서만 보이는 1회성 바이트(예: `TitanReleaseTests` CDC `FindCut` 4,688 B)는 계층 JIT 승격 · OSR 전이가 호출 스레드의 측정 창에 들어온 것(앞선 테스트의 JIT 부하가 승격 타이머를 밀어냄).
+  → `SteadyStateAllocation.MinBytes(창)`(`ParallelExecutionGuards.cs`)로 같은 창을 최대 4회 측정해 최소값 0 을 단언. 진짜 할당은 매 창 재현되므로 회귀는 그대로 잡힌다. 창 람다는 측정 **전**에 만들어 둔다(대리자 생성 할당 제외).
+  → `TitanReleaseTests` 는 계속 `[Collection("ProcessGcMode")]`(DisableParallelization) — 서명 모드 환경변수 · 프로세스 GC 지표 때문에 직렬 유지.
+- 사이드카 묶음 원자성 검증: 사전 검증 실패는 같은 이름 폴더 심기, 커밋 도중 실패는 대상 파일을 `FileShare.None` 으로 연 채 실행 → 이전 내용 바이트 동일 · `*.tmp`/`*.bak` 잔류 0 단언.
+- 단일 비행(같은 마스터) 검증은 `TaskCompletionSource` 게이트 번역기로 첫 실행을 붙잡고 진입 신호 후 두 번째 호출 `Busy` · 무기록을 단언 → 게이트 해제 후 잠금 누수 없음(재실행 가능)까지 확인. 클립 ID 는 테스트마다 GUID(프로세스 정적 단일 비행 키 충돌 방지).

@@ -441,6 +441,9 @@
                             <button class="ws-back @(lcOn ? "on" : "")" data-publish-locale="@(lc.Locale)" aria-pressed="@(lcOn ? "true" : "false")" @onclick="@(() => SelectPublishLocale(lc.Locale))" disabled="@(_publishPackBusy)" title="@(lc.Locale) 지역 채널용 업로드 패키지 — 마스터 렌더를 {클립ID}::@(lc.Locale) 변형으로 분기(독립 YouTube 연결 · 성숙도 · 기획 채점) · 로캘 편 토큰 · 훅 · 해시태그 · 설명/CTA · {영상}_@(lc.Locale)_publish_pack.txt">@(lc.Label)</button>
                         }
                     </span>
+                    @* 🌍 Step 39 — 원클릭 전 언어 일괄 분기/패키지(번역 → 자막/TTS 적합 → {클립ID}::{로캘} 분기 → 사이드카 묶음 원자 저장) *@
+                    <button class="ws-back" data-locale-batch="1" @onclick="BranchAndExportAllLocalesAsync" disabled="@(_localeBatchBusy || _publishPackBusy || _localeTranslateBusy || (_catalogClips.Count == 0 && string.IsNullOrWhiteSpace(_perfVideoId)))" title="KO · EN · JA · ES 한 번에 — 한국어 자막을 용어집 · 고유명사 보존 번역(원문 불변) · 자막/TTS 0.85x~1.30x 적합 경고 수집 · 로캘 변형 멱등 분기(게시된 언어는 동결) · 영상 옆 {영상}_{로캘}_publish_pack.txt 4개를 전부 아니면 전무로 저장">@(_localeBatchBusy ? "⏳ 전 언어 처리 중…" : "[🌍 전 언어 일괄 분기/패키지]")</button>
+                    @if (_localeBatchToast is { } lbt) { <span class="ws-pcore on" role="status" data-locale-batch-result="1" style="white-space:normal">@(lbt)</span> }
                     @* 📖 Step 34 — 선택 언어 자동 번역(비파괴 로캘 트랙) · 시리즈 용어집 *@
                     <button class="ws-back" data-locale-translate="1" @onclick="TranslateActiveLocaleAsync" disabled="@(_localeTranslateBusy || _publishPackBusy || _montageCues is not { Count: > 0 } || IsDefaultPublishLocale())" title="한국어 자막을 @(_publishLocale)(으)로 번역해 별도 트랙에 저장(원문 불변) — 용어집 · 고유명사(@@핸들 · #태그 · 라틴 대문자 단어) 고정 · 컷 길이 기반 낭독 글자 예산 · 오프라인이면 용어집 치환만">@(_localeTranslateBusy ? "⏳ 번역 중…" : "[🌐 선택 언어 자동 번역]")</button>
                     <button class="ws-back @(_glossaryOpen ? "on" : "")" data-glossary-toggle="1" aria-pressed="@(_glossaryOpen ? "true" : "false")" @onclick="ToggleGlossaryEditorAsync" title="시리즈 용어집 — 한국어 용어의 EN · JA · ES 고정 번역(PC 간 동기화 · 병합)">📖 용어집 @(_glossaryEntries.Count.ToString(CultureInfo.InvariantCulture))</button>
@@ -5323,6 +5326,54 @@
         catch (OperationCanceledException) { return; }
         catch (Exception ex) { Program.Log("Workspace.PublishPackSidecar", ex); _publishPackToast = "⚠ 패키지 저장 실패: " + ex.Message; }
         finally { _publishPackBusy = false; }
+        if (_disposed) return;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    // ── 🌍 Step 39 — 원클릭 전 언어 일괄 분기/패키지 ──
+    private bool _localeBatchBusy;
+    private string? _localeBatchToast;
+
+    /// <summary>🌍 [전 언어 일괄 분기/패키지] — KO · EN · JA · ES 번역 · 적합 · 분기 · 사이드카 묶음을 한 번에(예외 전파 금지 · 로캘별 요약 토스트).</summary>
+    private async Task BranchAndExportAllLocalesAsync()
+    {
+        if (_localeBatchBusy || _publishPackBusy || LocaleChannels() is not { } channels
+            || EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoYouTubePublishPackService)) is not PromptFlowStudio.Services.Pluto.IPlutoYouTubePublishPackService svc) return;
+        PromptFlowStudio.Services.Pluto.PlutoRenderedClipRecord? clip = null;
+        var vid = _perfVideoId?.Trim() ?? "";
+        foreach (var c in _catalogClips) if (vid.Length > 0 && string.Equals(c.VideoId, vid, StringComparison.OrdinalIgnoreCase)) { clip = c; break; }
+        if (clip is null && _catalogClips.Count > 0 && vid.Length == 0) clip = _catalogClips[0];
+        if (clip is null) { _localeBatchToast = "⚠ 일괄 분기할 렌더가 카탈로그에 없습니다"; await InvokeAsync(StateHasChanged); return; }
+        _localeBatchBusy = true;
+        _publishPackBusy = true;   // 단건 패키지 · 로캘 전환과 상호 배제
+        await InvokeAsync(StateHasChanged);
+        try
+        {
+            await ReloadGlossaryAsync();
+            var title = string.IsNullOrWhiteSpace(clip.Title) ? clip.VideoId : clip.Title;
+            PromptFlowStudio.Services.Pluto.PlutoSeriesArcMemoryService.TryParseEpisodeMode(clip.RenderMode, out var n, out var total);
+            var theme = total > 0 && _series is { } ser && ser.Episodes.Count == total && !string.IsNullOrWhiteSpace(ser.SeriesTheme)
+                ? ser.SeriesTheme : PromptFlowStudio.Services.Pluto.PlutoSeriesArcMemoryService.SeriesThemeOf(title);
+            var (ep, epTotal) = LocaleEpisode();
+            var req = new PromptFlowStudio.Services.Pluto.PlutoMultiLocaleBatchRequest(clip.VideoId, _montageCues)
+            {
+                ContextKey = LocaleTrackContext(), SubtitleEpisode = ep, SubtitleTotal = epTotal, Glossary = _glossaryEntries,
+                Theme = theme, CatalogTitle = title, EpisodeNumber = n, TotalEpisodes = total, HookStyle = clip.HookStyle ?? _perfHookStyle, StyleTags = clip.Tags,
+                IsShorts = !string.Equals(_perfPlatform, "Instagram Reels", StringComparison.Ordinal),
+                VideoPath = string.IsNullOrWhiteSpace(clip.OutputPath) ? null : clip.OutputPath,
+            };
+            var deps = new PromptFlowStudio.Services.Pluto.PlutoMultiLocaleBatchServices(SubtitleLocalization(),
+                EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoRenderCatalogService)) as PromptFlowStudio.Services.Pluto.IPlutoRenderCatalogService, svc);
+            var result = await channels.BranchAndExportAllLocalesAsync(req, deps, _mediaCts.Token);
+            if (_disposed) return;
+            _localeFitCache = null;   // 🔄 새 번역 트랙 반영(미리보기 · 렌더 투영 즉시 갱신)
+            _publishPack = null;      // 단건 패키지 상태는 선택 로캘 기준 — 일괄 뒤엔 다시 생성
+            _publishPackClip = null;
+            _localeBatchToast = result.SummaryKorean + (req.VideoPath is null ? " · 렌더 영상 경로 없음(사이드카 생략)" : "");
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { Program.Log("Workspace.LocaleBatch", ex); _localeBatchToast = "⚠ 전 언어 일괄 실패: " + ex.Message; }
+        finally { _localeBatchBusy = false; _publishPackBusy = false; }
         if (_disposed) return;
         await InvokeAsync(StateHasChanged);
     }

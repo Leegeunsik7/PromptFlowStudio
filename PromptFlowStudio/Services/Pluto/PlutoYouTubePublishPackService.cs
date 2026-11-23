@@ -114,7 +114,32 @@ public interface IPlutoYouTubePublishPackService
     /// <summary>🌐 Step 32 — 로캘별 프레이밍 순위(로캘 귀속 ≥ 2건 → 로캘 실측 · 그 밖 전역 사전으로 폴백). 기본 구현 = 전역.</summary>
     PlutoLocaleFramingRanking GetLocaleFramingRanking(string? locale)
         => new(PlutoMultiLanguageChannelService.NormalizeLocale(locale) ?? string.Empty, GetFramingRanking(), false, 0);
+
+    /// <summary>
+    /// 🌍 Step 39 — 같은 영상 옆 로캘 사이드카 묶음(<c>{base}_{locale}_publish_pack.txt</c>)을 한 번에 기록.
+    /// 실 구현 = 전부 아니면 전무(사전 검증 → 임시 스테이징 → 백업 교체 커밋 · 실패 시 이전 묶음 복원). 기본 구현 = 순차 단건 기록(비트랜잭션).
+    /// </summary>
+    async Task<PlutoSidecarBundleResult> WriteSidecarBundleAsync(string videoPath, IReadOnlyList<PlutoSidecarBundleEntry> entries, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(entries);
+        var results = new PlutoSidecarWriteResult[entries.Count];
+        var all = true;
+        for (var i = 0; i < entries.Count; i++)
+        {
+            results[i] = await WriteSidecarAsync(videoPath, entries[i].Pack, entries[i].ClipVideoId, ct).ConfigureAwait(false);
+            all &= results[i].Ok;
+        }
+        return new PlutoSidecarBundleResult(all, false, results, all ? "💾 사이드카 " + entries.Count.ToString(CultureInfo.InvariantCulture) + "개 저장" : "⚠ 일부 사이드카 저장 실패");
+    }
 }
+
+/// <summary>🌍 Step 39 — 사이드카 묶음 항목(로캘 패키지 · 연결 클립 ID).</summary>
+public sealed record PlutoSidecarBundleEntry(PlutoYouTubePublishPack Pack, string? ClipVideoId);
+
+/// <summary>🌍 Step 39 — 사이드카 묶음 결과(<paramref name="Results"/> = 입력 순서).</summary>
+/// <param name="Committed">모든 항목이 기록됨.</param>
+/// <param name="RolledBack">커밋 도중 실패 → 이미 교체한 사이드카를 이전 내용으로 복원함.</param>
+public sealed record PlutoSidecarBundleResult(bool Committed, bool RolledBack, IReadOnlyList<PlutoSidecarWriteResult> Results, string MessageKorean);
 
 /// <summary>🌐 Step 32 — 로캘 프레이밍 순위(<paramref name="LocaleEvidenced"/> = 로캘 귀속 표본으로 정렬 · false = 전역 사전 폴백).</summary>
 public sealed record PlutoLocaleFramingRanking(string Locale, IReadOnlyList<PlutoTitleFramingStat> Ranking, bool LocaleEvidenced, int LocaleSamples)
@@ -534,6 +559,143 @@ public sealed class PlutoYouTubePublishPackService : IPlutoYouTubePublishPackSer
         {
             if (tmp is not null)
                 try { File.Delete(tmp); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { System.Diagnostics.Debug.WriteLine("[Pluto.PublishPack] tmp: " + ex.Message); }
+        }
+    }
+
+    /// <summary>
+    /// 🌍 Step 39 — 사이드카 묶음 원자 커밋(전부 아니면 전무). 묶음이 섞이면(새 EN + 지난 실행의 JA) 업로더가 낡은 제목을 올려 변형 자동 연결이 깨지므로:
+    ///   ① 사전 검증 — 단건 기록과 같은 경로 · 폴더 · 링크 가드 + 로캘 중복 → 하나라도 실패 시 무기록
+    ///   ② 스테이징 — 전 항목을 임시 파일로 기록(실패 → 임시 파일 전부 삭제 · 무기록)
+    ///   ③ 커밋 — 취소 불가 구간. 기존 사이드카를 백업으로 옮긴 뒤 교체, 도중 실패 → 역순으로 이전 내용 복원
+    ///   ④ 정리 — 백업 · 임시 파일 삭제(최선 노력).
+    /// </summary>
+    public async Task<PlutoSidecarBundleResult> WriteSidecarBundleAsync(string videoPath, IReadOnlyList<PlutoSidecarBundleEntry> entries, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(entries);
+        var n = entries.Count;
+        var results = new PlutoSidecarWriteResult[n];
+        if (n == 0) return new PlutoSidecarBundleResult(true, false, results, "💾 저장할 사이드카 없음");
+        var paths = new string[n];
+        var video = videoPath?.Trim() ?? string.Empty;
+
+        // ① 사전 검증
+        string? fatal = null;
+        for (var i = 0; i < n; i++)
+        {
+            var e = entries[i] ?? throw new ArgumentException("빈 묶음 항목", nameof(entries));
+            string? reason = null;
+            if (TryGetSidecarPath(video, e.Pack.Locale, out var why) is not { } p) reason = why;
+            else
+            {
+                paths[i] = p;
+                for (var j = 0; j < i && reason is null; j++)
+                    if (string.Equals(paths[j], p, StringComparison.OrdinalIgnoreCase)) reason = "같은 로캘 사이드카가 묶음에 중복되었습니다";
+                if (reason is null)
+                {
+                    try { reason = SidecarTargetBlockReason(video, p); }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or ArgumentException) { reason = "패키지 저장 실패: " + ex.Message; }
+                }
+            }
+            if (reason is not null) { results[i] = new PlutoSidecarWriteResult(false, null, "⚠ " + reason); fatal ??= LocaleLabel(e.Pack) + " " + reason; }
+        }
+        if (fatal is not null) return Aborted(results, "⚠ 사이드카 묶음 미저장(" + fatal + ") — 이전 묶음 그대로");
+
+        // ② 스테이징
+        var tmps = new string?[n];
+        var baks = new string?[n];
+        var token = Guid.NewGuid().ToString("N");
+        var committed = 0;
+        var rolledBack = false;
+        try
+        {
+            var stamp = _clock();
+            var fileName = Path.GetFileName(video);
+            for (var i = 0; i < n; i++)
+            {
+                ct.ThrowIfCancellationRequested();
+                var text = entries[i].Pack.ToSidecarText(fileName, entries[i].ClipVideoId, stamp);
+                tmps[i] = paths[i] + "." + token + ".tmp";
+                await File.WriteAllTextAsync(tmps[i]!, text, new UTF8Encoding(encoderShouldEmitUTF8Identifier: true), ct).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) { DeleteQuietly(tmps); throw; }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or ArgumentException)
+        {
+            DeleteQuietly(tmps);
+            for (var i = 0; i < n; i++) results[i] = new PlutoSidecarWriteResult(false, null, "⚠ 사이드카 스테이징 실패: " + ex.Message);
+            return new PlutoSidecarBundleResult(false, false, results, "⚠ 사이드카 묶음 미저장(스테이징 실패) — 이전 묶음 그대로");
+        }
+
+        // ③ 커밋(취소 불가 — 반쪽 묶음 금지)
+        string? commitError = null;
+        try
+        {
+            for (var i = 0; i < n; i++)
+            {
+                if (SidecarTargetBlockReason(video, paths[i]) is { } late) throw new IOException(late);   // 검증 뒤 심어진 링크/폴더(TOCTOU)
+                if (File.Exists(paths[i]))
+                {
+                    baks[i] = paths[i] + "." + token + ".bak";
+                    File.Move(paths[i], baks[i]!);
+                }
+                File.Move(tmps[i]!, paths[i]);
+                tmps[i] = null;
+                committed = i + 1;
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or ArgumentException)
+        {
+            commitError = ex.Message;
+            rolledBack = true;
+            // 역순 복원: 교체 완료분(0..committed-1) + 백업만 옮기고 교체 못 한 현재 항목
+            for (var i = Math.Min(committed, n - 1); i >= 0; i--)
+            {
+                try
+                {
+                    if (i < committed && File.Exists(paths[i])) File.Delete(paths[i]);
+                    if (baks[i] is { } b && File.Exists(b)) { File.Move(b, paths[i], overwrite: true); baks[i] = null; }
+                }
+                catch (Exception rex) when (rex is IOException or UnauthorizedAccessException) { System.Diagnostics.Debug.WriteLine("[Pluto.PublishPack] bundle rollback: " + rex.Message); }
+            }
+        }
+        finally
+        {
+            DeleteQuietly(tmps);
+            DeleteQuietly(baks);
+        }
+        if (commitError is not null)
+        {
+            for (var i = 0; i < n; i++) results[i] = new PlutoSidecarWriteResult(false, null, "⚠ 사이드카 묶음 커밋 실패 → 이전 묶음 복원: " + commitError);
+            return new PlutoSidecarBundleResult(false, rolledBack, results, "⚠ 사이드카 묶음 커밋 실패 — 이전 묶음으로 되돌림");
+        }
+        for (var i = 0; i < n; i++) results[i] = new PlutoSidecarWriteResult(true, paths[i], "💾 영상 옆에 저장: " + Path.GetFileName(paths[i]));
+        return new PlutoSidecarBundleResult(true, false, results, "💾 사이드카 " + n.ToString(CultureInfo.InvariantCulture) + "개 원자 저장");
+
+        static PlutoSidecarBundleResult Aborted(PlutoSidecarWriteResult[] r, string msg)
+        {
+            for (var i = 0; i < r.Length; i++) r[i] ??= new PlutoSidecarWriteResult(false, null, "⏸ 다른 언어 사이드카 검증 실패로 묶음 미저장");
+            return new PlutoSidecarBundleResult(false, false, r, msg);
+        }
+
+        static string LocaleLabel(PlutoYouTubePublishPack p) => p.Locale.Length > 0 ? p.Locale : "기본";
+    }
+
+    /// <summary>💾 단건 · 묶음 공통 대상 가드(영상 없음 · 같은 이름 폴더 · 링크 파일) — 통과 → null.</summary>
+    private static string? SidecarTargetBlockReason(string video, string sidecar)
+    {
+        if (!File.Exists(video)) return "렌더된 영상 파일을 찾지 못했습니다";
+        if (Directory.Exists(sidecar)) return "같은 이름의 폴더가 있어 저장하지 않았습니다";
+        if (File.Exists(sidecar) && (File.GetAttributes(sidecar) & FileAttributes.ReparsePoint) != 0) return "대상이 링크 파일이라 저장하지 않았습니다";
+        return null;
+    }
+
+    private static void DeleteQuietly(string?[] files)
+    {
+        foreach (var f in files)
+        {
+            if (f is null) continue;
+            try { if (File.Exists(f)) File.Delete(f); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { System.Diagnostics.Debug.WriteLine("[Pluto.PublishPack] bundle cleanup: " + ex.Message); }
         }
     }
 

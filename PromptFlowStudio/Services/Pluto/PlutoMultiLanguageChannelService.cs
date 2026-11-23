@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace PromptFlowStudio.Services.Pluto;
 
@@ -103,6 +104,13 @@ public interface IPlutoMultiLanguageChannelService
 
     /// <summary>세그먼트 길이 안에 낭독이 끝나도록 말하기 속도 산정(0.85x~1.30x).</summary>
     PlutoTtsBudget ComputeTtsBudget(string? locale, string? narration, double segmentSeconds);
+
+    /// <summary>
+    /// 🌍 Step 39 — 원클릭 전 언어(KO · EN · JA · ES) 번역 → 자막/TTS 적합 → <c>{BaseClipId}::{Locale}</c> 멱등 분기 → 로캘 패키지 · 사이드카 묶음 원자 저장.
+    /// 로캘별 실패 · 경고는 형제 로캘을 멈추지 않음(취소만 전파) · 같은 마스터 동시 실행 → <see cref="PlutoMultiLocaleBatchResult.Busy"/>.
+    /// </summary>
+    Task<PlutoMultiLocaleBatchResult> BranchAndExportAllLocalesAsync(PlutoMultiLocaleBatchRequest request, PlutoMultiLocaleBatchServices services, CancellationToken ct = default)
+        => PlutoMultiLocaleBatchBundle.RunAsync(this, request, services, ct);
 }
 
 /// <summary>
@@ -225,6 +233,10 @@ public sealed class PlutoMultiLanguageChannelService : IPlutoMultiLanguageChanne
     }
 
     public PlutoChannelLocaleProfile GetProfileOrDefault(string? locale) => TryGetProfile(locale, out var p) ? p : BuiltInProfiles[0];
+
+    /// <inheritdoc cref="IPlutoMultiLanguageChannelService.BranchAndExportAllLocalesAsync"/>
+    public Task<PlutoMultiLocaleBatchResult> BranchAndExportAllLocalesAsync(PlutoMultiLocaleBatchRequest request, PlutoMultiLocaleBatchServices services, CancellationToken ct = default)
+        => PlutoMultiLocaleBatchBundle.RunAsync(this, request, services, ct);
 
     public bool RegisterProfile(PlutoChannelLocaleProfile profile)
     {
