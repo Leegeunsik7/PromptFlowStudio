@@ -14696,9 +14696,8 @@ class "Proto"
             go.Process(img1, Nm.Vector2.Zero);
         }
         Assert.True(go.OcclusionRatio > 0.005f && go.OcclusionRatio < 0.5f, $"occlusion {go.OcclusionRatio}");
-        a0 = GC.GetAllocatedBytesForCurrentThread();
-        for (var f = 0; f < 3; f++) go.Process(img1, Nm.Vector2.Zero);
-        Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - a0);
+        // Step 40 — 정상 상태 측정(전체 실행에서 계층 JIT/OSR 1회성 7,528 B 관측 · 진짜 할당은 매 창 재현 → 실패 유지)
+        Assert.Equal(0, SteadyStateAllocation.MinBytes(() => { for (var f = 0; f < 3; f++) go.Process(img1, Nm.Vector2.Zero); }));
 
         // ══ VD-4 러너: 카메라 궤적 · ControlNet · 디퓨전 · 일관성 · 무할당 ══
         var run = new Vd.LatentVideoDiffusionStudioRunner(new Vd.RealtimeLatentVideoDiffusionEngine(), new Vd.NeuralTemporalConsistencyGuard(), new Vd.ControlNetSpatialConditioningSynthesizer());

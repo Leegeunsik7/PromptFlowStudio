@@ -57,3 +57,10 @@
   → `TitanReleaseTests` 는 계속 `[Collection("ProcessGcMode")]`(DisableParallelization) — 서명 모드 환경변수 · 프로세스 GC 지표 때문에 직렬 유지.
 - 사이드카 묶음 원자성 검증: 사전 검증 실패는 같은 이름 폴더 심기, 커밋 도중 실패는 대상 파일을 `FileShare.None` 으로 연 채 실행 → 이전 내용 바이트 동일 · `*.tmp`/`*.bak` 잔류 0 단언.
 - 단일 비행(같은 마스터) 검증은 `TaskCompletionSource` 게이트 번역기로 첫 실행을 붙잡고 진입 신호 후 두 번째 호출 `Busy` · 무기록을 단언 → 게이트 해제 후 잠금 누수 없음(재실행 가능)까지 확인. 클립 ID 는 테스트마다 GUID(프로세스 정적 단일 비행 키 충돌 방지).
+
+## 전 언어 일괄 렌더 (Step 40)
+- 렌더 오케스트레이터는 `PlutoLocaleRenderDelegate` 주입 → 테스트는 결정론 페이크 렌더러(스테이징 경로에 `ftyp` 서명 바이트만 기록 · FFmpeg 0). 로캘별 훅으로 예외 · 취소 · 손상 산출물 · 렌더 도중 게시 연결을 주입.
+- 디스크 여유 공간은 `Func<string,long?>` 탐침 주입(실제 드라이브 무접촉) · 시계는 고정 `Func<DateTimeOffset>`.
+- 산출물 폴더 잔류 검사(`*.rendering.mp4` · `*.tmp` · `*.bak`)를 할 때는 다른 서비스의 비동기 영속 파일(활동 피드 `*.json.tmp`)을 **별도 하위 폴더**에 둔다 — 같은 폴더면 피드 디바운스 저장과 경합해 간헐 실패.
+- 단일 비행 공유(일괄 패키지 ↔ 일괄 렌더)는 `TaskCompletionSource` 게이트 렌더러로 첫 실행을 붙잡고 양쪽 두 번째 호출 `Busy` · 사이드카 무기록 → 해제 후 잠금 누수 없음까지 단언.
+- `TitanReleaseTests` 의 원시 `GetAllocatedBytesForCurrentThread() - a0` 단언은 전체 실행에서 같은 JIT/OSR 1회성 바이트로 간헐 실패할 수 있다(Step 40 관측: `NeuralTemporalConsistencyGuard.Process` 7,528 B) → 실패 지점만 `SteadyStateAllocation.MinBytes` 로 외과 전환.

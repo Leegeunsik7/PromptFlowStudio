@@ -138,8 +138,27 @@ public static class PlutoMultiLocaleBatchBundle
         lock (s_inFlight) return key.Length > 0 && s_inFlight.Contains(key);
     }
 
-    private static string MasterKey(string? clipId)
+    internal static string MasterKey(string? clipId)
         => string.IsNullOrWhiteSpace(clipId) ? string.Empty : PlutoMultiLanguageChannelService.ParseVariantClipId(clipId.Trim()).BaseClipId;
+
+    /// <summary>
+    /// 🎬 Step 40 — 같은 마스터 단일 비행 슬롯 선점(일괄 패키지 · 일괄 렌더 공용). 두 작업 모두 같은 <c>{base}_{locale}_publish_pack.txt</c> 를 쓰므로
+    /// 렌더 도중 패키지 일괄(또는 그 반대)이 끼어들어 사이드카를 교차 덮어쓰는 것을 프로세스 전역에서 차단한다.
+    /// </summary>
+    internal static bool TryEnter(string baseId)
+    {
+        if (string.IsNullOrEmpty(baseId)) return false;
+        lock (s_inFlight) return s_inFlight.Add(baseId);
+    }
+
+    internal static void Exit(string baseId)
+    {
+        lock (s_inFlight) s_inFlight.Remove(baseId);
+    }
+
+    /// <summary>🎬 Step 40 — 슬롯을 이미 쥔 호출자(일괄 렌더)용 사전 분기/패키지(재진입 Busy 없이 같은 파이프라인).</summary>
+    internal static Task<PlutoMultiLocaleBatchResult> RunHeldAsync(IPlutoMultiLanguageChannelService channels, string baseId, PlutoMultiLocaleBatchRequest request, PlutoMultiLocaleBatchServices services, CancellationToken ct)
+        => RunCoreAsync(channels, baseId, request, services, ct);
 
     public static async Task<PlutoMultiLocaleBatchResult> RunAsync(IPlutoMultiLanguageChannelService channels, PlutoMultiLocaleBatchRequest request, PlutoMultiLocaleBatchServices services, CancellationToken ct = default)
     {

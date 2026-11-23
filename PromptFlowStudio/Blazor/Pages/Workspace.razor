@@ -443,6 +443,8 @@
                     </span>
                     @* 🌍 Step 39 — 원클릭 전 언어 일괄 분기/패키지(번역 → 자막/TTS 적합 → {클립ID}::{로캘} 분기 → 사이드카 묶음 원자 저장) *@
                     <button class="ws-back" data-locale-batch="1" @onclick="BranchAndExportAllLocalesAsync" disabled="@(_localeBatchBusy || _publishPackBusy || _localeTranslateBusy || (_catalogClips.Count == 0 && string.IsNullOrWhiteSpace(_perfVideoId)))" title="KO · EN · JA · ES 한 번에 — 한국어 자막을 용어집 · 고유명사 보존 번역(원문 불변) · 자막/TTS 0.85x~1.30x 적합 경고 수집 · 로캘 변형 멱등 분기(게시된 언어는 동결) · 영상 옆 {영상}_{로캘}_publish_pack.txt 4개를 전부 아니면 전무로 저장">@(_localeBatchBusy ? "⏳ 전 언어 처리 중…" : "[🌍 전 언어 일괄 분기/패키지]")</button>
+                    @* 🎬 Step 40 — 원클릭 전 언어 일괄 렌더/패키지(마스터 타임라인 재사용 · 로캘 자막/TTS 투영 → {영상}_{로캘}.mp4 + 사이드카 짝 커밋) *@
+                    <button class="ws-back" data-locale-render-batch="1" @onclick="RenderAllLocalesAsync" disabled="@(_localeBatchBusy || _publishPackBusy || _localeTranslateBusy || _montageBusy || _stockBusy || _montagePhotos.Count < 2 || (_catalogClips.Count == 0 && string.IsNullOrWhiteSpace(_perfVideoId)))" title="KO · EN · JA · ES 로캘 MP4 를 한 번에 — 같은 잠금 타임라인 · 로캘 자막/TTS 적합 · 게시된 언어와 TTS 1.30x 초과 언어는 건너뜀 · 검증 후 {영상}_{로캘}.mp4 + {영상}_{로캘}_publish_pack.txt 짝 저장 · 카탈로그 변형에 출력 경로 기록">@(_localeBatchBusy ? "⏳ 전 언어 처리 중…" : "[🎬 전 언어 일괄 렌더/패키지]")</button>
                     @if (_localeBatchToast is { } lbt) { <span class="ws-pcore on" role="status" data-locale-batch-result="1" style="white-space:normal">@(lbt)</span> }
                     @* 📖 Step 34 — 선택 언어 자동 번역(비파괴 로캘 트랙) · 시리즈 용어집 *@
                     <button class="ws-back" data-locale-translate="1" @onclick="TranslateActiveLocaleAsync" disabled="@(_localeTranslateBusy || _publishPackBusy || _montageCues is not { Count: > 0 } || IsDefaultPublishLocale())" title="한국어 자막을 @(_publishLocale)(으)로 번역해 별도 트랙에 저장(원문 불변) — 용어집 · 고유명사(@@핸들 · #태그 · 라틴 대문자 단어) 고정 · 컷 길이 기반 낭독 글자 예산 · 오프라인이면 용어집 치환만">@(_localeTranslateBusy ? "⏳ 번역 중…" : "[🌐 선택 언어 자동 번역]")</button>
@@ -5374,6 +5376,70 @@
         catch (OperationCanceledException) { }
         catch (Exception ex) { Program.Log("Workspace.LocaleBatch", ex); _localeBatchToast = "⚠ 전 언어 일괄 실패: " + ex.Message; }
         finally { _localeBatchBusy = false; _publishPackBusy = false; }
+        if (_disposed) return;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    /// <summary>🎬 Step 40 [전 언어 일괄 렌더/패키지] — 사전 분기/패키지 → 로캘별 몽타주 렌더(스테이징) → 검증 → MP4 + 사이드카 짝 커밋(예외 전파 금지 · 로캘별 요약 토스트 · 활동 피드 기록).</summary>
+    private async Task RenderAllLocalesAsync()
+    {
+        if (_localeBatchBusy || _publishPackBusy || _montageBusy || _stockBusy || _montagePhotos.Count < 2 || LocaleChannels() is null
+            || EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoYouTubePublishPackService)) is not PromptFlowStudio.Services.Pluto.IPlutoYouTubePublishPackService svc
+            || EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoMultiLocaleBatchRenderService)) is not PromptFlowStudio.Services.Pluto.IPlutoMultiLocaleBatchRenderService renderSvc) return;
+        PromptFlowStudio.Services.Pluto.PlutoRenderedClipRecord? clip = null;
+        var vid = _perfVideoId?.Trim() ?? "";
+        foreach (var c in _catalogClips) if (vid.Length > 0 && string.Equals(c.VideoId, vid, StringComparison.OrdinalIgnoreCase)) { clip = c; break; }
+        if (clip is null && _catalogClips.Count > 0 && vid.Length == 0) clip = _catalogClips[0];
+        if (clip is null || string.IsNullOrWhiteSpace(clip.OutputPath)) { _localeBatchToast = "⚠ 일괄 렌더할 마스터 렌더(영상 경로)가 카탈로그에 없습니다"; await InvokeAsync(StateHasChanged); return; }
+        _localeBatchBusy = true;
+        _publishPackBusy = true;
+        _montageBusy = true;
+        _stockBusy = true;
+        await InvokeAsync(StateHasChanged);
+        try
+        {
+            await ReloadGlossaryAsync();
+            var photos = _montagePhotos.ToArray();
+            var focals = await EnsureStagedFocalPointsAsync(photos, _mediaCts.Token);
+            var locked = _activeMontagePlan is { } lp && lp.Clips.Count == photos.Length ? lp : null;   // 🔒 마스터와 같은 컷 경계
+            var title = string.IsNullOrWhiteSpace(clip.Title) ? clip.VideoId : clip.Title;
+            PromptFlowStudio.Services.Pluto.PlutoSeriesArcMemoryService.TryParseEpisodeMode(clip.RenderMode, out var n, out var total);
+            var theme = total > 0 && _series is { } ser && ser.Episodes.Count == total && !string.IsNullOrWhiteSpace(ser.SeriesTheme)
+                ? ser.SeriesTheme : PromptFlowStudio.Services.Pluto.PlutoSeriesArcMemoryService.SeriesThemeOf(title);
+            var (ep, epTotal) = LocaleEpisode();
+            var isShorts = !string.Equals(_perfPlatform, "Instagram Reels", StringComparison.Ordinal);
+            var batch = new PromptFlowStudio.Services.Pluto.PlutoMultiLocaleBatchRequest(clip.VideoId, _montageCues)
+            {
+                ContextKey = LocaleTrackContext(), SubtitleEpisode = ep, SubtitleTotal = epTotal, Glossary = _glossaryEntries,
+                Theme = theme, CatalogTitle = title, EpisodeNumber = n, TotalEpisodes = total, HookStyle = clip.HookStyle ?? _perfHookStyle, StyleTags = clip.Tags,
+                IsShorts = isShorts, VideoPath = clip.OutputPath,
+            };
+            var deps = new PromptFlowStudio.Services.Pluto.PlutoMultiLocaleBatchServices(SubtitleLocalization(),
+                EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoRenderCatalogService)) as PromptFlowStudio.Services.Pluto.IPlutoRenderCatalogService, svc);
+            PromptFlowStudio.Services.Export.BabyBgmTrack? bgm = _bgmOn ? _bgmTrack : null;
+            var look = _montageLook;
+            var customWav = _customBgm?.CroppedWavBytes;
+            PromptFlowStudio.Services.Pluto.PlutoLocaleRenderDelegate render = async (job, ct) =>
+            {
+                var r = await StockSuite.ExportMontageVideoFromPhotosAsync(photos, focals, new PromptFlowStudio.Services.Export.ExportOptions(), job.Cues,
+                    bgm, includeSfx: true, preferredLook: look, outputPath: job.StagingPath, ct: ct, customBgmWavBytes: customWav,
+                    lockedPlan: locked, vertical9x16SmartCrop: job.IsShorts);
+                if (!r.Ok) return new PromptFlowStudio.Services.Pluto.PlutoLocaleRenderOutcome(false, r.Message);
+                double? dur = null;
+                try { if (await Probe.ProbeAsync(job.StagingPath, ct) is { DurationSec: > 0 } spec) dur = spec.DurationSec; }
+                catch (Exception ex) when (ex is not OperationCanceledException) { Program.Log("Workspace.LocaleRenderProbe", ex); }
+                return new PromptFlowStudio.Services.Pluto.PlutoLocaleRenderOutcome(true, r.Message) { VideoDurationSeconds = dur };
+            };
+            var result = await renderSvc.RenderAllLocalesAsync(new PromptFlowStudio.Services.Pluto.PlutoMultiLocaleRenderRequest(batch), deps, render, _mediaCts.Token);
+            if (_disposed) return;
+            _localeFitCache = null;
+            _publishPack = null;
+            _publishPackClip = null;
+            _localeBatchToast = result.SummaryKorean;
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { Program.Log("Workspace.LocaleRenderBatch", ex); _localeBatchToast = "⚠ 전 언어 일괄 렌더 실패: " + ex.Message; }
+        finally { _localeBatchBusy = false; _publishPackBusy = false; _montageBusy = false; _stockBusy = false; }
         if (_disposed) return;
         await InvokeAsync(StateHasChanged);
     }

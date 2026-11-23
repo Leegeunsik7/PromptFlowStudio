@@ -1,16 +1,16 @@
 # Current Project Status
-- Active Milestone: ✅ Step 39 — 원클릭 전 언어(KO · EN · JA · ES) 일괄 분기/패키지 · Stage-9 플라이휠 자가진단 · `TitanReleaseTests` 무할당 단언 정상 상태 측정
+- Active Milestone: ✅ Step 40 (40단계 캡스톤) — 원클릭 전 언어(KO · EN · JA · ES) 일괄 렌더/패키지 · `{base}_{locale}.mp4` + `{base}_{locale}_publish_pack.txt` 짝 커밋
 - Build: ✅ Desktop Release `-warnaserror` 0W/0E · ✅ Tests Release 0W/0E · ⏸ Mobile net8.0-ios — `ios` 워크로드 미설치(미검증)
-- Tests: ✅ 1401/1401 전체 단일 실행(종료 코드 0 · 17 m 58 s · 첫 실행 통과) · Pluto 루프 438/438 · 신규 `PlutoMultiLocaleBatchBundleTests` 8 건
-- Updated: 2026-11-23 (KST) · 기준 `c614542` · 불변식 `CorePlutoFileCount=9` · `MergeableHubs=6` · `CompanionSyncFiles=2` 유지
+- Tests: ✅ 1410/1410 전체 단일 실행(종료 코드 0 · 11 m 31 s) · Pluto 루프 447/447 · 신규 `PlutoMultiLocaleBatchRenderTests` 9 건
+- Updated: 2026-11-23 (KST) · 기준 `fe7fb65` · 불변식 `CorePlutoFileCount=9` · `MergeableHubs=6` · `CompanionSyncFiles=2` 유지
 
-## Completed — Step 39
-- 🌍 `IPlutoMultiLanguageChannelService.BranchAndExportAllLocalesAsync` → `PlutoMultiLocaleBatchBundle`: 번역(용어집 · 고유명사 보존 · 오프라인 폴백) → 자막/TTS 0.85x–1.30x 적합 경고 → `{BaseClipId}::{Locale}` 멱등 분기 → 로캘 패키지 → `{base}_{locale}_publish_pack.txt` 묶음 저장 · 로캘별 실패/경고는 형제 계속
-- 🖱️ Workspace `[🌍 전 언어 일괄 분기/패키지]`(KO · EN · JA · ES 칩 옆 · 상단 헤더 무변경) · 로캘별 요약 토스트
-- 🧪 자가진단 9단계: ⑨ 기동 선조정 단일 비행/멱등 · 다른 PC 연결 ID 대기열 정리 · 진단 6섹션(§5 용어집 · §6 활동) 비밀값/경로 가림
-- 🧷 `TitanReleaseTests`: 이미 `ProcessGcMode`(직렬) — 원인은 병렬 경합이 아닌 계층 JIT/OSR 1회성 전이 → `SteadyStateAllocation.MinBytes`(최대 4창 최소 0 B) · `docs/rules_testing.md` 갱신
-- 🛡️ 자체 추가: ① 사이드카 묶음 전부-아니면-전무(사전 검증 → 스테이징 → 백업 교체 커밋 · 도중 실패 시 이전 묶음 복원) ② 게시(연결)된 로캘 동결(패키지/사이드카 재생성 금지 → 중복 업로드 · 오연결 차단) ③ 같은 마스터 일괄 단일 비행(Busy · 백업/복원 교차 차단)
+## Completed — Step 40
+- 🎬 `IPlutoMultiLocaleBatchRenderService`(싱글톤 · Desktop+MAUI): Step 39 사전 분기/패키지 → 로캘 자막/TTS 투영(마스터 타임라인 재사용) → 주입 렌더러 → 검증 커밋 → 카탈로그 `{BaseClipId}::{Locale}` 출력 경로 결선(KO=마스터 경로 유지)
+- 🔒 게시 로캘 건너뜀(파일 무변경) · 🎙️ TTS 1.30x 초과 → 기본 보류(`RenderFlagged` 정책 선택) · 형제 로캘 계속 · 취소 시 커밋된 로캘 보존
+- 🖱️ Workspace `[🎬 전 언어 일괄 렌더/패키지]`(상단 헤더 무변경) · 로캘별 토스트 · 활동 피드 `LocaleRender`
+- 🛡️ 자체 추가: ① 스테이징 렌더 + `ftyp` 검증 커밋 ② 영상/사이드카 짝 커밋 · 실패 시 이전 MP4 복원 ③ 낭독 오디오 > 타임라인+0.25 s → 커밋 거부(A/V 싱크) ④ 커밋 직전 게시 재확인(TOCTOU) ⑤ 디스크 여유 공간 사전 점검 · 마스터 경로 충돌/접미사 누적 가드 ⑥ 일괄 패키지와 마스터 단일 비행 공유
+- 🧷 `TitanReleaseTests` 시간 일관성 무할당 단언 → `SteadyStateAllocation.MinBytes`(전체 실행 JIT 1회성 7,528 B)
 
 ## Fast Loops
-- Pluto(438 건 · ~35 s): `dotnet test PromptFlowStudio.Tests/PromptFlowStudio.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~Pluto" -p:NuGetAudit=false`
+- Pluto(~30 s): `dotnet test PromptFlowStudio.Tests/PromptFlowStudio.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~Pluto" -p:NuGetAudit=false`
 - ⚠️ `.git` 은 `D:\Program` — `--git-dir=D:/Program/.git --work-tree=D:/Program/PromptFlowStudio` 필요

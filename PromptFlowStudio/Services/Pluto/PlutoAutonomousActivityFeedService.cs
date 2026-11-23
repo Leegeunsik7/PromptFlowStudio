@@ -24,6 +24,8 @@ public enum PlutoActivityKind
     DriveSync = 6,
     /// <summary>⚔️ Step 38 — 미해결 Drive 충돌(설정 화면 처리 필요).</summary>
     DriveConflict = 7,
+    /// <summary>🎬 Step 40 — 전 언어 일괄 렌더/패키지 완료(로캘별 MP4 · 사이드카 결과).</summary>
+    LocaleRender = 8,
 }
 
 /// <summary>🛰️ 자율 활동 1건(메시지는 이미 경로 · 비밀값 가림 처리됨).</summary>
@@ -42,6 +44,7 @@ public sealed record PlutoActivityEntry(long Seq, DateTimeOffset AtUtc, PlutoAct
         PlutoActivityKind.OrganicRehabilitation => "🌱",
         PlutoActivityKind.DriveSync => "☁️",
         PlutoActivityKind.DriveConflict => "⚔️",
+        PlutoActivityKind.LocaleRender => "🎬",
         _ => "•",
     };
 
