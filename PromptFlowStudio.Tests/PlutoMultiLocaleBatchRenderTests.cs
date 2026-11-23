@@ -465,4 +465,66 @@ public sealed class PlutoMultiLocaleBatchRenderTests : IDisposable
         var again = await rig.Channels.BranchAndExportAllLocalesAsync(rig.Batch() with { VideoPath = null }, rig.Deps).WaitAsync(Wait);   // 잠금 누수 없음
         Assert.False(again.Busy);
     }
+
+    // ── Step 41 · Stage 10 — 샌드박스 자가진단 전 언어 일괄 렌더 · 사이드카 짝 출력 ──
+
+    private static string Why(PlutoFlywheelSelfTestReport rep)
+        => string.Join(" / ", Array.ConvertAll(new List<PlutoFlywheelStageResult>(rep.Stages).ToArray(), s => s.Index + ":" + s.StatusLabel + ":" + s.Detail));
+
+    [Fact]
+    public async Task FlywheelSelfTest_Stage10_RendersEligibleLocales_FreezesPublishedLocale_AndCoOutputsMp4SidecarPairs_WithoutTouchingLiveState()
+    {
+        Assert.Equal(10, PlutoFlywheelSelfTestService.StageCount);
+        Assert.Equal(10, PlutoFlywheelSelfTestService.StageNames.Length);
+        Assert.Contains("일괄 렌더", PlutoFlywheelSelfTestService.StageNames[9], StringComparison.Ordinal);
+        Assert.Equal(All, PlutoFlywheelSelfTestService.BatchRenderLocales);
+        Assert.Equal("en-US", PlutoFlywheelSelfTestService.BatchRenderPublishedLocale);
+        var live = Sub("live10");
+        var liveFile = Path.Combine(live, PlutoRenderCatalogService.FileName);
+        File.WriteAllText(liveFile, "{\"live\":true}");
+        var stamp = File.GetLastWriteTimeUtc(liveFile);
+        var parent = Sub("selftest10");
+
+        var rep = await new PlutoFlywheelSelfTestService(parent, new[] { live }).RunAsync().WaitAsync(TimeSpan.FromSeconds(60));
+
+        Assert.True(rep.AllPassed, Why(rep));
+        Assert.Equal(10, rep.Stages.Count);
+        var s10 = rep.Stages[9];
+        Assert.Equal(10, s10.Index);
+        Assert.Equal(PlutoFlywheelSelfTestService.StageNames[9], s10.Name);
+        Assert.True(s10.Passed && !s10.Skipped, Why(rep));
+        Assert.Contains("렌더 3개(KO·JA·ES)", s10.Detail, StringComparison.Ordinal);
+        Assert.Contains("EN 🔒게시 동결", s10.Detail, StringComparison.Ordinal);
+        Assert.Contains("짝 3쌍", s10.Detail, StringComparison.Ordinal);
+        Assert.Contains("잔여물 0", s10.Detail, StringComparison.Ordinal);
+        Assert.DoesNotContain(parent, s10.Detail, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("PASS 10/10", rep.SummaryKorean, StringComparison.Ordinal);
+        Assert.True(rep.SandboxCleaned);
+        Assert.True(rep.LiveStateUntouched);
+        Assert.Equal("{\"live\":true}", File.ReadAllText(liveFile));
+        Assert.Equal(stamp, File.GetLastWriteTimeUtc(liveFile));
+        Assert.Empty(Directory.GetDirectories(parent, PlutoFlywheelSelfTestService.SandboxPrefix + "*"));
+    }
+
+    /// <summary>
+    /// 자체 추가 — 일괄 단일 비행 슬롯(<see cref="PlutoMultiLocaleBatchBundle"/>)은 프로세스 전역 정적 맵이다. Stage 10 이 고정 마스터 ID 를 쓰면
+    /// 동시에 도는 두 자가진단 인스턴스(설정 화면 + 병렬 테스트 컬렉션)가 서로를 Busy 로 보고 정상 파이프라인을 FAIL 로 보고한다 → 실행마다 고유 ID.
+    /// </summary>
+    [Fact]
+    public async Task CoArchitect_ConcurrentSelfTestInstances_DoNotCollideOnProcessGlobalBatchRenderSlot()
+    {
+        var live = Sub("live10c");
+        var a = new PlutoFlywheelSelfTestService(Sub("selftest10a"), new[] { live });
+        var b = new PlutoFlywheelSelfTestService(Sub("selftest10b"), new[] { live });
+
+        var reports = await Task.WhenAll(a.RunAsync(), b.RunAsync()).WaitAsync(TimeSpan.FromSeconds(120));
+
+        foreach (var rep in reports)
+        {
+            Assert.True(rep.AllPassed, Why(rep));
+            Assert.True(rep.Stages[9].Passed, Why(rep));
+            Assert.True(rep.SandboxCleaned);
+        }
+        Assert.NotEqual(a.LastSandboxPath, b.LastSandboxPath);
+    }
 }

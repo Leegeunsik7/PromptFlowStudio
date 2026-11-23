@@ -64,3 +64,14 @@
 - 산출물 폴더 잔류 검사(`*.rendering.mp4` · `*.tmp` · `*.bak`)를 할 때는 다른 서비스의 비동기 영속 파일(활동 피드 `*.json.tmp`)을 **별도 하위 폴더**에 둔다 — 같은 폴더면 피드 디바운스 저장과 경합해 간헐 실패.
 - 단일 비행 공유(일괄 패키지 ↔ 일괄 렌더)는 `TaskCompletionSource` 게이트 렌더러로 첫 실행을 붙잡고 양쪽 두 번째 호출 `Busy` · 사이드카 무기록 → 해제 후 잠금 누수 없음까지 단언.
 - `TitanReleaseTests` 의 원시 `GetAllocatedBytesForCurrentThread() - a0` 단언은 전체 실행에서 같은 JIT/OSR 1회성 바이트로 간헐 실패할 수 있다(Step 40 관측: `NeuralTemporalConsistencyGuard.Process` 7,528 B) → 실패 지점만 `SteadyStateAllocation.MinBytes` 로 외과 전환.
+
+## 무할당 단언 전량 정상 상태화 · 외부 실행 재시도 · Stage 10 (Step 41)
+- `TitanReleaseTests.cs` 의 원시 무할당 단언(`Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - a0)` · `Assert.True(… == 0, …)` · `var alloc = … - before`)은 전부 `SteadyStateAllocation.MinBytes(() => { 창 })` — 새 원시 단언 추가 금지.
+  - 창 밖으로 새는 로컬(결과 · 누적기 `all`/`ok`/`acc`/`vsum`)은 창 **밖에서 선언**하고 창 첫 줄에서 리셋 → 재시도 창이 동일 작업을 측정.
+  - 창이 상태를 전진(핸드오프 시퀀스 · 구독 통지 · 소비 카운터)시키면 `MinBytes(창, out var windows)` 후 `1 + windows` 로 단언(고정 `2` 금지).
+  - 소비형/제자리 창(파이프라인 완주 · 채널 드레인 · 입력 버퍼 제자리 변환)은 `MinBytes(창, beforeRetry, out _)` — 재시도 직전 창 밖에서 재기동/원본 복원. 복원 없이는 재시도 창이 빈 작업으로 0 B 를 내는 공허한 통과.
+  - `stackalloc` Span · `ref`/`out` 매개변수를 쓰는 창은 람다 캡처 불가 → `var p = SteadyStateAllocation.Start(); do { 창 } while (p.Retry()); Assert.Equal(0, p.MinBytes);`
+  - 0 B 가 아닌 상수 메모리 차분(big − small) 측정과 프레임 게이트 누적(`if (f >= N) alloc += …`) · `await` 포함 창은 원시 단일 창 유지(재시도 대상 아님).
+  - 멱등성 감사: `PFS_ALLOC_FORCE_ALL_WINDOWS=1` 로 해당 클래스를 돌리면 0 B 조기 반환 없이 항상 4 창 실행 → 재시도에 깨지는 후속 단언을 단독 실행에서도 드러낸다(변경 시 1회 권장).
+- 실 프로세스 생성(`cmd.exe` 등) 단언은 `ProcessEnvironment` 컬렉션 + 유효 대상만 유한 재시도(3회 · 100/200 ms) — 검증(`ValidateExternalTarget`) 통과를 먼저 단언하고 무효 대상 `false` 단언에는 재시도 금지.
+- 플라이휠 자가진단은 10 단계 — Stage 10 은 고유 마스터 ID(프로세스 전역 일괄 단일 비행 슬롯 충돌 방지) · 주입 렌더러/디스크 탐침/시계/오프라인 번역기 · 카탈로그는 산출물 폴더 밖.

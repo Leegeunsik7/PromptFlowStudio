@@ -49,7 +49,7 @@ public interface IPlutoFlywheelSelfTestService
 /// </summary>
 public sealed class PlutoFlywheelSelfTestService : IPlutoFlywheelSelfTestService
 {
-    public const int StageCount = 9;
+    public const int StageCount = 10;
     public const string SandboxPrefix = "pfs_flywheel_selftest_";
     public const string SandboxMarkerFileName = ".pluto_selftest_sandbox";
 
@@ -64,6 +64,7 @@ public sealed class PlutoFlywheelSelfTestService : IPlutoFlywheelSelfTestService
         "🩺 진단 Markdown 스냅샷",
         "🌐 다국어 채널 분기 · 일/서 수집",
         "☁️ 기동 선조정 · 블랙박스 진단",
+        "🎬 전 언어 일괄 렌더 · 사이드카 짝 출력",
     };
 
     private const string Theme = "가을 숲 산책";
@@ -161,7 +162,8 @@ public sealed class PlutoFlywheelSelfTestService : IPlutoFlywheelSelfTestService
         5 => StageRehabilitationAsync(c, ct),
         6 => StageDiagnosticAsync(c, ct),
         7 => StageMultiLanguageAsync(c, ct),
-        _ => StageStartupSyncAsync(c, ct),
+        8 => StageStartupSyncAsync(c, ct),
+        _ => StageBatchRenderAsync(c, ct),
     };
 
     // ── ① 🧭 토픽 플래너 ──
@@ -484,6 +486,133 @@ public sealed class PlutoFlywheelSelfTestService : IPlutoFlywheelSelfTestService
         Require(md.IndexOf(c.Root, StringComparison.OrdinalIgnoreCase) < 0 && md.IndexOf(s9, StringComparison.OrdinalIgnoreCase) < 0, "진단서에 샌드박스 절대 경로 노출");
         return "선조정 1회(정리 " + r1.Unmatched!.PrunedLinked.ToString(CultureInfo.InvariantCulture) + " · 잔류 " + r1.Unmatched.Remaining.ToString(CultureInfo.InvariantCulture)
             + ") · 진단 6섹션 " + md.Length.ToString(CultureInfo.InvariantCulture) + "자 · 비밀값/경로 가림";
+    }
+
+    // ── ⑩ 🎬 전 언어 일괄 렌더 · 사이드카 짝 출력(Step 41) ──
+
+    /// <summary>Stage 10 대상 로캘(마스터 KO + EN 게시 동결 + JA/ES 렌더).</summary>
+    public static readonly string[] BatchRenderLocales = { "ko-KR", "en-US", "ja-JP", "es-ES" };
+    /// <summary>Stage 10 에서 YouTube 에 이미 연결(게시)된 것으로 시드하는 로캘.</summary>
+    public const string BatchRenderPublishedLocale = "en-US";
+    /// <summary>Stage 10 마스터 영상 파일 줄기(<c>{stem}_{locale}.mp4</c>).</summary>
+    public const string BatchRenderStem = "selftest_master";
+    private const string YtRenderEn = "ytSELFREN10";
+    private const string PublishedSentinel = "PUBLISHED-EN-SENTINEL";
+    private static readonly byte[] Ftyp = { 0, 0, 0, 24, (byte)'f', (byte)'t', (byte)'y', (byte)'p' };
+
+    /// <summary>
+    /// Stage 10 — <see cref="PlutoMultiLocaleBatchRenderService"/> 를 결정론 페이크 MP4(<c>ftyp</c>) 렌더러로 돌려 4 로캘 짝 커밋을 검증.
+    ///   ▸ 🔑 마스터 ID 는 실행마다 고유 — 일괄 단일 비행 슬롯(<see cref="PlutoMultiLocaleBatchBundle"/>)이 <b>프로세스 전역</b> 정적 맵이라
+    ///     고정 ID 면 동시에 도는 다른 자가진단 인스턴스(설정 화면 + 테스트 병렬 컬렉션)가 서로를 "진행 중(Busy)" 으로 보고 거짓 FAIL.
+    ///   ▸ 💽 여유 공간 프로브 · 시계 · 번역기 · 렌더러 전부 주입 — 호스트 디스크가 거의 찼다는 이유로 정상 파이프라인이 InsufficientDisk FAIL 이 되지 않음.
+    ///   ▸ 🔒 활동 피드 미연결(라이브 피드 무기록) · 모든 경로 = 샌드박스 하위.
+    /// </summary>
+    private static async Task<string> StageBatchRenderAsync(Context c, CancellationToken ct)
+    {
+        var s10 = Path.Combine(c.Root, "s10");
+        var outDir = Path.Combine(s10, "out");
+        Directory.CreateDirectory(outDir);
+        var clipId = "selftest-render-" + Guid.NewGuid().ToString("N")[..12];
+        var master = Path.Combine(outDir, BatchRenderStem + ".mp4");
+        await File.WriteAllBytesAsync(master, Ftyp, ct).ConfigureAwait(false);
+
+        var channels = new PlutoMultiLanguageChannelService();
+        using var catalog = new PlutoRenderCatalogService(Path.Combine(s10, PlutoRenderCatalogService.FileName));
+        var l10n = new PlutoSubtitleLocalizationService(channels, OfflineTranslator, null, providerUsesNetwork: false);
+        var packs = new PlutoYouTubePublishPackService(catalog: catalog, clock: static () => new DateTimeOffset(T0)) { Channels = channels };
+        await catalog.RecordRenderedClipAsync(new PlutoRenderedClipRecord(clipId, "가을 숲 산책 렌더", "몽타주", "pov-walk", PlutoColorGradingCompiler.NaturalPastelName, "Lullaby",
+            new[] { "autumn" }, master, new DateTimeOffset(T0), false), ct).ConfigureAwait(false);
+
+        // (a) EN 게시 동결 — 변형 분기 + YouTube 연결 + 기존 MP4/사이드카(무변경 감시용 표식)
+        var published = BatchRenderPublishedLocale;
+        Require(await catalog.BranchLocaleVariantAsync(clipId, published, null, null, ct).ConfigureAwait(false) is not null, "EN 변형 분기 실패");
+        Require(await catalog.TryBindYouTubeVideoIdAsync(clipId + PlutoMultiLanguageChannelService.VariantSeparator + published, YtRenderEn, ct).ConfigureAwait(false) == PlutoYouTubeBindResult.Bound, "EN 게시 연결 모사 실패");
+        var enMp4 = Path.Combine(outDir, BatchRenderStem + "_" + published + ".mp4");
+        var enPack = Path.Combine(outDir, BatchRenderStem + "_" + published + PlutoYouTubePublishPackService.SidecarSuffix);
+        await File.WriteAllTextAsync(enMp4, PublishedSentinel, ct).ConfigureAwait(false);
+        await File.WriteAllTextAsync(enPack, PublishedSentinel, ct).ConfigureAwait(false);
+
+        // (b) 결정론 페이크 렌더러 — 스테이징에만 ftyp + 로캘 기록 · 작업 기록
+        var jobs = new List<PlutoLocaleRenderJob>(BatchRenderLocales.Length);
+        var jobsLock = new object();
+        PlutoLocaleRenderDelegate render = async (job, token) =>
+        {
+            lock (jobsLock) jobs.Add(job);
+            var body = Encoding.UTF8.GetBytes(job.Locale);
+            var bytes = new byte[Ftyp.Length + body.Length];
+            Ftyp.CopyTo(bytes, 0);
+            body.CopyTo(bytes, Ftyp.Length);
+            await File.WriteAllBytesAsync(job.StagingPath, bytes, token).ConfigureAwait(false);
+            return new PlutoLocaleRenderOutcome(true, "selftest") { VideoDurationSeconds = 5.0, AudioDurationSeconds = 4.9 };
+        };
+        var svc = new PlutoMultiLocaleBatchRenderService(channels, render, null, static () => new DateTimeOffset(T0), static _ => long.MaxValue);
+        var req = new PlutoMultiLocaleRenderRequest(new PlutoMultiLocaleBatchRequest(clipId, new[]
+        {
+            PromptFlowStudio.Services.Export.SubtitleCue.Precise(0.0, 2.5, "숲길을 걷는다"),
+            PromptFlowStudio.Services.Export.SubtitleCue.Precise(2.5, 5.0, "마지막에 비밀이 밝혀진다"),
+        })
+        {
+            ContextKey = "montage", Theme = Theme, CatalogTitle = "가을 숲 산책 렌더", HookStyle = "pov-walk", StyleTags = new[] { "autumn" },
+            VideoPath = master, Locales = BatchRenderLocales,
+        });
+        var r = await svc.RenderAllLocalesAsync(req, new PlutoMultiLocaleBatchServices(l10n, catalog, packs), null, ct).ConfigureAwait(false);
+        Require(!r.Busy && !r.Cancelled && r.Items.Count == BatchRenderLocales.Length, "일괄 렌더 결과 이상(Busy/취소/개수)");
+
+        // (c) 로캘별 — 게시 로캘 동결 · 나머지 {stem}_{locale}.mp4 + {stem}_{locale}_publish_pack.txt 짝
+        var rendered = 0;
+        foreach (var loc in BatchRenderLocales)
+        {
+            var it = r.Find(loc);
+            Require(it is not null, loc + " 결과 누락");
+            var mp4 = Path.Combine(outDir, BatchRenderStem + "_" + loc + ".mp4");
+            var pack = Path.Combine(outDir, BatchRenderStem + "_" + loc + PlutoYouTubePublishPackService.SidecarSuffix);
+            if (loc == published)
+            {
+                Require(it!.Status == PlutoLocaleRenderStatus.AlreadyPublished, loc + " 게시 로캘이 동결되지 않음: " + it.Status);
+                continue;
+            }
+            Require(it!.Status == PlutoLocaleRenderStatus.Rendered, loc + " 렌더 실패: " + it.Status + " " + (it.Error ?? ""));
+            Require(string.Equals(it.VideoPath, mp4, StringComparison.OrdinalIgnoreCase) && string.Equals(it.SidecarPath, pack, StringComparison.OrdinalIgnoreCase), loc + " 출력 이름 규약 위반");
+            var head = await File.ReadAllBytesAsync(mp4, ct).ConfigureAwait(false);
+            Require(head.AsSpan().StartsWith(Ftyp), loc + " MP4 서명(ftyp) 없음");
+            var side = await File.ReadAllTextAsync(pack, Encoding.UTF8, ct).ConfigureAwait(false);
+            Require(side.Contains(Path.GetFileName(mp4), StringComparison.Ordinal) && side.Contains(loc, StringComparison.Ordinal), loc + " 사이드카가 로캘 MP4 를 가리키지 않음");
+            rendered++;
+        }
+        Require(rendered == BatchRenderLocales.Length - 1, "렌더 로캘 수 불일치");
+
+        // (d) 게시 로캘 — 렌더러 미호출 · MP4/사이드카 바이트 그대로 · 렌더러는 스테이징에만 기록
+        foreach (var j in jobs)
+        {
+            Require(!string.Equals(j.Locale, published, StringComparison.OrdinalIgnoreCase), "게시 로캘에 렌더러가 호출됨");
+            Require(!string.Equals(j.StagingPath, j.FinalPath, StringComparison.OrdinalIgnoreCase) && j.StagingPath.Contains(PlutoMultiLocaleBatchRenderService.StagingMarker, StringComparison.Ordinal),
+                "렌더러가 최종 경로에 직접 기록");
+        }
+        Require(await File.ReadAllTextAsync(enMp4, ct).ConfigureAwait(false) == PublishedSentinel && await File.ReadAllTextAsync(enPack, ct).ConfigureAwait(false) == PublishedSentinel,
+            "게시 로캘 MP4/사이드카가 변경됨");
+
+        // (e) 원자 짝 커밋 잔여물 0 · 카탈로그 변형 출력 경로 결선(마스터 KO 경로 유지)
+        foreach (var pattern in new[] { "*" + PlutoMultiLocaleBatchRenderService.StagingMarker + ".mp4", "*.tmp", "*.bak" })
+            Require(Directory.GetFiles(outDir, pattern).Length == 0, "커밋 잔여물(" + pattern + ") 남음");
+        foreach (var loc in BatchRenderLocales)
+        {
+            if (loc == published || loc == "ko-KR") continue;
+            var rec = await catalog.FindByVideoIdOrTitleAsync(clipId + PlutoMultiLanguageChannelService.VariantSeparator + loc, ct).ConfigureAwait(false);
+            Require(r.Find(loc)!.CatalogBound && rec is not null && string.Equals(rec.OutputPath, Path.Combine(outDir, BatchRenderStem + "_" + loc + ".mp4"), StringComparison.OrdinalIgnoreCase),
+                loc + " 카탈로그 출력 경로 미결선");
+        }
+        var masterRec = await catalog.FindByVideoIdOrTitleAsync(clipId, ct).ConfigureAwait(false);
+        Require(masterRec is not null && string.Equals(masterRec.OutputPath, master, StringComparison.OrdinalIgnoreCase), "마스터 출력 경로가 바뀜");
+        Require(!PlutoMultiLocaleBatchBundle.IsRunning(clipId), "단일 비행 슬롯 미해제");
+
+        return "렌더 " + rendered.ToString(CultureInfo.InvariantCulture) + "개(KO·JA·ES) · EN 🔒게시 동결 · 🎞️+💾 짝 " + rendered.ToString(CultureInfo.InvariantCulture) + "쌍 · 잔여물 0";
+    }
+
+    /// <summary>오프라인 결정론 번역기(네트워크 0) — 자리표시자 보존 + 로캘별 고정 본문.</summary>
+    private static Task<string?> OfflineTranslator(PlutoTranslationRequest req, CancellationToken ct)
+    {
+        var body = req.TargetLocale switch { "en-US" => "walks the trail", "ja-JP" => "が歩く", _ => "camina" };   // 짧은 본문 — TTS 1.30x 게이트 미발동
+        return Task.FromResult<string?>((string.Join(" ", req.Placeholders) + " " + body).Trim());
     }
 
     /// <summary>진단 서비스가 인자 없는 <c>CheckHealth()</c> 로 라이브 Drive/계정 폴더를 보지 않도록 샌드박스 폴더로 고정.</summary>

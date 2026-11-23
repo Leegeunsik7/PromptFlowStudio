@@ -206,13 +206,13 @@ public sealed class PlutoMultiLocaleBatchBundleTests : IDisposable
         public HttpRequestExceptionStub(string m) : base(m) { }
     }
 
-    // ── 3. Stage-9 자가진단 — 9 단계 전부 PASS · 라이브 무접촉 ──
+    // ── 3. Stage-9 자가진단 — 10 단계 전부 PASS(Step 41 Stage 10 포함) · 라이브 무접촉 ──
 
     [Fact]
-    public async Task FlywheelSelfTest_PassesAllNineStages_IncludingStartupPreSyncAndBlackBoxDiagnostic_WithoutTouchingLiveState()
+    public async Task FlywheelSelfTest_PassesAllTenStages_IncludingStartupPreSyncAndBlackBoxDiagnostic_WithoutTouchingLiveState()
     {
-        Assert.Equal(9, PlutoFlywheelSelfTestService.StageCount);
-        Assert.Equal(9, PlutoFlywheelSelfTestService.StageNames.Length);
+        Assert.Equal(10, PlutoFlywheelSelfTestService.StageCount);
+        Assert.Equal(10, PlutoFlywheelSelfTestService.StageNames.Length);
         var live = Sub("live");
         var liveFile = Path.Combine(live, PlutoRenderCatalogService.FileName);
         File.WriteAllText(liveFile, "{\"live\":true}");

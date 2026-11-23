@@ -11,8 +11,11 @@ using Xunit;
 
 namespace PromptFlowStudio.Tests;
 
-/// <summary>듀얼 트랙 마켓 게이트 · Process.Start 단일 관문 · Win32 런타임 플랫폼 가드 회귀 잠금.</summary>
+/// <summary>듀얼 트랙 마켓 게이트 · Process.Start 단일 관문 · Win32 런타임 플랫폼 가드 회귀 잠금.
+///   Step 41 — 실 <c>cmd.exe</c> 생성은 전체 스위트 병렬 구간의 프로세스 생성 경합에서 1회 실패한 이력이 있어
+///   <c>ProcessEnvironment</c>(DisableParallelization) 컬렉션으로 병렬 구간 뒤 단독 실행 + 유효 대상만 유한 재시도.</summary>
 [Trait("Category", "FastUnit")]
+[Collection("ProcessEnvironment")]
 public class GovernanceOptTests
 {
     private static readonly TimeSpan Kst = TimeSpan.FromHours(9);
@@ -88,9 +91,12 @@ public class GovernanceOptTests
             Assert.False(await runner.LaunchExternalAsync("https://example.com", ct: cts.Token));
         }
 
-        // 유효 실행 파일(무창 · 즉시 종료) → true
+        // 유효 실행 파일(무창 · 즉시 종료) → true — 검증 통과를 먼저 단언(검증 회귀는 재시도 없이 즉시 실패)한 뒤
+        // 전체 스위트 부하의 일시적 cmd.exe 생성 실패(Win32Exception → 격리 false)만 유한 재시도로 흡수
         var cmd = Path.Combine(Environment.SystemDirectory, "cmd.exe");
-        Assert.True(await runner.LaunchExternalAsync(cmd, "/c exit 0", openWithShell: false));
+        Assert.True(ProcessRunner.ValidateExternalTarget(cmd, "/c exit 0"), "유효 대상 검증 회귀");
+        var (launched, attempts) = await LaunchValidWithTransientRetryAsync(runner, cmd, "/c exit 0");
+        Assert.True(launched, "유효 대상 실행 실패(" + attempts + "회 시도)");
 
         // 커스텀 대역: 기본 LaunchExternalAsync 가 인스턴스 LaunchExternal 로 위임
         var fake = new FakeLauncher();
@@ -119,6 +125,53 @@ public class GovernanceOptTests
             Assert.False(StockSuiteExporter.TrySetDesktopWallpaper(null));
         }
         finally { try { File.Delete(png); } catch (IOException) { } }
+    }
+
+    /// <summary>Step 41 — 유효 대상 실행 재시도 상한(일시적 프로세스 생성 경합 흡수 · 무효 대상 단언에는 쓰지 않음).</summary>
+    internal const int TransientLaunchAttempts = 3;
+
+    /// <summary>검증을 통과한 유효 대상만 최대 <see cref="TransientLaunchAttempts"/> 회 지수 백오프(100 · 200 ms) 재시도. 반환 = (성공, 시도 횟수).</summary>
+    internal static async Task<(bool Launched, int Attempts)> LaunchValidWithTransientRetryAsync(IProcessRunner runner, string target, string arguments, int maxAttempts = TransientLaunchAttempts)
+    {
+        if (!ProcessRunner.ValidateExternalTarget(target, arguments)) return (false, 0);   // 무효 대상은 재시도로 가리지 않음
+        for (var attempt = 1; ; attempt++)
+        {
+            if (await runner.LaunchExternalAsync(target, arguments, openWithShell: false)) return (true, attempt);
+            if (attempt >= maxAttempts) return (false, attempt);
+            await Task.Delay(100 << (attempt - 1));
+        }
+    }
+
+    [Fact]
+    public async Task TransientLaunchRetry_RecoversFromSpawnContention_ButNeverRetriesInvalidTargets()
+    {
+        // 처음 2회 생성 실패 → 3회째 성공
+        var flaky = new FlakyLauncher(failures: 2);
+        var cmd = Path.Combine(Environment.SystemDirectory, "cmd.exe");
+        Assert.Equal((true, 3), await LaunchValidWithTransientRetryAsync(flaky, cmd, "/c exit 0"));
+        Assert.Equal(3, flaky.Calls);
+
+        // 상한 초과 → 실패 보고(무한 재시도 없음)
+        var dead = new FlakyLauncher(failures: int.MaxValue);
+        Assert.Equal((false, TransientLaunchAttempts), await LaunchValidWithTransientRetryAsync(dead, cmd, "/c exit 0"));
+        Assert.Equal(TransientLaunchAttempts, dead.Calls);
+
+        // 무효 대상 → 실행 시도 0 회(재시도가 검증 실패를 가리지 않음)
+        var never = new FlakyLauncher(failures: 0);
+        Assert.Equal((false, 0), await LaunchValidWithTransientRetryAsync(never, "javascript://alert(1)", ""));
+        Assert.Equal((false, 0), await LaunchValidWithTransientRetryAsync(never, cmd, "a\0b"));
+        Assert.Equal(0, never.Calls);
+    }
+
+    private sealed class FlakyLauncher(int failures) : IProcessRunner
+    {
+        public int Calls;
+
+        public Task<ProcessResult> RunAsync(string exe, IEnumerable<string> args, string? workingDir = null,
+            Action<bool, string>? onLine = null, CancellationToken ct = default)
+            => Task.FromResult(new ProcessResult(false, -1, "", ""));
+
+        public bool LaunchExternal(string target, string arguments = "", bool openWithShell = true) => ++Calls > failures;
     }
 
     private sealed class FakeLauncher : IProcessRunner

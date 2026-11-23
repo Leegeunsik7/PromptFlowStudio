@@ -37,18 +37,93 @@ internal static class SteadyStateAllocation
     /// <summary>측정 창 반복 상한(1회성 런타임 전이 흡수용 · 진짜 할당은 매 창 재현).</summary>
     internal const int MaxWindows = 4;
 
+    /// <summary>Step 41 — 강제 전 창 감사 모드 환경변수(<c>1</c>). 켜면 0 B 조기 반환 없이 항상 <see cref="MaxWindows"/> 창을 돌려
+    ///   "재시도 창이 후속 단언(카운터 · 링 · 가상 시계)을 깨지 않는가"(창 멱등성)를 전체 스위트에서 실측 검증한다.
+    ///   평상시 재시도는 1회성 런타임 전이가 측정 창에 들어올 때만 일어나므로 비멱등 창은 단독 실행에선 절대 드러나지 않는다.</summary>
+    internal const string ForceAllWindowsEnv = "PFS_ALLOC_FORCE_ALL_WINDOWS";
+
+    /// <summary>프로세스 시작 시 1회 판독(측정 창 밖 · 문자열 할당이 창에 섞이지 않음).</summary>
+    internal static readonly bool ForceAllWindows = Environment.GetEnvironmentVariable(ForceAllWindowsEnv) == "1";
+
     /// <summary><paramref name="window"/> 를 최대 <see cref="MaxWindows"/> 번 측정해 가장 작은 스레드 국소 할당 바이트를 반환(0 이면 즉시 반환).</summary>
-    internal static long MinBytes(Action window)
+    internal static long MinBytes(Action window) => MinBytes(window, out _);
+
+    /// <summary><see cref="MinBytes(Action)"/> + 실제 실행된 창 수. 창이 상태를 누적(프레임 카운터 · 링 버퍼 · 가상 시계)하면
+    ///   후속 단언을 <paramref name="windows"/> 배수로 표현해 재시도 여부와 무관하게 엄격히 유지한다.</summary>
+    internal static long MinBytes(Action window, out int windows) => MinBytes(window, null, out windows);
+
+    /// <summary>소비형(one-shot) 창용 — 재시도 <em>직전</em>마다 측정 창 밖에서 <paramref name="beforeRetry"/> 로 동일 작업량을 복원한다
+    ///   (파이프라인 재기동 · 제자리 변환 입력 복원 · 출력 파일 정리). 복원 없이 재시도하면 두 번째 창이
+    ///   "할 일이 없어서" 0 B 를 보고하는 공허한 통과(vacuous pass)가 되어 첫 창의 진짜 할당을 가린다.</summary>
+    internal static long MinBytes(Action window, Action? beforeRetry, out int windows)
+    {
+        Span<long> samples = stackalloc long[MaxWindows];
+        windows = Sample(window, beforeRetry, ForceAllWindows, samples);
+        return Min(samples[..windows]);
+    }
+
+    /// <summary>표본 최소값(빈 표본은 <see cref="long.MaxValue"/>).</summary>
+    internal static long Min(ReadOnlySpan<long> samples)
+    {
+        var min = long.MaxValue;
+        foreach (var s in samples) if (s < min) min = s;
+        return min;
+    }
+
+    /// <summary>원시 측정기 — 창별 할당 바이트를 <paramref name="samples"/> 에 기록하고 실행 창 수를 반환.
+    ///   <paramref name="forceAll"/> 이 false 면 첫 0 B 창에서 멈춘다. 창 · 복원 예외는 재시도 없이 즉시 전파(실패 은폐 금지).</summary>
+    internal static int Sample(Action window, Action? beforeRetry, bool forceAll, Span<long> samples)
     {
         ArgumentNullException.ThrowIfNull(window);
-        var min = long.MaxValue;
-        for (var i = 0; i < MaxWindows && min > 0; i++)
+        if (samples.IsEmpty) throw new ArgumentException("최소 1 창 필요", nameof(samples));
+        var max = Math.Min(MaxWindows, samples.Length);
+        var n = 0;
+        while (n < max)
         {
+            if (n > 0) beforeRetry?.Invoke();   // 측정 창 밖 — 복원 할당은 계상되지 않음
             var a0 = GC.GetAllocatedBytesForCurrentThread();
             window();
             var d = GC.GetAllocatedBytesForCurrentThread() - a0;
-            if (d < min) min = d;
+            samples[n++] = d;
+            if (d == 0 && !forceAll) break;
         }
-        return min;
+        return n;
+    }
+
+    /// <summary>람다 없는 측정기 — 참조 로컬(<c>stackalloc</c> Span) · <c>ref</c>/<c>out</c> 매개변수는 람다가 캡처할 수 없으므로
+    ///   <c>var p = SteadyStateAllocation.Start(); do { 창 } while (p.Retry()); Assert.Equal(0, p.MinBytes);</c> 로 같은 판정을 한다.</summary>
+    internal static Probe Start() => Probe.Begin(ForceAllWindows);
+
+    /// <summary>무할당 do/while 측정 상태(값 형식 · 측정 창 안에서 할당 0).</summary>
+    internal struct Probe
+    {
+        private long _a0;
+        private long _min;
+        private int _windows;
+        private bool _forceAll;
+
+        internal static Probe Begin(bool forceAll)
+        {
+            var p = new Probe { _min = long.MaxValue, _forceAll = forceAll };
+            p._a0 = GC.GetAllocatedBytesForCurrentThread();
+            return p;
+        }
+
+        /// <summary>방금 끝난 창을 기록하고 다음 창을 돌릴지 반환(true 면 새 창 측정 시작).</summary>
+        internal bool Retry()
+        {
+            var d = GC.GetAllocatedBytesForCurrentThread() - _a0;
+            _windows++;
+            if (d < _min) _min = d;
+            if (_windows >= MaxWindows || (d == 0 && !_forceAll)) return false;
+            _a0 = GC.GetAllocatedBytesForCurrentThread();
+            return true;
+        }
+
+        /// <summary>창별 최소 할당 바이트.</summary>
+        internal readonly long MinBytes => _min;
+
+        /// <summary>실행된 창 수.</summary>
+        internal readonly int Windows => _windows;
     }
 }
