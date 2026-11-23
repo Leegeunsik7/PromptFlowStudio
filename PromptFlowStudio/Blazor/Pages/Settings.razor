@@ -7,6 +7,7 @@
 @inject PromptFlowStudio.Services.Pluto.IPlutoSystemDiagnosticService PlutoDiagnostics
 @inject PromptFlowStudio.Services.Pluto.IPlutoFlywheelSelfTestService FlywheelSelfTest
 @inject PromptFlowStudio.Services.Platform.IClipboardService Clipboard
+@inject PromptFlowStudio.Services.Pluto.IPlutoYouTubeApiSyncService YouTubeApi
 @using PromptFlowStudio.Services.Pluto
 @using System.Globalization
 
@@ -173,6 +174,33 @@ else
                 @if (_selfTestError is { } ste) { <div class="dh-err" role="alert">@(ste)</div> }
             </div>
         </section>
+
+        @* 🔄 Step 33 — YouTube Data API v3 연동(🔐 이 PC 전용 봉인 · Drive 미동기화 · 빈 칸 저장 = 기존 값 유지 · 비밀값은 다시 표시하지 않음) *@
+        <section class="dh" data-yt-api-card="1">
+            <div class="dh-head">
+                <div>
+                    <div class="dh-title">🔄 YouTube Data API v3 연동</div>
+                    @if (_ytApi is { } ya)
+                    {
+                        <div class="dh-sum @(ya.IsConfigured ? "ok" : "warn")" data-yt-api-status="@(ya.IsConfigured ? (ya.IsNetworkAllowed ? "ready" : "isolated") : "unset")">
+                            @(ya.AuthMode) · @(ya.MaskedCredential) · 채널 @(ya.ChannelCount.ToString(CultureInfo.InvariantCulture))개 · 쿼터 @(ya.QuotaUnitsUsedToday.ToString(CultureInfo.InvariantCulture))/@(ya.DailyUnitBudget.ToString(CultureInfo.InvariantCulture)) unit(태평양 일 기준)@(ya.CooldownUntilUtc is { } cd ? " · ⏸ 냉각 ~" + cd.ToLocalTime().ToString("MM-dd HH:mm", CultureInfo.InvariantCulture) : "") · 마지막 동기화 @(ya.LastSyncUtc is { } ls ? ls.ToLocalTime().ToString("MM-dd HH:mm", CultureInfo.InvariantCulture) : "—")
+                        </div>
+                        @if (!string.IsNullOrEmpty(ya.LastSummaryKorean)) { <div class="dh-sum" data-yt-api-last="1">@(ya.LastSummaryKorean)</div> }
+                    }
+                </div>
+                <button class="dh-btn" data-yt-api-test="1" disabled="@(_ytApiBusy || _ytApi?.IsConfigured != true)" @onclick="TestYouTubeApiAsync" title="channels.list 1회(1 unit)로 채널 · 업로드 재생목록 확인">@(_ytApiBusy ? "⏳ 확인 중…" : "[🔌 연결 테스트]")</button>
+                <button class="dh-btn" data-yt-api-disconnect="1" disabled="@(_ytApiBusy || _ytApi?.IsConfigured != true)" @onclick="DisconnectYouTubeApiAsync" title="봉인 파일을 덮어쓴 뒤 삭제하고 리프레시 토큰 폐기를 요청합니다">🗑️ 연결 해제 · 자격 증명 삭제</button>
+            </div>
+            <div class="dh-ytapi">
+                <input type="password" autocomplete="off" data-yt-api-key="1" @bind="_ytApiKey" placeholder="API 키(읽기 전용 · 공개 통계)" />
+                <input type="text" autocomplete="off" data-yt-api-client-id="1" @bind="_ytClientId" placeholder="OAuth 클라이언트 ID(선택)" />
+                <input type="password" autocomplete="off" data-yt-api-client-secret="1" @bind="_ytClientSecret" placeholder="OAuth 클라이언트 시크릿(선택)" />
+                <input type="password" autocomplete="off" data-yt-api-refresh="1" @bind="_ytRefreshToken" placeholder="OAuth 리프레시 토큰(선택 · 자동 갱신)" />
+                <textarea rows="2" spellcheck="false" data-yt-api-channels="1" @bind="_ytChannels" placeholder="채널 ID(줄마다 · 선택 로캘) 예: UCxxxxxxxxxxxxxxxxxxxxxx=ko-KR&#10;UCyyyyyyyyyyyyyyyyyyyyyy=ja-JP"></textarea>
+                <button class="dh-btn" data-yt-api-save="1" disabled="@_ytApiBusy" @onclick="SaveYouTubeApiAsync">🔐 암호화 저장</button>
+            </div>
+            @if (_ytApiToast is { } yat) { <div class="dh-sum" role="status" data-yt-api-toast="1">@(yat)</div> }
+        </section>
     }
     else if (_tab == Tab.Gemini)
     {
@@ -206,6 +234,9 @@ else
 }
 
 <style>
+    .dh-ytapi{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:8px;margin-top:10px}
+    .dh-ytapi input,.dh-ytapi textarea{font:12px/1.4 var(--mono,monospace);padding:7px 9px;border-radius:8px;border:1px solid var(--line,rgba(148,163,184,.25));background:transparent;color:inherit;min-width:0}
+    .dh-ytapi textarea{grid-column:1/-1;resize:vertical}
     .st{padding:22px 26px 40px;max-width:980px;color:var(--ink,#e6eefc)}
     .st-head{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:16px}
     .st-title{font-size:22px;font-weight:800;margin:0;color:var(--ink,#f1f6ff)}
@@ -372,6 +403,56 @@ else
         _ => "⛔ 드라이브 없음",
     };
 
+    // ── 🔄 Step 33 — YouTube Data API v3 연동 ──
+    private PlutoYouTubeApiStatusSnapshot? _ytApi;
+    private bool _ytApiBusy;
+    private string? _ytApiToast;
+    private string _ytApiKey = "", _ytClientId = "", _ytClientSecret = "", _ytRefreshToken = "", _ytChannels = "";
+
+    private void RefreshYouTubeApiStatus()
+    {
+        try { _ytApi = YouTubeApi.GetStatus(); }
+        catch (Exception ex) { Program.Log("Settings.YouTubeApiStatus", ex); _ytApi = null; }
+    }
+
+    private async Task SaveYouTubeApiAsync()
+    {
+        if (_ytApiBusy) return;
+        var invalid = new List<string>();
+        var channels = PlutoYouTubeApiSyncService.ParseChannelList(_ytChannels, invalid);
+        if (invalid.Count > 0) { _ytApiToast = "⚠ 채널 입력 오류: " + string.Join(", ", invalid); return; }
+        _ytApiBusy = true;
+        try
+        {
+            var r = await YouTubeApi.SaveCredentialsAsync(new PlutoYouTubeApiCredentials
+            {
+                ApiKey = _ytApiKey, ClientId = _ytClientId, ClientSecret = _ytClientSecret, RefreshToken = _ytRefreshToken, Channels = channels,
+            });
+            _ytApiToast = r.MessageKorean;
+            if (r.Ok) { _ytApiKey = ""; _ytClientSecret = ""; _ytRefreshToken = ""; }   // 🔐 비밀값은 화면에 남기지 않음
+        }
+        catch (Exception ex) { Program.Log("Settings.YouTubeApiSave", ex); _ytApiToast = "⚠ 저장 실패: " + ex.GetType().Name; }
+        finally { _ytApiBusy = false; RefreshYouTubeApiStatus(); }
+    }
+
+    private async Task TestYouTubeApiAsync()
+    {
+        if (_ytApiBusy) return;
+        _ytApiBusy = true;
+        try { _ytApiToast = (await YouTubeApi.TestConnectionAsync()).SummaryKorean; }
+        catch (Exception ex) { Program.Log("Settings.YouTubeApiTest", ex); _ytApiToast = "⚠ 연결 테스트 실패: " + ex.GetType().Name; }
+        finally { _ytApiBusy = false; RefreshYouTubeApiStatus(); }
+    }
+
+    private async Task DisconnectYouTubeApiAsync()
+    {
+        if (_ytApiBusy) return;
+        _ytApiBusy = true;
+        try { await YouTubeApi.DisconnectAsync(); _ytApiToast = "🔌 연결 해제 — 저장된 자격 증명을 삭제했습니다."; }
+        catch (Exception ex) { Program.Log("Settings.YouTubeApiDisconnect", ex); _ytApiToast = "⚠ 해제 실패: " + ex.GetType().Name; }
+        finally { _ytApiBusy = false; RefreshYouTubeApiStatus(); }
+    }
+
     private static string FormatSize(long b) => b <= 0 ? "—"
         : b < 1024 ? b.ToString(CultureInfo.InvariantCulture) + " B"
         : b < 1024 * 1024 ? (b / 1024.0).ToString("0.0", CultureInfo.InvariantCulture) + " KB"
@@ -383,6 +464,7 @@ else
         try { _drive = DriveHealth.CheckHealth(); }
         catch (Exception ex) { Program.Log("Settings.DriveHealth", ex); }
         RefreshConflicts();
+        RefreshYouTubeApiStatus();
     }
 
     // v5.3.2: 쿼리(?tab=) 값이 바뀔 때만 초기 활성 탭을 반영한다(사용자의 이후 탭 클릭은 보존).

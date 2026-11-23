@@ -50,6 +50,8 @@ public enum PlutoYouTubeRowApplyKind
     Matured,
     /// <summary>기반영 · 덜 성숙 → 0건 강화.</summary>
     AlreadyRegistered,
+    /// <summary>🔄 Step 33 — API 관측만 반영(정밀 지표 없음 → 학습 · 워터마크 불변).</summary>
+    Observed,
 }
 
 /// <summary>📊 연결된 행 반영 결과.</summary>
@@ -401,7 +403,8 @@ public sealed class PlutoYouTubeUnmatchedQueueService : IPlutoYouTubeUnmatchedQu
             var list = new List<PlutoUnmatchedYouTubeRow>(_rows);
             foreach (var raw in rows)
             {
-                if (Sanitize(raw) is not { } r) continue;
+                if (raw?.Row is { HasPrecisionMetrics: false }) continue;   // 🔄 Step 33 — API 관측 행(지표 0 자리표시) 보존 금지: 디스크 왕복 시 플래그가 사라져 가짜 지표로 학습됨
+                if (Sanitize(raw!) is not { } r) continue;
                 if (_tombs.ContainsKey(r.YouTubeVideoId)) continue;   // 🪦 무시/처리된 행 — 같은 기간 내보내기 재수집(자동 감시)으로 되살리지 않음
                 // 🛡️ 대기 중 다른 경로로 이미 연결된 ID는 보존하지 않음(이중 학습 방지)
                 if (await _catalog.FindByYouTubeVideoIdAsync(r.YouTubeVideoId, ct).ConfigureAwait(false) is not null) continue;

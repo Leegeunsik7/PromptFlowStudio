@@ -34,6 +34,15 @@ public sealed record PlutoTelemetryBatchImportResult(int TotalRows, int MatchedA
     /// <summary>📊 YouTube Studio 보고서 경로로 처리됨.</summary>
     public bool IsYouTubeStudioReport { get; init; }
 
+    /// <summary>🔄 Step 33 — YouTube Data API v3 동기화 경로로 처리됨(관측 전용 · 정밀 지표 없음).</summary>
+    public bool IsYouTubeApiSync { get; init; }
+
+    /// <summary>🔄 Step 33 — API 관측(조회수 · 좋아요 · 댓글 · 게시 제목 귀속)을 반영한 연결 행 수.</summary>
+    public int ApiObservedCount { get; init; }
+
+    /// <summary>📌→✅ Step 33 — API가 새로 연결한 YouTube ID로 미매칭 대기열에 묶여 있던 Studio 정밀 지표를 회수 · 학습한 수.</summary>
+    public int QueueRecoveredCount { get; init; }
+
     /// <summary>원본 이름(ZIP 내부 항목 · 파일명).</summary>
     public string? SourceName { get; init; }
 
@@ -42,6 +51,7 @@ public sealed record PlutoTelemetryBatchImportResult(int TotalRows, int MatchedA
     {
         get
         {
+            if (IsYouTubeApiSync) return ApiSummaryKorean();
             var s = "📥 " + TotalRows.ToString(CultureInfo.InvariantCulture) + "행 중 ✅ " + MatchedAndLearnedCount.ToString(CultureInfo.InvariantCulture)
                 + "건 학습 · ❓ 미매칭 " + UnmatchedCount.ToString(CultureInfo.InvariantCulture) + "건";
             if (AlreadyRegisteredCount > 0) s += " · ⏭ 기반영 " + AlreadyRegisteredCount.ToString(CultureInfo.InvariantCulture) + "건";
@@ -52,6 +62,17 @@ public sealed record PlutoTelemetryBatchImportResult(int TotalRows, int MatchedA
             if (MistakeGuardsTriggered > 0) s += " · 🛡️ 오답 가드 " + MistakeGuardsTriggered.ToString(CultureInfo.InvariantCulture) + "건 발동";
             return s;
         }
+    }
+
+    private string ApiSummaryKorean()
+    {
+        var s = "🔄 API " + TotalRows.ToString(CultureInfo.InvariantCulture) + "건 중 👁 관측 " + ApiObservedCount.ToString(CultureInfo.InvariantCulture)
+            + "건 · ❓ 미매칭 " + UnmatchedCount.ToString(CultureInfo.InvariantCulture) + "건";
+        if (NewlyLinkedCount > 0) s += " · 📺 새 연결 " + NewlyLinkedCount.ToString(CultureInfo.InvariantCulture) + "건";
+        if (QueueRecoveredCount > 0) s += " · 📌→✅ 대기열 정밀 지표 회수 " + QueueRecoveredCount.ToString(CultureInfo.InvariantCulture) + "건(학습 " + MatchedAndLearnedCount.ToString(CultureInfo.InvariantCulture)
+            + " · 성숙 " + MaturityDeltaCount.ToString(CultureInfo.InvariantCulture) + ")";
+        if (MistakeGuardsTriggered > 0) s += " · 🛡️ 오답 가드 " + MistakeGuardsTriggered.ToString(CultureInfo.InvariantCulture) + "건 발동";
+        return s + " · 유지율/CTR 은 Studio 내보내기에서만 학습";
     }
 }
 
@@ -75,6 +96,14 @@ public interface IPlutoTelemetryBatchImporter
     /// 같은 스냅샷 재반영은 0건 강화(멱등). 형식 오류 → <see cref="System.IO.InvalidDataException"/>.
     /// </summary>
     Task<PlutoTelemetryBatchImportResult> ImportYouTubeStudioFileAsync(byte[] fileBytes, string? fileName = null, string platform = "YouTube Shorts", CancellationToken ct = default);
+
+    /// <summary>
+    /// 🔄 Step 33 — YouTube Data API v3 관측 행 반영: 카탈로그 연결(Tier 1/2 · 로캘 재라우팅) → 게시 제목 A/B 귀속 → API 관측 차선 갱신.
+    /// 정밀 지표가 없으므로 폐루프 · 워터마크 · 미매칭 대기열은 건드리지 않는다. 새로 연결된 ID가 대기열에 Studio 행으로 남아 있으면 즉시 회수 · 학습.
+    /// 기본 구현 = 미지원(0건).
+    /// </summary>
+    Task<PlutoTelemetryBatchImportResult> ImportYouTubeApiRowsAsync(IReadOnlyList<YouTubeAnalyticsRow> rows, string platform = "YouTube Shorts", CancellationToken ct = default)
+        => Task.FromResult(new PlutoTelemetryBatchImportResult(0, 0, 0, 0, Array.Empty<string>()) { IsYouTubeApiSync = true });
 }
 
 /// <summary>📥 <see cref="IPlutoTelemetryBatchImporter"/> 순수 BCL 구현(따옴표 필드 · 콤마/탭/세미콜론 구분자 · BOM 허용).</summary>
@@ -336,6 +365,20 @@ public sealed class PlutoTelemetryBatchImporter : IPlutoTelemetryBatchImporter
     public static bool IsMaterialMaturity(long previousViews, long currentViews)
         => currentViews - previousViews >= MaturityMinViewGain && currentViews >= previousViews * MaturityViewsMultiplier;
 
+    /// <summary>🔄 Step 33 — API 관측이 이 시간 안이면 Studio 성숙 판정 근거로 인정(Studio 표 데이터는 24~72시간 지연 집계).</summary>
+    public const double ApiMaturityFreshnessHours = 72.0;
+
+    /// <summary>
+    /// 🔄 Step 33 — Studio 행의 성숙 판정 조회수. Studio 표는 지연 집계라 실제 도달이 2배를 넘었어도 조회수가 덜 자라 보여 증분이 영영 생략될 수 있다 →
+    /// 신선한(<see cref="ApiMaturityFreshnessHours"/>) API 실시간 조회수가 더 크면 그것을 판정 근거로 쓴다. 미래 시각 · 오래된 관측은 무시.
+    /// </summary>
+    public static long EffectiveMaturityViews(long studioViews, PlutoYouTubeApiStats? api, DateTimeOffset nowUtc)
+    {
+        if (api is null || api.Views <= studioViews) return studioViews;
+        var age = (nowUtc - api.FetchedUtc).TotalHours;
+        return age >= -1.0 && age <= ApiMaturityFreshnessHours ? api.Views : studioViews;
+    }
+
     public async Task<PlutoTelemetryBatchImportResult> ImportYouTubeStudioFileAsync(byte[] fileBytes, string? fileName = null, string platform = "YouTube Shorts", CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(fileBytes);
@@ -432,6 +475,7 @@ public sealed class PlutoTelemetryBatchImporter : IPlutoTelemetryBatchImporter
         ArgumentNullException.ThrowIfNull(loop);
         ArgumentNullException.ThrowIfNull(clip);
         ArgumentNullException.ThrowIfNull(row);
+        if (!row.HasPrecisionMetrics) return await ApplyApiObservationAsync(catalog, clip, row, ct).ConfigureAwait(false);   // 🔄 Step 33 — 지표 없는 API 행은 학습 금지
         // 🅰️🅱️ Step 25 — 실제 게시 제목으로 A/B 변형 귀속 판정(멱등 · 판정 후 동결) · 실패는 학습과 격리
         try { await catalog.ResolvePublishedTitleAsync(clip.VideoId, row.Title, ct).ConfigureAwait(false); }
         catch (OperationCanceledException) { throw; }
@@ -449,13 +493,100 @@ public sealed class PlutoTelemetryBatchImporter : IPlutoTelemetryBatchImporter
                 : new PlutoYouTubeRowApplyResult(PlutoYouTubeRowApplyKind.Learned, outcome.GuardActivated, outcome);
         }
         var nextStage = wm.Stage + 1;
-        if (!IsMaterialMaturity(wm.Views, row.Views) || nextStage > PlutoClosedLoopReinforcementService.MaxMaturityStages)
+        var gateViews = EffectiveMaturityViews(row.Views, clip.YouTubeApiStats, now);   // 🔄 Step 33 — 지연된 Studio 조회수 대신 신선한 API 도달로 판정
+        if (!IsMaterialMaturity(wm.Views, gateViews) || nextStage > PlutoClosedLoopReinforcementService.MaxMaturityStages)
             return new PlutoYouTubeRowApplyResult(PlutoYouTubeRowApplyKind.AlreadyRegistered, false, null);   // ⏭ 같은/덜 성숙한 스냅샷 → 0건 강화
         var previous = BuildTelemetry(clip, plat, wm.HookPct, wm.CompletionPct, wm.CtrPct);
         var delta = await loop.IngestMaturityDeltaAsync(telemetry, previous, nextStage, PlutoClosedLoopReinforcementService.MaturityWeightForStage(nextStage), ct).ConfigureAwait(false);
-        await catalog.UpdateYouTubeWatermarkAsync(clip.VideoId, new PlutoYouTubeIngestWatermark(row.Views, nextStage, row.Hook3sRetention, row.CompletionRate, row.Ctr, now), ct).ConfigureAwait(false);
+        await catalog.UpdateYouTubeWatermarkAsync(clip.VideoId, new PlutoYouTubeIngestWatermark(gateViews, nextStage, row.Hook3sRetention, row.CompletionRate, row.Ctr, now), ct).ConfigureAwait(false);
         return delta.AlreadyRegistered
             ? new PlutoYouTubeRowApplyResult(PlutoYouTubeRowApplyKind.AlreadyRegistered, false, delta)
             : new PlutoYouTubeRowApplyResult(PlutoYouTubeRowApplyKind.Matured, delta.GuardActivated, delta);
+    }
+
+    /// <summary>
+    /// 🔄 Step 33 — API 관측 1행 반영(학습 없음): 게시 제목 A/B 귀속(실패 격리) → API 관측 차선 갱신(앞설 때만).
+    /// 워터마크 · <c>TelemetryLogged</c> · 폐루프는 불변 — 정밀 유지율/CTR 이 없는 행이 Studio 실측을 덮거나 0 % 가짜 지표로 오답 노트를 오염시키지 않는다.
+    /// </summary>
+    public static async Task<PlutoYouTubeRowApplyResult> ApplyApiObservationAsync(IPlutoRenderCatalogService catalog, PlutoRenderedClipRecord clip, YouTubeAnalyticsRow row, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(catalog);
+        ArgumentNullException.ThrowIfNull(clip);
+        ArgumentNullException.ThrowIfNull(row);
+        try { await catalog.ResolvePublishedTitleAsync(clip.VideoId, row.Title, ct).ConfigureAwait(false); }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.ApiSync] title attribution: " + ex.Message); }
+        var stats = new PlutoYouTubeApiStats(Math.Max(0, row.Views), row.Likes, row.Comments, row.PublishedAtUtc, DateTimeOffset.UtcNow);
+        await catalog.UpdateYouTubeApiStatsAsync(clip.VideoId, stats, ct).ConfigureAwait(false);
+        return new PlutoYouTubeRowApplyResult(PlutoYouTubeRowApplyKind.Observed, false, null);
+    }
+
+    public async Task<PlutoTelemetryBatchImportResult> ImportYouTubeApiRowsAsync(IReadOnlyList<YouTubeAnalyticsRow> rows, string platform = "YouTube Shorts", CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(rows);
+        ct.ThrowIfCancellationRequested();
+        var plat = string.IsNullOrWhiteSpace(platform) ? "YouTube Shorts" : platform.Trim();
+        // 🛡️ 호출자가 플래그를 빠뜨려도 API 행은 항상 관측 전용(정밀 지표 0 자리표시가 학습으로 새지 않음)
+        var apiRows = new YouTubeAnalyticsRow[rows.Count];
+        for (var i = 0; i < rows.Count; i++) apiRows[i] = rows[i].HasPrecisionMetrics ? rows[i] with { HasPrecisionMetrics = false } : rows[i];
+        var links = await new PlutoYouTubeCatalogLinker(_catalog).LinkAsync(apiRows, ct).ConfigureAwait(false);
+        var unmatched = new List<string>();
+        int observed = 0, linked = 0;
+        List<(string YouTubeId, string ClipId)>? bound = null;
+        for (var i = 0; i < apiRows.Length; i++)
+        {
+            ct.ThrowIfCancellationRequested();
+            var row = apiRows[i];
+            var link = links[i];
+            var label = row.YouTubeVideoId ?? row.Title ?? "?";
+            if (link.Clip is not { } clip) { unmatched.Add(label + (link.Reason is { } why ? " (" + why + ")" : "")); continue; }   // 📌 대기열 보존 안 함(지표 없음)
+            if (link.NewlyBound) linked++;
+            if (clip.YouTubeVideoId is { } yt) (bound ??= new List<(string, string)>()).Add((yt, clip.VideoId));
+            try
+            {
+                await ApplyYouTubeRowAsync(_catalog, _loop, clip, row, plat, ct).ConfigureAwait(false);
+                observed++;
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine("[Pluto.ApiSync] row " + label + ": " + ex.Message);
+                unmatched.Add(label + " (오류)");   // 행 격리
+            }
+        }
+
+        // 📌→✅ API가 연결한 ID가 대기열에 Studio 정밀 행으로 남아 있으면 회수(원클릭 페어링과 같은 게이트 · 멱등 · 실패는 대기열 유지)
+        int recovered = 0, learned = 0, matured = 0, guards = 0;
+        if (_unmatchedQueue is not null && bound is not null)
+        {
+            try
+            {
+                await _unmatchedQueue.EnsureLoadedAsync(ct).ConfigureAwait(false);
+                var pending = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var q in _unmatchedQueue.GetPending()) if (q.Row.HasPrecisionMetrics && q.YouTubeVideoId.Length > 0) pending.Add(q.YouTubeVideoId);
+                foreach (var (yt, clipId) in bound)
+                {
+                    if (!pending.Contains(yt)) continue;
+                    var pr = await _unmatchedQueue.PairAsync(yt, clipId, plat, ct).ConfigureAwait(false);
+                    if (!pr.Succeeded || pr.Applied is not { } ap) continue;
+                    recovered++;
+                    if (ap.Kind == PlutoYouTubeRowApplyKind.Learned) learned++;
+                    else if (ap.Kind == PlutoYouTubeRowApplyKind.Matured) matured++;
+                    if (ap.GuardActivated) guards++;
+                }
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.ApiSync] queue recovery: " + ex.Message); }   // [부분 구제] 관측 결과 유지
+        }
+
+        return new PlutoTelemetryBatchImportResult(observed + unmatched.Count, learned, unmatched.Count, guards, unmatched.ToArray())
+        {
+            MaturityDeltaCount = matured,
+            NewlyLinkedCount = linked,
+            ApiObservedCount = observed,
+            QueueRecoveredCount = recovered,
+            IsYouTubeApiSync = true,
+            SourceName = "YouTube Data API v3",
+        };
     }
 }

@@ -18,6 +18,12 @@ public sealed record PlutoRenderedClipRecord(string VideoId, string Title, strin
     /// <summary>📈 Step 22 — 마지막으로 학습에 반영한 YouTube 스냅샷(성숙도 증분 학습 기준 · 미반영 → null).</summary>
     public PlutoYouTubeIngestWatermark? YouTubeWatermark { get; init; }
 
+    /// <summary>
+    /// 🔄 Step 33 — YouTube Data API v3 실시간 관측(조회수 · 좋아요 · 댓글 · 게시 시각 · 미관측 → null). Studio 정밀 지표 워터마크와 분리된 별도 차선 —
+    /// API 조회수가 <see cref="YouTubeWatermark"/>를 앞당기면 지연된 Studio 내보내기가 '되감기'로 영구 거부되므로 절대 섞지 않는다.
+    /// </summary>
+    public PlutoYouTubeApiStats? YouTubeApiStats { get; init; }
+
     /// <summary>🅰️🅱️ Step 25 — 크리에이터가 복사한 업로드 제목 변형(<c>"A"</c> · <c>"B"</c> · 미기록 → null).</summary>
     public string? SelectedTitleVariant { get; init; }
 
@@ -112,6 +118,14 @@ public sealed record PlutoPublishedTitleSelection(string Variant, string Framing
 /// <summary>📈 YouTube 스냅샷 반영 워터마크 — 반영 시점 조회수 · 성숙도 단계(0 = 최초 반영) · 반영 지표.</summary>
 public sealed record PlutoYouTubeIngestWatermark(long Views, int Stage, double HookPct, double CompletionPct, double CtrPct, DateTimeOffset UpdatedUtc);
 
+/// <summary>🔄 Step 33 — YouTube Data API v3 관측 스냅샷(정밀 유지율 · CTR 없음 · 좋아요/댓글 비공개 → -1).</summary>
+public sealed record PlutoYouTubeApiStats(long Views, long Likes, long Comments, DateTimeOffset? PublishedAtUtc, DateTimeOffset FetchedUtc)
+{
+    /// <summary>우열 — 조회수 우선, 같으면 더 최근 관측(멀티 PC 병합과 같은 규칙 · 되감기 거부).</summary>
+    public static bool Supersedes(PlutoYouTubeApiStats candidate, PlutoYouTubeApiStats? existing)
+        => existing is null || candidate.Views > existing.Views || (candidate.Views == existing.Views && candidate.FetchedUtc > existing.FetchedUtc);
+}
+
 /// <summary>📺 YouTube ID 연결 결과.</summary>
 public enum PlutoYouTubeBindResult
 {
@@ -153,6 +167,9 @@ public interface IPlutoRenderCatalogService
 
     /// <summary>📈 반영 워터마크 갱신 — 조회수/단계가 기존보다 앞설 때만(단조 · 되감기 거부). 반영됨 → true.</summary>
     Task<bool> UpdateYouTubeWatermarkAsync(string clipVideoId, PlutoYouTubeIngestWatermark watermark, CancellationToken ct = default);
+
+    /// <summary>🔄 Step 33 — API 관측 갱신(앞설 때만 · 워터마크 · 학습 표시 불변). 반영됨 → true. 기본 구현 = 미지원(false).</summary>
+    Task<bool> UpdateYouTubeApiStatsAsync(string clipVideoId, PlutoYouTubeApiStats stats, CancellationToken ct = default) => Task.FromResult(false);
 
     /// <summary>🅰️🅱️ Step 25 — 복사된 업로드 제목 변형 기록(실측 판정 완료 클립은 동결 · 기록됨 → true). 기본 구현 = 미지원(false).</summary>
     Task<bool> RecordPublishedTitleAsync(string clipVideoId, PlutoPublishedTitleSelection selection, CancellationToken ct = default) => Task.FromResult(false);
@@ -225,6 +242,7 @@ public sealed class PlutoRenderCatalogService : IPlutoRenderCatalogService, IPlu
         public bool TelemetryLogged { get; set; }
         public string? YouTubeVideoId { get; set; }
         public WatermarkDto? YouTubeWatermark { get; set; }
+        public ApiStatsDto? YouTubeApiStats { get; set; }
         public string? SelectedTitleVariant { get; set; }
         public string? PublishedTitleFraming { get; set; }
         public string? PublishedTitleText { get; set; }
@@ -245,6 +263,16 @@ public sealed class PlutoRenderCatalogService : IPlutoRenderCatalogService, IPlu
         public double? AppliedBriefSurpriseDelta { get; set; }
         public string? TargetLocale { get; set; }
         public string? ParentClipId { get; set; }
+    }
+
+    /// <summary>🔄 Step 33 — API 관측 직렬화 DTO.</summary>
+    public sealed class ApiStatsDto
+    {
+        public long Views { get; set; }
+        public long Likes { get; set; } = -1;
+        public long Comments { get; set; } = -1;
+        public DateTimeOffset? PublishedAtUtc { get; set; }
+        public DateTimeOffset FetchedUtc { get; set; }
     }
 
     /// <summary>워터마크 직렬화 DTO.</summary>
@@ -297,6 +325,7 @@ public sealed class PlutoRenderCatalogService : IPlutoRenderCatalogService, IPlu
         {
             YouTubeVideoId = YouTubeStudioAnalyticsNormalizer.IsYouTubeVideoId(r.YouTubeVideoId?.Trim()) ? r.YouTubeVideoId!.Trim() : null,
             YouTubeWatermark = r.YouTubeWatermark is { Views: >= 0, Stage: >= 0 } w ? w : null,
+            YouTubeApiStats = r.YouTubeApiStats is { Views: >= 0 } a ? a with { Likes = Math.Max(-1, a.Likes), Comments = Math.Max(-1, a.Comments) } : null,
         };
         return SanitizeLocale(SanitizeAppliedBrief(SanitizeTitleAttribution(clean, r), r), r);
     }
@@ -362,6 +391,7 @@ public sealed class PlutoRenderCatalogService : IPlutoRenderCatalogService, IPlu
     {
         YouTubeVideoId = d.YouTubeVideoId,
         YouTubeWatermark = d.YouTubeWatermark is { } w ? new PlutoYouTubeIngestWatermark(w.Views, w.Stage, w.HookPct, w.CompletionPct, w.CtrPct, w.UpdatedUtc) : null,
+        YouTubeApiStats = d.YouTubeApiStats is { } a ? new PlutoYouTubeApiStats(a.Views, a.Likes, a.Comments, a.PublishedAtUtc, a.FetchedUtc) : null,
         SelectedTitleVariant = d.SelectedTitleVariant, PublishedTitleFraming = d.PublishedTitleFraming, PublishedTitleText = d.PublishedTitleText,
         AlternateTitleFraming = d.AlternateTitleFraming, AlternateTitleText = d.AlternateTitleText, TitleAttribution = d.TitleAttribution,
         AppliedBriefId = d.AppliedBriefId, AppliedBriefFormat = d.AppliedBriefFormat, AppliedBriefExpectedRetention = d.AppliedBriefExpectedRetention,
@@ -377,6 +407,7 @@ public sealed class PlutoRenderCatalogService : IPlutoRenderCatalogService, IPlu
         Tags = r.Tags is string[] arr ? arr : new List<string>(r.Tags).ToArray(), OutputPath = r.OutputPath, RenderedAtUtc = r.RenderedAtUtc, TelemetryLogged = r.TelemetryLogged,
         YouTubeVideoId = r.YouTubeVideoId,
         YouTubeWatermark = r.YouTubeWatermark is { } w ? new WatermarkDto { Views = w.Views, Stage = w.Stage, HookPct = w.HookPct, CompletionPct = w.CompletionPct, CtrPct = w.CtrPct, UpdatedUtc = w.UpdatedUtc } : null,
+        YouTubeApiStats = r.YouTubeApiStats is { } a ? new ApiStatsDto { Views = a.Views, Likes = a.Likes, Comments = a.Comments, PublishedAtUtc = a.PublishedAtUtc, FetchedUtc = a.FetchedUtc } : null,
         SelectedTitleVariant = r.SelectedTitleVariant, PublishedTitleFraming = r.PublishedTitleFraming, PublishedTitleText = r.PublishedTitleText,
         AlternateTitleFraming = r.AlternateTitleFraming, AlternateTitleText = r.AlternateTitleText, TitleAttribution = r.TitleAttribution,
         AppliedBriefId = r.AppliedBriefId, AppliedBriefFormat = r.AppliedBriefFormat, AppliedBriefExpectedRetention = r.AppliedBriefExpectedRetention,
@@ -596,6 +627,14 @@ public sealed class PlutoRenderCatalogService : IPlutoRenderCatalogService, IPlu
         return changed;
     }
 
+    public async Task<bool> UpdateYouTubeApiStatsAsync(string clipVideoId, PlutoYouTubeApiStats stats, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(stats);
+        if (string.IsNullOrWhiteSpace(clipVideoId) || stats.Views < 0) return false;
+        var clean = stats with { Likes = Math.Max(-1, stats.Likes), Comments = Math.Max(-1, stats.Comments) };
+        return await MutateClipAsync(clipVideoId.Trim(), c => PlutoYouTubeApiStats.Supersedes(clean, c.YouTubeApiStats) ? c with { YouTubeApiStats = clean } : c, ct).ConfigureAwait(false);
+    }
+
     public async Task<bool> RecordPublishedTitleAsync(string clipVideoId, PlutoPublishedTitleSelection selection, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(selection);
@@ -669,7 +708,7 @@ public sealed class PlutoRenderCatalogService : IPlutoRenderCatalogService, IPlu
                 var v = Sanitize(master with
                 {
                     VideoId = variantId, Title = title.Length > 0 ? title : master.Title, OutputPath = output.Length > 0 ? output : master.OutputPath, TelemetryLogged = false,
-                    YouTubeVideoId = null, YouTubeWatermark = null, SelectedTitleVariant = null, PublishedTitleFraming = null, PublishedTitleText = null,
+                    YouTubeVideoId = null, YouTubeWatermark = null, YouTubeApiStats = null, SelectedTitleVariant = null, PublishedTitleFraming = null, PublishedTitleText = null,
                     AlternateTitleFraming = null, AlternateTitleText = null, TitleAttribution = null, AppliedBriefEvaluated = false, AppliedBriefSurpriseDelta = null,
                     TargetLocale = loc, ParentClipId = baseId,
                 });

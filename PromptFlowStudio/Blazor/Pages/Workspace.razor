@@ -392,6 +392,7 @@
                         <button class="ws-back" data-batch-run="1" @onclick="RunBatchImportAsync" disabled="@(_batchBusy || _perfBusy || string.IsNullOrWhiteSpace(_batchCsv))">@(_batchBusy ? "⏳ 일괄 학습 중…" : "[일괄 학습 실행]")</button>
                         <span class="ws-back ws-file-pick" data-yt-studio-pick="1" title="YouTube Studio 내보내기(.csv 표 데이터 또는 .zip) → 조회수 10 미만 제외 · 시청 유지 → 3초 훅 · 100% 초과 반복 재생 포화 · 제목/편/게시일로 렌더 영상 자동 연결 · 재반영은 성숙 증분만">📊 YouTube Studio 내보내기 파일 학습<InputFile class="ws-drop-input" OnChange="OnYouTubeStudioPickedAsync" accept=".csv,.zip" disabled="@(_batchBusy || _perfBusy)" /></span>
                         <button class="ws-back" data-yt-studio-downloads="1" @onclick="ImportNewestStudioDownloadAsync" disabled="@(_batchBusy || _perfBusy)" title="다운로드 폴더에서 가장 최근 YouTube Studio 내보내기(.zip/.csv)를 찾아 바로 학습">[📂 다운로드 폴더 최신 내보내기 학습]</button>
+                        <button class="ws-back" data-yt-api-sync="1" @onclick="SyncYouTubeApiNowAsync" disabled="@(_batchBusy || _perfBusy)" title="YouTube Data API v3 — 설정된 채널(KO · EN · JA · ES)의 최근 업로드 조회수 · 좋아요 · 댓글 · 게시 제목을 50개 묶음으로 가져와 렌더 영상에 연결(관측 전용 · 유지율/CTR 은 Studio 내보내기 값 보존)">[🔄 유튜브 API 즉시 동기화]</button>
                         @if (_ytWatcher is not null)
                         {
                             <button class="@(_ytWatchOn ? "ws-pcore on" : "ws-back")" data-yt-autowatch="@(_ytWatchOn ? "on" : "off")" @onclick="ToggleYouTubeAutoWatchAsync" aria-pressed="@(_ytWatchOn ? "true" : "false")" title="다운로드 폴더에 새로 저장되는 YouTube Studio 내보내기(.csv/.zip)를 자동 감지 → 받는 중 파일 대기 · 같은 파일(SHA-256) 재학습 차단 · 무관한 파일은 조용히 무시@(_ytWatchHealth is { } wht ? " — " + wht.StatusKorean : "")">@(_ytWatchOn ? "[👁️ 다운로드 자동 감시 ON]" : "[👁️ 다운로드 자동 감시 OFF]")</button>
@@ -3911,6 +3912,33 @@
         catch (OperationCanceledException) { return; }
         catch (Exception ex) { Program.Log("Workspace.YouTubeStudioDownloads", ex); _batchToast = "⚠ 다운로드 폴더 읽기 실패: " + ex.Message; return; }
         await RunYouTubeStudioImportAsync(bytes, Path.GetFileName(path));
+    }
+
+    /// <summary>🔄 Step 33 — YouTube Data API v3 즉시 동기화(관측 전용 · 예외 전파 금지) → 카탈로그 · 추천 · 두뇌 리포트 갱신.</summary>
+    private async Task SyncYouTubeApiNowAsync()
+    {
+        if (_batchBusy) return;
+        if (EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoYouTubeApiSyncService)) is not PromptFlowStudio.Services.Pluto.IPlutoYouTubeApiSyncService api)
+        { _batchToast = "⚠ YouTube API 동기화 서비스를 사용할 수 없습니다."; return; }
+        _batchBusy = true;
+        _batchToast = "🔄 YouTube API 동기화 중…";
+        StateHasChanged();
+        try
+        {
+            var r = await api.SyncNowAsync(_mediaCts.Token);
+            _batchToast = r.SummaryKorean;
+            if (r.Import is { ApiObservedCount: > 0 } or { QueueRecoveredCount: > 0 })
+            {
+                await RefreshCatalogClipsAsync();
+                await RefreshAdaptiveRecommendationAsync();   // 🧠 대기열 회수 학습 → 순방향 랭킹
+                await RefreshBrainSummaryAsync();   // 🧠 두뇌 리포트 갱신
+            }
+        }
+        catch (OperationCanceledException) { return; }   // 페이지 이탈
+        catch (Exception ex) { Program.Log("Workspace.YouTubeApiSync", ex); _batchToast = "⚠ YouTube API 동기화 실패: " + ex.GetType().Name; }
+        finally { _batchBusy = false; }
+        if (_disposed) return;
+        await InvokeAsync(StateHasChanged);
     }
 
     private async Task RunYouTubeStudioImportAsync(byte[] bytes, string fileName)

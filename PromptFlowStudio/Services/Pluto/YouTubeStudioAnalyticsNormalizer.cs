@@ -17,6 +17,13 @@ public sealed record YouTubeAnalyticsRow(string? YouTubeVideoId, string? Title, 
     public long Likes { get; init; } = -1;
     /// <summary>🌐 Step 31 — 내보내기 헤더 언어(<c>ko</c>/<c>en</c>/<c>ja</c>/<c>es</c> · 미상 → null). Studio UI 언어라 채널 로캘의 약한 신호.</summary>
     public string? ExportLanguage { get; init; }
+    /// <summary>🔄 Step 33 — 댓글 수(YouTube Data API v3 · 열 없음 · 비공개 → -1).</summary>
+    public long Comments { get; init; } = -1;
+    /// <summary>
+    /// 🔄 Step 33 — 정밀 유지율 · 완주율 · CTR 실측 보유(Studio CSV/ZIP = true). YouTube Data API v3 행은 false — 해당 지표가 API에 없으므로
+    /// 폐루프 학습 · 워터마크 · 미매칭 대기열에 절대 들어가지 않고 관측(조회수 · 제목 귀속 · 연결)만 반영한다.
+    /// </summary>
+    public bool HasPrecisionMetrics { get; init; } = true;
 }
 
 /// <summary>📊 정규화된 YouTube Studio 보고서.</summary>

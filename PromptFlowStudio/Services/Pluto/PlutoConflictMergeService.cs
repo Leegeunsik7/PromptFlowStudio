@@ -329,6 +329,9 @@ public sealed class PlutoConflictMergeService
                 // 📈 반영 워터마크는 앞선 쪽(조회수 → 단계) — 상대 PC가 이미 반영한 성숙도 증분을 다시 적용하지 않음
                 if (rest["YouTubeWatermark"] is JsonObject rw && (pick["YouTubeWatermark"] is not JsonObject pw || WatermarkAhead(rw, pw)))
                     pick["YouTubeWatermark"] = rw.DeepClone();
+                // 🔄 Step 33 — API 관측은 앞선 쪽(조회수 → 관측 시각) · 워터마크와 독립 차선
+                if (rest["YouTubeApiStats"] is JsonObject ra && (pick["YouTubeApiStats"] is not JsonObject pa || ApiStatsAhead(ra, pa)))
+                    pick["YouTubeApiStats"] = ra.DeepClone();
                 // 🅰️🅱️ Step 25 — 제목 귀속: 실측 판정(Confirmed/Diverged) > 복사 기록 > 없음 · 필드 묶음 단위로 이전(부분 혼합 금지)
                 if (TitleAttributionRank(rest) > TitleAttributionRank(pick))
                     foreach (var f in TitleAttributionFields)
@@ -596,6 +599,13 @@ public sealed class PlutoConflictMergeService
     {
         long cv = Long(candidate, "Views"), ev = Long(existing, "Views");
         return cv > ev || (cv == ev && Int(candidate, "Stage") > Int(existing, "Stage"));
+    }
+
+    /// <summary>🔄 Step 33 — API 관측 우열(조회수 → 관측 시각) — <see cref="PlutoYouTubeApiStats.Supersedes"/>와 같은 규칙.</summary>
+    private static bool ApiStatsAhead(JsonObject candidate, JsonObject existing)
+    {
+        long cv = Long(candidate, "Views"), ev = Long(existing, "Views");
+        return cv > ev || (cv == ev && Time(candidate, "FetchedUtc") > Time(existing, "FetchedUtc"));
     }
 
     private static bool Bool(JsonObject o, string prop)
