@@ -1,20 +1,17 @@
 # Current Project Status
-- Active Milestone: ✅ Step 35 — xUnit 스위트 실행 가속(컬렉션 병렬 · 크롤러 병렬 워커) · 부하 인지 타이밍 예산 확대 · `Speed=Slow` 트레잇
+- Active Milestone: ✅ Step 36 — YouTube Data API v3 쿼터 인지형 백그라운드 주기 자동 동기화(`PlutoYouTubeApiSyncService`)
 - Build: ✅ Desktop Release `-warnaserror` 0W/0E · ✅ Tests Release 0W/0E · ⏸ Mobile net8.0-ios — `ios` 워크로드 미설치(미검증)
-- Tests: ✅ 1370/1370 — 전체 단일 실행 통과(종료 코드 0 · `build-server shutdown` 후) · 테스트 수 불변
-- 전체 실행 시간: 기준 `cb9a9cf` **23 m 59 s**(직렬 · 1367/1370, 프로세스/파일 잠금 플래키 3) → **15 m 04 s**(−37 %)
-- Updated: 2026-11-23 (KST) · 기준 `cb9a9cf` · 불변식 `CorePlutoFileCount=9` · `MergeableHubs=6` · `CompanionSyncFiles=2` 유지
+- Tests: ✅ 1379/1379 전체 단일 실행(종료 코드 0 · 17 m 18 s) · Pluto 루프 416/416 · 신규 `PlutoYouTubeApiAutoPollerTests` 9 건
+- Updated: 2026-11-23 (KST) · 기준 `412e71d` · 불변식 `CorePlutoFileCount=9` · `MergeableHubs=6` · `CompanionSyncFiles=2` 유지
 
-## Completed — Step 35
-- ⚡ `xunit.runner.json` 전역 직렬(`parallelizeTestCollections=false`) 해제 → 컬렉션 병렬 4 스레드 · 위험군은 `DisableParallelization` 컬렉션(병렬 구간 후 단독)
-- 🧭 신규 컬렉션: `ProcessEnvironment`(환경 변수 변경) · `TitanHeavyCompute`(CPU 집약 엔진 15 종 상호 직렬 · 경량 테스트와는 병렬) · 벽시계·고정 지연 클래스 16 개 → `TimingSensitivePerformance`
-- 🕷️ 모달 크롤러 4 m 20 s → ~1 m 30 s(모달 전용 루트 3 워커 · 결과 카탈로그 순 집계 · 175/175 · 디스패치 4141 ≥ 기준 4138 · 결함 0)
-- 🧪 `ZzCrowdProbe` 단언 0 건 13 s 덤프 → 1 s 실단언(유한성 · 월드 경계 · 활성 수) · 장기 덤프는 `PFS_CROWD_PROBE_DUMP=1`
-- ⏱️ 부하 인지 예산: `SemanticChatWeather`(p95/p99 `Scaled` · 제안/수용률 `CiFrameBudget.MeetsFloor`) · `OmniLiveRestream`(먹스 50 ms · 리액션 150 ms) · 클리퍼 틱 평균 + 단일 최대값 게이트 8 곳
-- 🛡️ 자체 추가: ① 숨은 전역 직렬 락 해제 ② 스레드 풀 기아 가드(최소 = 코어 × 2 · 자가 튜닝 상한 코어 × 4 와 충돌 방지) ③ CPU 집약 스위트 상호 직렬화 ④ Drive 프로브 40 ms 창 레이스 → 2 s 창 + 재연결 폴링
-- `LiveCommerce` 리액션 100 ms 는 틱 기반(결정론) — 프레임 게이트는 기존 `CiFrameBudget` 유지
+## Completed — Step 36
+- ⏱️ 주기 자동 동기화(기본 켬 · 30분 · 하한 5분) — `TimeProvider` 주입 단발 타이머 재무장 · 수동 `SyncNowAsync` 와 단일 실행 게이트 공유(겹치면 Busy 합류) · 수동 성공 → 다음 예정 한 주기 뒤로
+- 💸 `quotaExceeded`/자체 예산 소진 → 태평양 자정+1분까지 정지(영속 · 재시작 유지) · 남은 예산 < 예비 100 unit → 자동만 정지(수동 가능) · 429/5xx → 실행 간 지수 백오프 5분×2ⁿ⁻¹(상한 6시간)
+- 🔒 미설정 · `PROMPTFLOW_PLUTO_DRIVE=off`(실 네트워크) · `PROMPTFLOW_DISABLE_YOUTUBE_API=1` → 타이머 미생성 · 요청 0
+- 🖥️ `Settings.razor` `[⏱️ API 주기 자동 동기화 ON/OFF]` 영속 토글 + 실시간 예정/백오프/쿼터 상태(`Changed` 구독/해제) · `Workspace.razor` 새 연결 · 대기열 회수 시에만 토스트(회로 폐기 안전)
+- 🛡️ 자체 추가: ① 재시작 폭주 차단(영속 예정 · 2분 기동 유예 · 조기 발화 재무장 · 시계 되감김 상한) ② 인증 실패 정지(재저장 전 토큰/키 반복 타격 차단 · 영속) ③ 구성 세대 교체 — 연결 해제/재저장/끄기가 진행 중 자동 실행 취소 ④ 구독자별 예외 격리(`Changed` 포함) ⑤ 완료 이벤트를 실행 중 플래그 해제 뒤 발생
 
 ## Fast Loops
-- Pluto(407 건 · ~45 s): `dotnet test PromptFlowStudio.Tests/PromptFlowStudio.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~Pluto" -p:NuGetAudit=false`
-- 무거운 27 건 제외: `--filter "Speed!=Slow"` · CI 워크플로는 `RunConfiguration.DisableParallelization=true` 로 계속 완전 직렬
+- Pluto(416 건 · ~25 s): `dotnet test PromptFlowStudio.Tests/PromptFlowStudio.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~Pluto" -p:NuGetAudit=false`
+- 무거운 테스트 제외: `--filter "Speed!=Slow"` · CI 는 `RunConfiguration.DisableParallelization=true` 완전 직렬
 - ⚠️ `.git` 은 `D:\Program` — `--git-dir=D:/Program/.git --work-tree=D:/Program/PromptFlowStudio` 필요

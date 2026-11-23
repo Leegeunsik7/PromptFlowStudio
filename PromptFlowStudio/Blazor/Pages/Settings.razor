@@ -10,6 +10,7 @@
 @inject PromptFlowStudio.Services.Pluto.IPlutoYouTubeApiSyncService YouTubeApi
 @using PromptFlowStudio.Services.Pluto
 @using System.Globalization
+@implements IDisposable
 
 @* [PromptFlowStudio] 관리자 설정 — 사이드바에서 진입하는 관리자 전용 화면(진입 시 관리자 비밀번호 게이트). 탭 구성:
      [회원·권한] 회원 RBAC 관리 · [메일(SMTP)] 발송 서버(암호화 저장) · [설치 PC] 배포자 수집 정보
@@ -191,6 +192,11 @@ else
                 <button class="dh-btn" data-yt-api-test="1" disabled="@(_ytApiBusy || _ytApi?.IsConfigured != true)" @onclick="TestYouTubeApiAsync" title="channels.list 1회(1 unit)로 채널 · 업로드 재생목록 확인">@(_ytApiBusy ? "⏳ 확인 중…" : "[🔌 연결 테스트]")</button>
                 <button class="dh-btn" data-yt-api-disconnect="1" disabled="@(_ytApiBusy || _ytApi?.IsConfigured != true)" @onclick="DisconnectYouTubeApiAsync" title="봉인 파일을 덮어쓴 뒤 삭제하고 리프레시 토큰 폐기를 요청합니다">🗑️ 연결 해제 · 자격 증명 삭제</button>
             </div>
+            @* ⏱️ Step 36 — 쿼터 인지형 주기 자동 동기화(영속 토글 · 예정/백오프/쿼터 상태) *@
+            <div class="dh-ytauto">
+                <button class="dh-btn" data-yt-api-auto="@(_ytAuto?.Enabled == true ? "on" : "off")" aria-pressed="@(_ytAuto?.Enabled == true ? "true" : "false")" disabled="@_ytApiBusy" @onclick="ToggleYouTubeApiAutoAsync" title="백그라운드에서 주기적으로 채널 통계를 동기화 — 수동 동기화와 겹치지 않음 · 수동 성공 시 다음 예정이 한 주기 뒤로 · quotaExceeded/예비 쿼터 미만이면 태평양 자정까지 정지 · 일시 오류는 지수 백오프">@(_ytAuto?.Enabled == true ? "[⏱️ API 주기 자동 동기화 ON]" : "[⏱️ API 주기 자동 동기화 OFF]")</button>
+                @if (_ytAuto is { } yau) { <span class="dh-sum" role="status" data-yt-api-auto-status="@(yau.Phase.ToString())">@(yau.StatusKorean)</span> }
+            </div>
             <div class="dh-ytapi">
                 <input type="password" autocomplete="off" data-yt-api-key="1" @bind="_ytApiKey" placeholder="API 키(읽기 전용 · 공개 통계)" />
                 <input type="text" autocomplete="off" data-yt-api-client-id="1" @bind="_ytClientId" placeholder="OAuth 클라이언트 ID(선택)" />
@@ -237,6 +243,7 @@ else
     .dh-ytapi{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:8px;margin-top:10px}
     .dh-ytapi input,.dh-ytapi textarea{font:12px/1.4 var(--mono,monospace);padding:7px 9px;border-radius:8px;border:1px solid var(--line,rgba(148,163,184,.25));background:transparent;color:inherit;min-width:0}
     .dh-ytapi textarea{grid-column:1/-1;resize:vertical}
+    .dh-ytauto{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:10px}
     .st{padding:22px 26px 40px;max-width:980px;color:var(--ink,#e6eefc)}
     .st-head{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:16px}
     .st-title{font-size:22px;font-weight:800;margin:0;color:var(--ink,#f1f6ff)}
@@ -411,8 +418,39 @@ else
 
     private void RefreshYouTubeApiStatus()
     {
-        try { _ytApi = YouTubeApi.GetStatus(); }
-        catch (Exception ex) { Program.Log("Settings.YouTubeApiStatus", ex); _ytApi = null; }
+        try { _ytApi = YouTubeApi.GetStatus(); _ytAuto = YouTubeApi.GetAutoSyncStatus(); }
+        catch (Exception ex) { Program.Log("Settings.YouTubeApiStatus", ex); _ytApi = null; _ytAuto = null; }
+    }
+
+    // ── ⏱️ Step 36 — 주기 자동 동기화 토글 · 실시간 상태 ──
+    private PlutoYouTubeApiAutoSyncStatus? _ytAuto;
+    private bool _ytApiSubscribed;
+    private bool _disposed;
+
+    private async Task ToggleYouTubeApiAutoAsync()
+    {
+        if (_ytApiBusy) return;
+        try { await YouTubeApi.SetAutoSyncEnabledAsync(_ytAuto?.Enabled != true); }
+        catch (Exception ex) { Program.Log("Settings.YouTubeApiAuto", ex); _ytApiToast = "⚠ 자동 동기화 전환 실패: " + ex.GetType().Name; }
+        RefreshYouTubeApiStatus();
+    }
+
+    /// <summary>타이머 스레드 → UI(회로 종료 경합 흡수).</summary>
+    private void OnYouTubeApiChanged()
+    {
+        if (_disposed) return;
+        try
+        {
+            _ = InvokeAsync(() => { if (_disposed) return; RefreshYouTubeApiStatus(); StateHasChanged(); })
+                .ContinueWith(static t => _ = t.Exception, TaskContinuationOptions.OnlyOnFaulted);
+        }
+        catch (Exception ex) when (ex is ObjectDisposedException or InvalidOperationException) { }
+    }
+
+    public void Dispose()
+    {
+        _disposed = true;
+        if (_ytApiSubscribed) { YouTubeApi.Changed -= OnYouTubeApiChanged; _ytApiSubscribed = false; }
     }
 
     private async Task SaveYouTubeApiAsync()
@@ -429,7 +467,7 @@ else
                 ApiKey = _ytApiKey, ClientId = _ytClientId, ClientSecret = _ytClientSecret, RefreshToken = _ytRefreshToken, Channels = channels,
             });
             _ytApiToast = r.MessageKorean;
-            if (r.Ok) { _ytApiKey = ""; _ytClientSecret = ""; _ytRefreshToken = ""; }   // 🔐 비밀값은 화면에 남기지 않음
+            if (r.Ok) { _ytApiKey = ""; _ytClientSecret = ""; _ytRefreshToken = ""; YouTubeApi.StartAutoSync(); }   // 🔐 비밀값은 화면에 남기지 않음
         }
         catch (Exception ex) { Program.Log("Settings.YouTubeApiSave", ex); _ytApiToast = "⚠ 저장 실패: " + ex.GetType().Name; }
         finally { _ytApiBusy = false; RefreshYouTubeApiStatus(); }
@@ -465,6 +503,7 @@ else
         catch (Exception ex) { Program.Log("Settings.DriveHealth", ex); }
         RefreshConflicts();
         RefreshYouTubeApiStatus();
+        if (!_ytApiSubscribed) { YouTubeApi.Changed += OnYouTubeApiChanged; _ytApiSubscribed = true; }
     }
 
     // v5.3.2: 쿼리(?tab=) 값이 바뀔 때만 초기 활성 탭을 반영한다(사용자의 이후 탭 클릭은 보존).

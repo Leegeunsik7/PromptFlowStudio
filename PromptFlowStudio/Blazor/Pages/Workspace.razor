@@ -405,6 +405,7 @@
                     }
                     @if (_batchToast is { } btt) { <span class="ws-retry" role="status" data-batch-toast="1">@(btt)</span> }
                     @if (_ytAutoToast is { } yat) { <span class="ws-pcore on" role="status" aria-live="polite" data-yt-auto-toast="1">@(yat)</span> }
+                    @if (_ytApiAutoToast is { } yaat) { <span class="ws-pcore on" role="status" aria-live="polite" data-yt-api-auto-toast="1" title="@(_ytApiAutoStatus ?? "")">@(yaat)</span> }
                     @if (_ytUnmatched.Count > 0)
                     {
                         <div data-yt-unmatched="@(_ytUnmatched.Count.ToString(CultureInfo.InvariantCulture))" style="display:flex;flex-direction:column;gap:4px;width:100%">
@@ -4927,6 +4928,38 @@
         catch (Exception ex) { Program.Log("Workspace.YouTubeAutoWatchAttach", ex); }
     }
 
+    // ── ⏱️ Step 36 — YouTube Data API 주기 자동 동기화(백그라운드 결과 → 새 연결 · 대기열 회수 시에만 토스트) ──
+    private PromptFlowStudio.Services.Pluto.IPlutoYouTubeApiSyncService? _ytApiAuto;
+    private string? _ytApiAutoToast;
+    private string? _ytApiAutoStatus;
+
+    private void AttachYouTubeApiAutoSync()
+    {
+        try
+        {
+            _ytApiAuto = EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoYouTubeApiSyncService)) as PromptFlowStudio.Services.Pluto.IPlutoYouTubeApiSyncService;
+            if (_ytApiAuto is null) return;
+            _ytApiAuto.AutoSyncCompleted += OnYouTubeApiAutoSynced;
+            _ytApiAuto.StartAutoSync();   // 멱등 · 미설정/격리(PROMPTFLOW_PLUTO_DRIVE=off · PROMPTFLOW_DISABLE_YOUTUBE_API=1) → 타이머 미생성
+            _ytApiAutoStatus = _ytApiAuto.GetAutoSyncStatus().StatusKorean;
+        }
+        catch (Exception ex) { Program.Log("Workspace.YouTubeApiAutoAttach", ex); }
+    }
+
+    /// <summary>⏱️ 타이머 스레드 → UI. 조회수 갱신만 있는 실행은 조용히(상태 툴팁만) · 새 연결/대기열 회수만 토스트 + 카탈로그 갱신.</summary>
+    private void OnYouTubeApiAutoSynced(PromptFlowStudio.Services.Pluto.PlutoYouTubeApiAutoSyncEvent e)
+    {
+        if (_disposed || !e.HasImpact) return;
+        SafeUiUpdate(async () =>
+        {
+            _ytApiAutoToast = e.ToastKorean;
+            _ytApiAutoStatus = _ytApiAuto?.GetAutoSyncStatus().StatusKorean;
+            await RefreshCatalogClipsAsync();
+            await RefreshAdaptiveRecommendationAsync();   // 🧠 대기열 회수 학습 → 순방향 랭킹
+            await RefreshBrainSummaryAsync();             // 🧠 두뇌 리포트 갱신
+        }, "Workspace.YouTubeApiAutoSync");
+    }
+
     private async Task ToggleYouTubeAutoWatchAsync()
     {
         if (_ytWatcher is not { } w) return;
@@ -6312,6 +6345,7 @@
         PlutoHarvester.Changed += OnPlutoCoreChanged;   // 🔄 자율 수확 배지
         AttachHotReload();                              // ♻️ 충돌 병합/복원 즉시 반영
         AttachYouTubeAutoWatch();                       // 📥 Step 23 Downloads 자동 감시 토스트
+        AttachYouTubeApiAutoSync();                     // ⏱️ Step 36 YouTube API 주기 자동 동기화 토스트
         AttachYouTubeUnmatchedQueue();                  // 📌 Step 24 미매칭 YouTube 행 페어링
         PlutoCoreMgr.StartMonitoring();   // 🪐 5초 헬스 폴링(싱글톤 · 멱등)
         StockMon.Start();   // 🟢 2초 주기 StockSuite 프로세스 폴링(싱글톤 · 멱등)
@@ -6499,6 +6533,7 @@
         if (_hotReloadSource is not null) _hotReloadSource.HubReloaded -= OnPlutoHubReloaded;
         if (_ytWatcher is not null) { _ytWatcher.OnExportAutoIngested -= OnYouTubeExportAutoIngested; _ytWatcher.StateChanged -= OnYouTubeWatchStateChanged; }
         if (_ytUnmatchedSvc is not null) _ytUnmatchedSvc.Changed -= OnYouTubeUnmatchedChanged;
+        if (_ytApiAuto is not null) _ytApiAuto.AutoSyncCompleted -= OnYouTubeApiAutoSynced;   // ⏱️ Step 36 — 서비스는 싱글톤으로 계속 돈다(페이지만 구독 해제)
         try { _plutoCoreCts?.Cancel(); } catch (ObjectDisposedException) { }
         Journal.OnChanged -= OnHubChanged;
         Resilience.OnRetryAttempt -= OnRetryAttempt;

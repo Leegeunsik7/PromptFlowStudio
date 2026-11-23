@@ -78,6 +78,75 @@ public sealed record PlutoYouTubeApiStatusSnapshot(bool IsConfigured, bool IsNet
 /// <summary>🔐 자격 증명 저장 결과.</summary>
 public sealed record PlutoYouTubeApiSaveResult(bool Ok, string MessageKorean);
 
+/// <summary>⏱️ Step 36 — 주기 자동 동기화 단계.</summary>
+public enum PlutoYouTubeApiAutoSyncPhase
+{
+    /// <summary>사용자가 끔(영속).</summary>
+    Off,
+    /// <summary>미설정 · 킬 스위치 · 하네스 격리 → 타이머 없음.</summary>
+    Unavailable,
+    /// <summary>켜져 있으나 아직 기동 요청 없음.</summary>
+    NotStarted,
+    Scheduled,
+    Running,
+    /// <summary>일시 오류(429 · 5xx · 시간 초과) 연속 → 지수 백오프.</summary>
+    Backoff,
+    /// <summary><c>quotaExceeded</c> 또는 자체 예산 소진 → 태평양 자정까지.</summary>
+    QuotaPaused,
+    /// <summary>남은 예산 &lt; 예비분 → 태평양 자정까지 자동만 정지(수동 가능).</summary>
+    ReservePaused,
+    /// <summary>인증 실패 → 자격 증명 재저장 전까지 정지(토큰 엔드포인트 반복 타격 차단).</summary>
+    AuthPaused,
+}
+
+/// <summary>⏱️ Step 36 — 주기 자동 동기화 상태(설정 카드 표시용 · 비밀값 없음).</summary>
+public sealed record PlutoYouTubeApiAutoSyncStatus(bool Enabled, bool Armed, PlutoYouTubeApiAutoSyncPhase Phase, DateTimeOffset? NextDueUtc, int ConsecutiveFailures,
+    DateTimeOffset? LastAutoRunUtc, string? LastAutoSummaryKorean, long TickCount, int QuotaRemaining, int ReserveUnits, TimeSpan Interval)
+{
+    public string StatusKorean
+    {
+        get
+        {
+            var inv = CultureInfo.InvariantCulture;
+            var at = NextDueUtc is { } d ? d.ToLocalTime().ToString("MM-dd HH:mm", inv) : "—";
+            return Phase switch
+            {
+                PlutoYouTubeApiAutoSyncPhase.Off => "⏸ 주기 자동 동기화 꺼짐(수동 동기화만)",
+                PlutoYouTubeApiAutoSyncPhase.Unavailable => "🔒 미설정 · 격리 환경 — 자동 동기화 대기 안 함(네트워크 0)",
+                PlutoYouTubeApiAutoSyncPhase.NotStarted => "⏱️ 자동 동기화 대기(작업 공간 진입 시 기동)",
+                PlutoYouTubeApiAutoSyncPhase.Running => "🔄 백그라운드 자동 동기화 실행 중…",
+                PlutoYouTubeApiAutoSyncPhase.Backoff => "⏳ 일시 오류 " + ConsecutiveFailures.ToString(inv) + "회 연속 — " + at + " 재시도(지수 백오프)",
+                PlutoYouTubeApiAutoSyncPhase.QuotaPaused => "⏸ 쿼터 소진 — " + at + "(태평양 자정 이후) 자동 재개",
+                PlutoYouTubeApiAutoSyncPhase.ReservePaused => "⏸ 남은 쿼터 " + QuotaRemaining.ToString(inv) + " unit < 예비 " + ReserveUnits.ToString(inv) + " — " + at + " 자동 재개(수동은 가능)",
+                PlutoYouTubeApiAutoSyncPhase.AuthPaused => "🔐 인증 실패로 자동 동기화 정지 — 자격 증명을 다시 저장하세요",
+                _ => "⏱️ 다음 자동 동기화 " + at + " (" + ((int)Interval.TotalMinutes).ToString(inv) + "분 주기)",
+            };
+        }
+    }
+}
+
+/// <summary>⏱️ Step 36 — 백그라운드 자동 동기화 1회 결과(작업 공간 토스트 · 테스트 신호).</summary>
+public sealed record PlutoYouTubeApiAutoSyncEvent(PlutoYouTubeApiSyncResult Result, DateTimeOffset AtUtc)
+{
+    public int NewlyLinkedCount => Result.Import?.NewlyLinkedCount ?? 0;
+    public int QueueRecoveredCount => Result.Import?.QueueRecoveredCount ?? 0;
+    public int ObservedCount => Result.Import?.ApiObservedCount ?? 0;
+    /// <summary>새 연결 · 대기열 회수가 있을 때만 토스트(조회수 갱신만으로는 알리지 않음).</summary>
+    public bool HasImpact => NewlyLinkedCount > 0 || QueueRecoveredCount > 0;
+
+    public string ToastKorean
+    {
+        get
+        {
+            var inv = CultureInfo.InvariantCulture;
+            var s = "⏱️ API 자동 동기화";
+            if (NewlyLinkedCount > 0) s += " · 📺 새 연결 " + NewlyLinkedCount.ToString(inv) + "건";
+            if (QueueRecoveredCount > 0) s += " · 📌→✅ 대기열 정밀 지표 회수 " + QueueRecoveredCount.ToString(inv) + "건";
+            return s + " · 👁 관측 " + ObservedCount.ToString(inv) + "건";
+        }
+    }
+}
+
 /// <summary>🔄 Step 33 — YouTube Data API v3 다채널 실시간 텔레메트리 동기화.</summary>
 public interface IPlutoYouTubeApiSyncService
 {
@@ -94,6 +163,19 @@ public interface IPlutoYouTubeApiSyncService
     Task<PlutoYouTubeApiSyncResult> SyncNowAsync(CancellationToken ct = default);
     /// <summary>연결 해제 — 봉인 파일 덮어쓰기 후 삭제 · 메모리 비밀 폐기 · (가능하면) 리프레시 토큰 폐기 요청.</summary>
     Task DisconnectAsync(CancellationToken ct = default);
+
+    // ⏱️ Step 36 — 쿼터 인지형 주기 자동 동기화
+    /// <summary>주기 자동 동기화 사용(영속 · 미설정 시 기본 켬 — 자격 증명 · 채널이 저장되어야 실제 기동).</summary>
+    bool AutoSyncEnabled { get; }
+    TimeSpan AutoSyncInterval { get; }
+    /// <summary>백그라운드 1회 완료(타이머 스레드에서 발생 · 구독자별 예외 격리).</summary>
+    event Action<PlutoYouTubeApiAutoSyncEvent>? AutoSyncCompleted;
+    /// <summary>멱등 기동 — 미설정 · 격리 · 꺼짐 · 인증 정지면 타이머를 만들지 않고 false. 이후 자격 증명 저장 시 자동 무장.</summary>
+    bool StartAutoSync();
+    /// <summary>타이머 해제 · 진행 중 자동 실행 취소.</summary>
+    void StopAutoSync();
+    Task SetAutoSyncEnabledAsync(bool enabled, CancellationToken ct = default);
+    PlutoYouTubeApiAutoSyncStatus GetAutoSyncStatus();
 }
 
 /// <summary>
@@ -121,6 +203,18 @@ public sealed class PlutoYouTubeApiSyncService : IPlutoYouTubeApiSyncService, ID
     public static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(15);
     /// <summary>만료 이만큼 전이면 미리 갱신.</summary>
     public static readonly TimeSpan TokenRefreshSkew = TimeSpan.FromSeconds(120);
+    // ⏱️ Step 36 — 주기 자동 동기화
+    public static readonly TimeSpan DefaultAutoSyncInterval = TimeSpan.FromMinutes(30);
+    public static readonly TimeSpan MinAutoSyncInterval = TimeSpan.FromMinutes(5);
+    /// <summary>🛡️ 기동 직후 유예 — 앱을 자주 재시작해도 매번 즉시 동기화하지 않음(재시작 폭주 쿼터 소모 차단).</summary>
+    public static readonly TimeSpan AutoSyncStartupGrace = TimeSpan.FromMinutes(2);
+    public static readonly TimeSpan AutoBackoffBase = TimeSpan.FromMinutes(5);
+    public static readonly TimeSpan MaxAutoBackoff = TimeSpan.FromHours(6);
+    /// <summary>냉각 · 예비 정지 해제 시각 뒤 여유(경계 시각 시계 오차로 즉시 재소진 방지).</summary>
+    public static readonly TimeSpan AutoResumeSlack = TimeSpan.FromMinutes(1);
+    /// <summary>타이머가 예정보다 이만큼 이상 일찍 발화하면(시계 변경 · 재예약 경합) 실행하지 않고 남은 시간만큼 재무장.</summary>
+    public static readonly TimeSpan EarlyFireTolerance = TimeSpan.FromSeconds(1);
+    public const int DefaultAutoSyncReserveUnits = 100;
 
     private static readonly byte[] Magic = "PFYT"u8.ToArray();
     private const byte SchemeDpapi = 1, SchemeLocalCipher = 2;
@@ -139,11 +233,40 @@ public sealed class PlutoYouTubeApiSyncService : IPlutoYouTubeApiSyncService, ID
     private bool _stateLoaded;
     private long _networkAttempts;
     private bool _disposed;
+    // ⏱️ Step 36 — 주기 자동 동기화
+    private readonly CancellationTokenSource _life = new();
+    private ITimer? _autoTimer;
+    private DateTimeOffset? _autoArmedFor;
+    private CancellationTokenSource? _autoRunCts;
+    private bool _autoRunning;
+    private bool _autoStartRequested;
+    private int _tickInFlight;
+    private long _autoTicks;
 
     public event Action? Changed;
+    public event Action<PlutoYouTubeApiAutoSyncEvent>? AutoSyncCompleted;
 
-    /// <summary>시계(테스트 주입).</summary>
-    public Func<DateTimeOffset> UtcNow { get; init; } = static () => DateTimeOffset.UtcNow;
+    private Func<DateTimeOffset>? _utcNow;
+
+    /// <summary>시계(테스트 주입) — 미지정 시 <see cref="TimeProvider"/>.</summary>
+    public Func<DateTimeOffset> UtcNow { get => _utcNow ?? (() => TimeProvider.GetUtcNow()); init => _utcNow = value; }
+
+    private DateTimeOffset Now() => _utcNow is { } f ? f() : TimeProvider.GetUtcNow();
+
+    /// <summary>⏱️ Step 36 — 주기 자동 동기화 타이머 · 시계 원천(테스트는 수동 시계 주입으로 결정적 발화).</summary>
+    public TimeProvider TimeProvider { get; init; } = TimeProvider.System;
+
+    private TimeSpan _autoInterval = DefaultAutoSyncInterval;
+
+    /// <summary>⏱️ 주기 자동 동기화 간격(기본 30분 · [<see cref="MinAutoSyncInterval"/>, 24시간] 로 고정 — 실수로 1초 주기를 넣어도 쿼터를 태우지 않게).</summary>
+    public TimeSpan AutoSyncInterval
+    {
+        get => _autoInterval;
+        init => _autoInterval = value < MinAutoSyncInterval ? MinAutoSyncInterval : value > TimeSpan.FromHours(24) ? TimeSpan.FromHours(24) : value;
+    }
+
+    /// <summary>💸 자동 동기화 예비 쿼터 — 남은 일일 예산이 이 값 미만이면 태평양 자정까지 자동 동기화만 멈춤(수동은 가능).</summary>
+    public int AutoSyncReserveUnits { get; init; } = DefaultAutoSyncReserveUnits;
 
     /// <summary>백오프 대기(테스트는 기록만 하고 즉시 반환).</summary>
     public Func<TimeSpan, CancellationToken, Task> Delay { get; init; } = static (d, ct) => Task.Delay(d, ct);
@@ -438,8 +561,15 @@ public sealed class PlutoYouTubeApiSyncService : IPlutoYouTubeApiSyncService, ID
             _credsLoaded = true;
             EnsureStateLoadedLocked();
             _state.UploadsPlaylists = new Dictionary<string, string>(StringComparer.Ordinal);   // 채널 구성이 바뀌었을 수 있음 → 캐시 폐기
+            // 🛡️ Step 36 — 구성 세대 교체: 옛 채널 구성으로 진행 중인 자동 실행 취소 · 인증 정지 해제 · 유예 뒤 재무장
+            CancelAutoRunLocked();
+            _state.AutoAuthLatched = false;
+            _state.AutoConsecutiveFailures = 0;
+            _state.AutoNextDueUtc = Now() + AutoSyncStartupGrace;
+            DisarmLocked();
             PersistStateLocked();
         }
+        if (Volatile.Read(ref _autoStartRequested)) StartAutoSync();
         RaiseChanged();
         return Task.FromResult(new PlutoYouTubeApiSaveResult(true, "🔐 암호화 저장 완료(" + (clean.HasOAuth ? "OAuth" : "API 키") + " · 채널 " + channels.Count.ToString(CultureInfo.InvariantCulture) + "개 · 이 PC 전용 · Drive 미동기화)"));
     }
@@ -448,7 +578,13 @@ public sealed class PlutoYouTubeApiSyncService : IPlutoYouTubeApiSyncService, ID
     {
         PlutoYouTubeApiCredentials? old;
         old = LoadCredentials();
-        lock (_sync) { _creds = null; _credsLoaded = true; }
+        lock (_sync)
+        {
+            _creds = null;
+            _credsLoaded = true;
+            CancelAutoRunLocked();   // 🛡️ Step 36 — 진행 중 자동 실행이 지워진 자격 증명 이후에 결과를 쓰지 않게
+            DisarmLocked();
+        }
         // 리프레시 토큰 폐기 요청(최선 노력 · 실패 무시 · 네트워크 정책 준수)
         if (old?.HasOAuth == true && TransportAllowed)
         {
@@ -468,6 +604,9 @@ public sealed class PlutoYouTubeApiSyncService : IPlutoYouTubeApiSyncService, ID
             EnsureStateLoadedLocked();
             _state.UploadsPlaylists = new Dictionary<string, string>(StringComparer.Ordinal);
             _state.LastSummaryKorean = "🔌 연결 해제됨 — 저장된 자격 증명 삭제";
+            _state.AutoNextDueUtc = null;
+            _state.AutoConsecutiveFailures = 0;
+            _state.AutoAuthLatched = false;
             PersistStateLocked();
         }
         RaiseChanged();
@@ -501,6 +640,13 @@ public sealed class PlutoYouTubeApiSyncService : IPlutoYouTubeApiSyncService, ID
         public DateTimeOffset? LastSyncUtc { get; set; }
         public string? LastSummaryKorean { get; set; }
         public Dictionary<string, string>? UploadsPlaylists { get; set; }
+        // ⏱️ Step 36 — 재시작 후에도 예정 · 백오프 · 인증 정지 유지
+        public bool? AutoSyncEnabled { get; set; }
+        public DateTimeOffset? AutoNextDueUtc { get; set; }
+        public int AutoConsecutiveFailures { get; set; }
+        public DateTimeOffset? AutoLastRunUtc { get; set; }
+        public string? AutoLastSummaryKorean { get; set; }
+        public bool AutoAuthLatched { get; set; }
     }
 
     private void EnsureStateLoadedLocked()
@@ -569,10 +715,10 @@ public sealed class PlutoYouTubeApiSyncService : IPlutoYouTubeApiSyncService, ID
         lock (_sync)
         {
             EnsureStateLoadedLocked();
-            RollQuotaDayLocked(UtcNow());
+            RollQuotaDayLocked(Now());
             var mode = c is null ? "미설정" : c.HasOAuth ? "OAuth" : c.HasApiKey ? "API 키" : "미설정";
             var masked = c is null ? "—" : c.HasOAuth ? Mask(c.ClientId) : Mask(c.ApiKey);
-            var cooldown = _state.CooldownUntilUtc is { } cd && cd > UtcNow() ? cd : (DateTimeOffset?)null;
+            var cooldown = _state.CooldownUntilUtc is { } cd && cd > Now() ? cd : (DateTimeOffset?)null;
             return new PlutoYouTubeApiStatusSnapshot(c?.IsConfigured == true, TransportAllowed && c?.IsConfigured == true, mode, masked, c?.Channels.Count ?? 0,
                 _state.LastSyncUtc, _state.LastSummaryKorean, _state.QuotaUnitsUsed, DailyUnitBudget, cooldown, CredentialStorePath);
         }
@@ -676,13 +822,13 @@ public sealed class PlutoYouTubeApiSyncService : IPlutoYouTubeApiSyncService, ID
             {
                 if (attempt >= MaxAttempts) throw new HttpRequestException("요청 시간 초과");
                 run.Retries++;
-                await Delay(BackoffDelay(null, attempt, UtcNow()), ct).ConfigureAwait(false);
+                await Delay(BackoffDelay(null, attempt, Now()), ct).ConfigureAwait(false);
                 continue;
             }
             catch (HttpRequestException) when (attempt < MaxAttempts)
             {
                 run.Retries++;
-                await Delay(BackoffDelay(null, attempt, UtcNow()), ct).ConfigureAwait(false);
+                await Delay(BackoffDelay(null, attempt, Now()), ct).ConfigureAwait(false);
                 continue;
             }
             using (resp)
@@ -709,7 +855,7 @@ public sealed class PlutoYouTubeApiSyncService : IPlutoYouTubeApiSyncService, ID
                 if (!retryable || attempt >= MaxAttempts)
                     throw new HttpRequestException("YouTube API HTTP " + code.ToString(CultureInfo.InvariantCulture) + (reason.Length > 0 ? " " + reason : ""));
                 run.Retries++;
-                await Delay(BackoffDelay(resp, attempt, UtcNow()), ct).ConfigureAwait(false);
+                await Delay(BackoffDelay(resp, attempt, Now()), ct).ConfigureAwait(false);
             }
         }
     }
@@ -720,7 +866,7 @@ public sealed class PlutoYouTubeApiSyncService : IPlutoYouTubeApiSyncService, ID
         lock (_sync)
         {
             EnsureStateLoadedLocked();
-            RollQuotaDayLocked(UtcNow());
+            RollQuotaDayLocked(Now());
             if (_state.QuotaUnitsUsed + 1 > DailyUnitBudget) throw new BudgetExhaustedException();
             _state.QuotaUnitsUsed++;
             run.Units++;
@@ -732,7 +878,7 @@ public sealed class PlutoYouTubeApiSyncService : IPlutoYouTubeApiSyncService, ID
     {
         var c = LoadCredentials() ?? throw new AuthFailedException("미설정");
         if (!c.HasOAuth) return c;
-        var now = UtcNow();
+        var now = Now();
         if (!forceRefresh && !string.IsNullOrEmpty(c.AccessToken) && c.AccessTokenExpiresUtc is { } exp && exp - now > TokenRefreshSkew) return c;
         using var req = new HttpRequestMessage(HttpMethod.Post, TokenEndpoint)
         {
@@ -786,9 +932,9 @@ public sealed class PlutoYouTubeApiSyncService : IPlutoYouTubeApiSyncService, ID
         lock (_sync)
         {
             EnsureStateLoadedLocked();
-            if (_state.CooldownUntilUtc is { } cd && cd > UtcNow())
+            if (_state.CooldownUntilUtc is { } cd && cd > Now())
                 return new PlutoYouTubeApiSyncResult(PlutoYouTubeApiSyncState.QuotaCooldown, "⏸ YouTube 일일 쿼터 소진 — " + cd.ToLocalTime().ToString("MM-dd HH:mm", CultureInfo.InvariantCulture) + " 이후 재시도");
-            RollQuotaDayLocked(UtcNow());
+            RollQuotaDayLocked(Now());
             if (_state.QuotaUnitsUsed >= DailyUnitBudget)
                 return new PlutoYouTubeApiSyncResult(PlutoYouTubeApiSyncState.BudgetExhausted, "⏸ 자체 일일 예산 " + DailyUnitBudget.ToString(CultureInfo.InvariantCulture) + " unit 소진 — 태평양 자정 이후 재시도");
         }
@@ -811,13 +957,25 @@ public sealed class PlutoYouTubeApiSyncService : IPlutoYouTubeApiSyncService, ID
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex) { return Finish(Classify(ex, run, null, 0, 0), recordSync: false); }
-        finally { _syncGate.Release(); }
+        finally { ReleaseGate(); }
     }
 
     public async Task<PlutoYouTubeApiSyncResult> SyncNowAsync(CancellationToken ct = default)
     {
+        var r = await SyncInternalAsync(ct).ConfigureAwait(false);
+        if (r.Succeeded) OnManualSyncSucceeded();   // ⏱️ Step 36 — 수동 성공 → 다음 자동 예정을 한 주기 뒤로(연속 이중 소모 차단)
+        return r;
+    }
+
+    /// <summary>수동 · 자동 공용 본체 — 같은 단일 실행 게이트(<c>_syncGate</c>)를 공유해 절대 겹치지 않음.</summary>
+    private async Task<PlutoYouTubeApiSyncResult> SyncInternalAsync(CancellationToken ct)
+    {
         if (Preflight() is { } blocked) return blocked;
-        if (!await _syncGate.WaitAsync(0, ct).ConfigureAwait(false)) return new PlutoYouTubeApiSyncResult(PlutoYouTubeApiSyncState.Busy, "⏳ 이미 동기화 중입니다.");
+        bool entered;
+        try { entered = await _syncGate.WaitAsync(0, ct).ConfigureAwait(false); }
+        catch (ObjectDisposedException) { return new PlutoYouTubeApiSyncResult(PlutoYouTubeApiSyncState.Disabled, "⛔ 서비스 종료됨"); }
+        if (!entered)
+            return new PlutoYouTubeApiSyncResult(PlutoYouTubeApiSyncState.Busy, Volatile.Read(ref _autoRunning) ? "⏳ 백그라운드 자동 동기화 진행 중 — 끝나면 결과가 반영됩니다." : "⏳ 이미 동기화 중입니다.");
         var run = new RunCounters();
         var rows = new List<YouTubeAnalyticsRow>();
         var channelsDone = 0;
@@ -878,7 +1036,7 @@ public sealed class PlutoYouTubeApiSyncService : IPlutoYouTubeApiSyncService, ID
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex) { return Finish(Classify(ex, run, null, channelsDone, rows.Count), recordSync: false); }
-        finally { _syncGate.Release(); }
+        finally { ReleaseGate(); }
     }
 
     /// <summary>예외 → 상태(쿼터 소진은 태평양 자정까지 냉각 영속 · 비밀값 가림). 받은 행이 있으면 Partial.</summary>
@@ -890,7 +1048,7 @@ public sealed class PlutoYouTubeApiSyncService : IPlutoYouTubeApiSyncService, ID
         switch (ex)
         {
             case QuotaExhaustedException:
-                var until = NextQuotaResetUtc(UtcNow());
+                var until = NextQuotaResetUtc(Now());
                 lock (_sync) { EnsureStateLoadedLocked(); _state.CooldownUntilUtc = until; PersistStateLocked(); }
                 state = PlutoYouTubeApiSyncState.QuotaCooldown;
                 msg = "⏸ YouTube 일일 쿼터 소진(quotaExceeded) — " + until.ToLocalTime().ToString("MM-dd HH:mm", CultureInfo.InvariantCulture) + " 이후 자동 재개";
@@ -925,7 +1083,7 @@ public sealed class PlutoYouTubeApiSyncService : IPlutoYouTubeApiSyncService, ID
         lock (_sync)
         {
             EnsureStateLoadedLocked();
-            if (recordSync) _state.LastSyncUtc = UtcNow();
+            if (recordSync) _state.LastSyncUtc = Now();
             _state.LastSummaryKorean = r.SummaryKorean;
             PersistStateLocked();
         }
@@ -1040,10 +1198,346 @@ public sealed class PlutoYouTubeApiSyncService : IPlutoYouTubeApiSyncService, ID
         return rows;
     }
 
+    /// <summary>🧯 Step 36 — 구독자별 격리 호출: 끊긴 Blazor 회로 핸들러 1개가 던져도 나머지 구독자(다른 페이지 · 설정 카드)는 계속 받는다.</summary>
     private void RaiseChanged()
     {
-        try { Changed?.Invoke(); }
-        catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.YouTubeApi] Changed handler: " + ex.Message); }   // 구독자 예외 격리
+        if (Changed is not { } h) return;
+        foreach (var d in h.GetInvocationList())
+        {
+            try { ((Action)d)(); }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.YouTubeApi] Changed handler: " + ex.GetType().Name); }
+        }
+    }
+
+    private void RaiseAutoSyncCompleted(PlutoYouTubeApiAutoSyncEvent e)
+    {
+        if (AutoSyncCompleted is not { } h) return;
+        foreach (var d in h.GetInvocationList())
+        {
+            try { ((Action<PlutoYouTubeApiAutoSyncEvent>)d)(e); }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.YouTubeApi] AutoSyncCompleted handler: " + ex.GetType().Name); }
+        }
+    }
+
+    private void ReleaseGate()
+    {
+        try { _syncGate.Release(); }
+        catch (ObjectDisposedException) { }   // Dispose 와 경합한 실행 꼬리
+    }
+
+    // ── ⏱️ Step 36 — 쿼터 인지형 주기 자동 동기화 ──
+
+    public bool AutoSyncEnabled { get { lock (_sync) { EnsureStateLoadedLocked(); return _state.AutoSyncEnabled ?? true; } } }
+
+    /// <summary>타이머가 다음 실행을 예약해 둔 상태.</summary>
+    public bool IsAutoSyncArmed { get { lock (_sync) return _autoTimer is not null && _autoArmedFor is not null; } }
+
+    /// <summary>백그라운드 자동 실행이 동기화 본체를 수행 중.</summary>
+    public bool IsAutoSyncRunning { get { lock (_sync) return _autoRunning; } }
+
+    /// <summary>실제로 동기화 본체까지 간 자동 실행 수(조기 발화 재무장 · 정지 판정은 제외).</summary>
+    public long AutoSyncTickCount => Interlocked.Read(ref _autoTicks);
+
+    /// <summary>연속 일시 오류 n회 → <c>min(5분 × 2^(n−1), 6시간)</c>.</summary>
+    public static TimeSpan AutoBackoffDelay(int consecutiveFailures)
+    {
+        var n = Math.Clamp(consecutiveFailures, 1, 16);
+        var ticks = AutoBackoffBase.Ticks * (1L << (n - 1));
+        return ticks >= MaxAutoBackoff.Ticks ? MaxAutoBackoff : TimeSpan.FromTicks(ticks);
+    }
+
+    public bool StartAutoSync()
+    {
+        Volatile.Write(ref _autoStartRequested, true);   // 지금 미설정이어도 이후 자격 증명 저장 시 자동 무장
+        if (!IsNetworkAllowed)
+        {
+            lock (_sync) DisarmLocked();   // 🔒 미설정 · 킬 스위치 · 하네스 격리 → 타이머 자체를 만들지 않음
+            return false;
+        }
+        lock (_sync)
+        {
+            if (_disposed) return false;
+            EnsureStateLoadedLocked();
+            if (!(_state.AutoSyncEnabled ?? true) || _state.AutoAuthLatched) { DisarmLocked(); return false; }
+            if (_autoArmedFor is not null || _autoRunning) return true;   // 멱등(페이지 재진입마다 호출돼도 예정 유지)
+            var now = Now();
+            // 🛡️ 재시작 폭주 차단 — 영속된 예정(백오프 포함) · 마지막 성공 + 주기를 존중하고, 최소 기동 유예를 둔다
+            var due = _state.AutoNextDueUtc ?? (_state.LastSyncUtc is { } ls ? ls + AutoSyncInterval : now);
+            var floor = now + AutoSyncStartupGrace;
+            if (due < floor) due = floor;
+            var cap = now + MaxAutoBackoff;
+            if (due > cap) due = cap;   // 시계 되감김 · 손상 상태로 영영 안 깨어나는 것 방지
+            ArmLocked(ApplyPauseLocked(due, now), now, persist: true);
+        }
+        RaiseChanged();
+        return true;
+    }
+
+    public void StopAutoSync()
+    {
+        Volatile.Write(ref _autoStartRequested, false);
+        lock (_sync)
+        {
+            CancelAutoRunLocked();
+            DisarmLocked();
+        }
+        RaiseChanged();
+    }
+
+    public Task SetAutoSyncEnabledAsync(bool enabled, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        lock (_sync)
+        {
+            if (_disposed) return Task.CompletedTask;
+            EnsureStateLoadedLocked();
+            _state.AutoSyncEnabled = enabled;
+            if (!enabled) { CancelAutoRunLocked(); DisarmLocked(); }
+            PersistStateLocked();
+        }
+        if (enabled) StartAutoSync();
+        RaiseChanged();
+        return Task.CompletedTask;
+    }
+
+    public PlutoYouTubeApiAutoSyncStatus GetAutoSyncStatus()
+    {
+        var allowed = IsNetworkAllowed;
+        lock (_sync)
+        {
+            EnsureStateLoadedLocked();
+            var now = Now();
+            RollQuotaDayLocked(now);
+            var enabled = _state.AutoSyncEnabled ?? true;
+            var remaining = Math.Max(0, DailyUnitBudget - _state.QuotaUnitsUsed);
+            var armed = _autoTimer is not null && _autoArmedFor is not null;
+            var cooling = _state.CooldownUntilUtc is { } cd && cd > now;
+            PlutoYouTubeApiAutoSyncPhase phase =
+                !enabled ? PlutoYouTubeApiAutoSyncPhase.Off
+                : !allowed ? PlutoYouTubeApiAutoSyncPhase.Unavailable
+                : _state.AutoAuthLatched ? PlutoYouTubeApiAutoSyncPhase.AuthPaused
+                : _autoRunning ? PlutoYouTubeApiAutoSyncPhase.Running
+                : cooling || remaining == 0 ? PlutoYouTubeApiAutoSyncPhase.QuotaPaused
+                : remaining < AutoSyncReserveUnits ? PlutoYouTubeApiAutoSyncPhase.ReservePaused
+                : !armed ? PlutoYouTubeApiAutoSyncPhase.NotStarted
+                : _state.AutoConsecutiveFailures > 0 ? PlutoYouTubeApiAutoSyncPhase.Backoff
+                : PlutoYouTubeApiAutoSyncPhase.Scheduled;
+            return new PlutoYouTubeApiAutoSyncStatus(enabled, armed, phase, armed ? _autoArmedFor : _state.AutoNextDueUtc, _state.AutoConsecutiveFailures,
+                _state.AutoLastRunUtc, _state.AutoLastSummaryKorean, Interlocked.Read(ref _autoTicks), remaining, AutoSyncReserveUnits, AutoSyncInterval);
+        }
+    }
+
+    /// <summary>냉각(<c>quotaExceeded</c> 영속) · 자체 예산 예비분 미만 → 예정 시각을 해제 시각 뒤로 민다.</summary>
+    private DateTimeOffset ApplyPauseLocked(DateTimeOffset due, DateTimeOffset now)
+    {
+        if (_state.CooldownUntilUtc is { } cd && cd > now && due < cd + AutoResumeSlack) due = cd + AutoResumeSlack;
+        RollQuotaDayLocked(now);
+        if (DailyUnitBudget - _state.QuotaUnitsUsed < AutoSyncReserveUnits)
+        {
+            var reset = NextQuotaResetUtc(now) + AutoResumeSlack;
+            if (due < reset) due = reset;
+        }
+        return due;
+    }
+
+    /// <summary>단발(one-shot) 타이머 재무장 — 주기 타이머가 아니므로 느린 실행 · 절전 복귀가 발화를 쌓지 않는다.</summary>
+    private void ArmLocked(DateTimeOffset due, DateTimeOffset now, bool persist)
+    {
+        if (_disposed) return;
+        _state.AutoNextDueUtc = due;
+        if (persist) PersistStateLocked();
+        _autoArmedFor = due;
+        var delay = due - now;
+        if (delay < TimeSpan.Zero) delay = TimeSpan.Zero;
+        try
+        {
+            if (_autoTimer is null) _autoTimer = TimeProvider.CreateTimer(static s => ((PlutoYouTubeApiSyncService)s!).OnAutoTimer(), this, delay, Timeout.InfiniteTimeSpan);
+            else _autoTimer.Change(delay, Timeout.InfiniteTimeSpan);
+        }
+        catch (ObjectDisposedException) { _autoTimer = null; _autoArmedFor = null; }
+    }
+
+    private void DisarmLocked()
+    {
+        _autoArmedFor = null;
+        var t = _autoTimer;
+        _autoTimer = null;
+        try { t?.Dispose(); } catch (ObjectDisposedException) { }
+    }
+
+    private void CancelAutoRunLocked()
+    {
+        try { _autoRunCts?.Cancel(); } catch (ObjectDisposedException) { }
+    }
+
+    /// <summary>타이머 콜백 — 비동기 꼬리는 버리고(async void 금지) 예외는 전부 격리.</summary>
+    private void OnAutoTimer() => _ = AutoTimerFiredAsync();
+
+    private async Task AutoTimerFiredAsync()
+    {
+        try { await RunAutoSyncTickAsync().ConfigureAwait(false); }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.YouTubeApi] auto tick: " + ex.GetType().Name); }
+    }
+
+    /// <summary>
+    /// ⏱️ 자동 실행 1회(타이머가 호출 · 테스트는 직접 호출 가능). 예정 전 조기 발화 → 재무장만 · 꺼짐/미설정/격리 → 해제 ·
+    /// 냉각/예비분 미만 → 해제 시각으로 재예약 · 수동 실행과 겹치면 Busy 로 합류(요청 0) · 결과에 따라 주기 · 지수 백오프 · 인증 정지.
+    /// 반환 null = 본체 미실행.
+    /// </summary>
+    public async Task<PlutoYouTubeApiSyncResult?> RunAutoSyncTickAsync(bool force = false, CancellationToken ct = default)
+    {
+        if (Interlocked.CompareExchange(ref _tickInFlight, 1, 0) != 0) return null;   // 자동 실행끼리 중첩 금지
+        PlutoYouTubeApiSyncResult? r;
+        try { r = await AutoTickCoreAsync(force, ct).ConfigureAwait(false); }
+        finally { Volatile.Write(ref _tickInFlight, 0); }
+        // 플래그 해제 뒤 알림 — 구독자가 곧바로 다음 발화를 일으켜도 '실행 중'으로 버려지지 않음
+        if (r is not null) RaiseAutoSyncCompleted(new PlutoYouTubeApiAutoSyncEvent(r, Now()));
+        return r;
+    }
+
+    private async Task<PlutoYouTubeApiSyncResult?> AutoTickCoreAsync(bool force, CancellationToken ct)
+    {
+        {
+            PlutoYouTubeApiSyncResult? gated = null;
+            lock (_sync)
+            {
+                if (_disposed) return null;
+                EnsureStateLoadedLocked();
+                if (!(_state.AutoSyncEnabled ?? true) || _state.AutoAuthLatched) { DisarmLocked(); return null; }
+                var now = Now();
+                if (!force && _state.AutoNextDueUtc is { } due && due > now + EarlyFireTolerance) { ArmLocked(due, now, persist: false); return null; }
+            }
+            var pre = Preflight();
+            lock (_sync)
+            {
+                if (_disposed) return null;
+                var now = Now();
+                if (pre is { State: PlutoYouTubeApiSyncState.Disabled or PlutoYouTubeApiSyncState.NotConfigured })
+                {
+                    DisarmLocked();   // 🔒 실행 중 킬 스위치 · 연결 해제 → 이후 요청 0
+                    gated = pre;
+                }
+                else
+                {
+                    var paused = ApplyPauseLocked(now, now);
+                    if (pre is { State: PlutoYouTubeApiSyncState.BudgetExhausted } && paused <= now) paused = NextQuotaResetUtc(now) + AutoResumeSlack;
+                    if (paused > now)
+                    {
+                        ArmLocked(paused, now, persist: true);   // 💸 냉각 · 예비분 보호 — 네트워크 없이 해제 시각으로
+                        var rem = Math.Max(0, DailyUnitBudget - _state.QuotaUnitsUsed);
+                        gated = pre ?? new PlutoYouTubeApiSyncResult(PlutoYouTubeApiSyncState.BudgetExhausted,
+                            "⏸ 남은 쿼터 " + rem.ToString(CultureInfo.InvariantCulture) + " unit < 예비 " + AutoSyncReserveUnits.ToString(CultureInfo.InvariantCulture) + " — 자동 동기화는 태평양 자정 이후(수동 가능)");
+                    }
+                }
+            }
+            if (gated is not null)
+            {
+                RaiseChanged();
+                return gated;
+            }
+
+            CancellationTokenSource runCts;
+            lock (_sync)
+            {
+                if (_disposed) return null;
+                runCts = CancellationTokenSource.CreateLinkedTokenSource(_life.Token, ct);
+                _autoRunCts = runCts;
+                _autoRunning = true;
+                _autoArmedFor = null;
+            }
+            RaiseChanged();
+            PlutoYouTubeApiSyncResult? result = null;
+            try { result = await SyncInternalAsync(runCts.Token).ConfigureAwait(false); }
+            catch (OperationCanceledException) { /* 연결 해제 · 재저장 · 끄기 · 종료 — 각 경로가 무장 상태를 스스로 정함 */ }
+            finally
+            {
+                lock (_sync)
+                {
+                    _autoRunning = false;
+                    if (ReferenceEquals(_autoRunCts, runCts)) _autoRunCts = null;
+                }
+                runCts.Dispose();
+            }
+            if (result is null)
+            {
+                // 취소됨 — 재저장(구성 교체)이면 새 구성으로 재무장 · 연결 해제/끄기/정지/종료면 StartAutoSync 가 스스로 거부
+                if (Volatile.Read(ref _autoStartRequested)) StartAutoSync(); else RaiseChanged();
+                return null;
+            }
+            if (result.State is not PlutoYouTubeApiSyncState.Busy) Interlocked.Increment(ref _autoTicks);
+            ScheduleAfterAutoRun(result);
+            RaiseChanged();
+            return result;
+        }
+    }
+
+    private void ScheduleAfterAutoRun(PlutoYouTubeApiSyncResult r)
+    {
+        lock (_sync)
+        {
+            if (_disposed) return;
+            EnsureStateLoadedLocked();
+            var now = Now();
+            if (r.State is not PlutoYouTubeApiSyncState.Busy)
+            {
+                _state.AutoLastRunUtc = now;
+                _state.AutoLastSummaryKorean = r.SummaryKorean;
+            }
+            DateTimeOffset due;
+            switch (r.State)
+            {
+                case PlutoYouTubeApiSyncState.Synced:
+                case PlutoYouTubeApiSyncState.Partial:
+                    _state.AutoConsecutiveFailures = 0;
+                    due = now + AutoSyncInterval;
+                    break;
+                case PlutoYouTubeApiSyncState.Busy:
+                    due = now + AutoSyncInterval;   // 🔀 수동 실행에 합류 — 그쪽 성공이 다시 한 주기 뒤로 리셋
+                    break;
+                case PlutoYouTubeApiSyncState.AuthFailed:
+                    _state.AutoAuthLatched = true;   // 🔐 재저장 전까지 정지 — 거부된 리프레시 토큰으로 토큰 엔드포인트를 주기적으로 두드리지 않음
+                    DisarmLocked();
+                    PersistStateLocked();
+                    return;
+                case PlutoYouTubeApiSyncState.Disabled:
+                case PlutoYouTubeApiSyncState.NotConfigured:
+                    DisarmLocked();
+                    PersistStateLocked();
+                    return;
+                case PlutoYouTubeApiSyncState.BudgetExhausted:
+                    due = NextQuotaResetUtc(now) + AutoResumeSlack;
+                    break;
+                case PlutoYouTubeApiSyncState.QuotaCooldown:
+                    due = now + AutoSyncInterval;   // ApplyPause 가 영속 냉각 시각으로 민다
+                    break;
+                default:   // Failed — 429 · 5xx · 시간 초과(요청 내 3회 재시도 후) → 실행 간 지수 백오프
+                    _state.AutoConsecutiveFailures = Math.Min(_state.AutoConsecutiveFailures + 1, 1000);
+                    due = now + AutoBackoffDelay(_state.AutoConsecutiveFailures);
+                    break;
+            }
+            if (!(_state.AutoSyncEnabled ?? true)) { DisarmLocked(); PersistStateLocked(); return; }
+            ArmLocked(ApplyPauseLocked(due, now), now, persist: true);
+        }
+    }
+
+    /// <summary>수동 성공 → 실패 누적 · 인증 정지 해제 · 다음 자동 예정을 지금부터 한 주기 뒤로(이미 받은 지표를 곧바로 다시 받지 않음).</summary>
+    private void OnManualSyncSucceeded()
+    {
+        var restart = false;
+        lock (_sync)
+        {
+            if (_disposed) return;
+            EnsureStateLoadedLocked();
+            var now = Now();
+            _state.AutoConsecutiveFailures = 0;
+            restart = _state.AutoAuthLatched;
+            _state.AutoAuthLatched = false;
+            var due = ApplyPauseLocked(now + AutoSyncInterval, now);
+            if (_autoTimer is not null && _autoArmedFor is not null) ArmLocked(due, now, persist: true);
+            else { _state.AutoNextDueUtc = due; PersistStateLocked(); }
+        }
+        if (restart && Volatile.Read(ref _autoStartRequested)) StartAutoSync();
+        RaiseChanged();
     }
 
     public void Dispose()
@@ -1051,12 +1545,17 @@ public sealed class PlutoYouTubeApiSyncService : IPlutoYouTubeApiSyncService, ID
         lock (_sync)
         {
             if (_disposed) return;
+            CancelAutoRunLocked();
+            DisarmLocked();
             _disposed = true;
             _http?.Dispose();
             _http = null;
             _creds = null;
         }
+        try { _life.Cancel(); } catch (ObjectDisposedException) { }
         _syncGate.Dispose();
+        _life.Dispose();
         Changed = null;
+        AutoSyncCompleted = null;
     }
 }

@@ -34,3 +34,8 @@
 - 벽시계 상한은 `CiFrameBudget.Scaled(n)`(상한) · `CiFrameBudget.MeetsFloor(값, 하한)`(처리율 하한) — 기준 통과 시 탐침 0회, 미달 시에만 외부 경합 배수(≤ 3)로 재판정.
 - CI 워크플로는 `RunConfiguration.DisableParallelization=true` 로 계속 완전 직렬(보수적 게이트).
 - 10 s 이상 테스트는 `[Trait("Speed", "Slow")]` — 빠른 내부 루프 `--filter "Speed!=Slow"`.
+
+## 주기 스케줄러 · 타이머 (Step 36)
+- 주기 백그라운드 서비스는 `TimeProvider` 주입 + 단발(one-shot) 타이머 재무장. 테스트는 테스트 내부 `ManualClock : TimeProvider`(외부 NuGet 0)로 `Advance` 시 예정 도달 타이머만 발화 → 벽시계 대기 0 · 결정적.
+- 발화 완료 대기는 서비스 완료 이벤트 → `TaskCompletionSource` + `WaitAsync(상한)`. "발화하지 않아야 함"은 시계를 예정 직전까지 진행 후 요청 수 불변 단언.
+- 완료 이벤트는 실행 중 플래그 해제 **뒤** 발생시켜야 구독자가 곧바로 일으킨 다음 발화가 '실행 중'으로 버려지지 않는다.
