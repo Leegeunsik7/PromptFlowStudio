@@ -42,6 +42,14 @@ internal static class CiFrameBudget
     /// <summary>임의 기준 예산(µs 레이어 예산 등)의 부하 인지 판정 — <c>lmed &lt; CiFrameBudget.Scaled(1_000)</c>.</summary>
     public static FrameBudget Scaled(double baseBudget) => new(baseBudget, null);
 
+    /// <summary>Step 35 — 처리율 하한(초당 n 건 이상)의 부하 인지 판정: 기준 하한을 넘으면 탐침 없이 통과 · 미달일 때만 경합 배수만큼 하한을 낮춰 재판정.
+    ///   생산자 스레드가 외부 프로세스에 선점되면 처리율이 배수에 반비례해 떨어지므로 <c>값 × 배수 &gt; 하한</c> 과 같다. 유휴(배수 1.0)에선 기준 그대로 엄격.</summary>
+    public static bool MeetsFloor(double value, double floor) => value > floor || value * CurrentFactor() > floor;
+
+    /// <summary><see cref="MeetsFloor(double, double)"/> 의 결정론 변형(부하 계수 주입).</summary>
+    public static bool MeetsFloor(double value, double floor, Func<double> rawFactorProbe)
+        => value > floor || value * NormalizeFactor((rawFactorProbe ?? throw new ArgumentNullException(nameof(rawFactorProbe)))()) > floor;
+
     /// <summary>부하 계수 공급자 주입(결정론 테스트용).</summary>
     public static FrameBudget Custom(double baseBudget, Func<double> rawFactorProbe) => new(baseBudget, rawFactorProbe ?? throw new ArgumentNullException(nameof(rawFactorProbe)));
 

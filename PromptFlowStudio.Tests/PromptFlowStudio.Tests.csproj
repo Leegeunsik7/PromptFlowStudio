@@ -24,7 +24,8 @@
     <Using Include="Xunit" />
   </ItemGroup>
 
-  <!-- GDI+/CPU 경합(testhost 크래시·Soak 사이클 미달) 방지 — 컬렉션 순차 실행(CI의 DisableParallelization=true와 동일). -->
+  <!-- Step 35: 컬렉션 병렬(최대 4 스레드) — 벽시계·GC·환경 변수 민감 테스트는 DisableParallelization 컬렉션
+       (TimingSensitivePerformance · ProcessGcMode · ProcessEnvironment)으로 병렬 구간 종료 후 단독 실행(GDI+/CPU 경합 방지 유지). -->
   <ItemGroup>
     <Content Include="xunit.runner.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>

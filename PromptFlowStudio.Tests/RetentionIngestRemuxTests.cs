@@ -419,6 +419,7 @@ public sealed class RetentionIngestRemuxTests
 
     [Fact]
     [Trait("Category", "Integration")]
+    [Trait("Speed", "Slow")]   // Step 35: 기준 실행 ≥ 10 s — 빠른 루프는 --filter "Speed!=Slow"
     public async Task RetentionPipeline_Soak_NoLeak_Check()
     {
         var seconds = double.TryParse(Environment.GetEnvironmentVariable("PFS_SOAK_SECONDS"), NumberStyles.Float, CultureInfo.InvariantCulture, out var s) ? s : 12.0;

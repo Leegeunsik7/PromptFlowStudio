@@ -5,6 +5,7 @@ using PromptFlowStudio.ViewModels;
 namespace PromptFlowStudio.Tests;
 
 /// <summary>렌더 큐 워커 — 적재 초기 상태 · Queued→Completed 전이 · 취소 · 완료 정리 회귀 잠금(autoStart=false 결정론 구동).</summary>
+[Collection("TimingSensitivePerformance")]   // Step 35: 벽시계 상한 단언(초 단위 폴백/종료 지연) → 병렬 구간 제외
 public class RenderQueueWorkerTests
 {
     private static RenderQueueService NewQueue() => new(TimeSpan.Zero, autoStart: false);

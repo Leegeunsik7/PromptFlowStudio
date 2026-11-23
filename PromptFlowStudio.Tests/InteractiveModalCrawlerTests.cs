@@ -32,6 +32,7 @@ public class InteractiveModalCrawlerTests
     public InteractiveModalCrawlerTests(ITestOutputHelper output) => _out = output;
 
     [Fact]
+    [Trait("Speed", "Slow")]   // Step 35: 기준 실행 ≥ 10 s — 빠른 루프는 --filter "Speed!=Slow"
     public async Task AllCatalogModals_MountAndEveryInteractiveControlDispatchesWithLiveBinding()
     {
         var targets = ResolveCatalogTargets();
@@ -39,45 +40,73 @@ public class InteractiveModalCrawlerTests
 
         using var owner = new System.Windows.Forms.Control();
         // 싱글턴 Runner(전용 60 Hz 스레드 · 대용량 가우시안 버퍼)는 Start 후 루트 DI 수명까지 생존 — 175 전수를 단일 루트로 돌리면
-        // 스레드/메모리가 누적(4 GB · 154 스레드)되므로 RecycleEvery 모달마다 루트를 폐기(=Runner.Dispose→Stop+Join)하고 재생성.
-        ServiceProvider? root = null;
-        long peakMb = 0; var peakKey = "";
-        var sinceRecycle = 0;
-
+        // 스레드/메모리가 누적(4 GB · 154 스레드)되므로 모달마다 전용 루트를 만들고 크롤 직후 폐기(=Runner.Dispose→Stop+Join)한다.
+        // Step 35: 모달 간 공유 상태가 없으므로(모달 = 전용 루트 · 전용 Renderer · 전용 스코프) CrawlWorkers 개 워커가 모달 큐를 나눠 처리 —
+        //   모달당 판정 규칙/대기 시간/디스패치 상한은 그대로, 벽시계만 ≈ 1/CrawlWorkers. 결과는 카탈로그 순서로 집계해 리포트도 결정론.
         var stats = new CatStats[StudioCatalog.Categories.Length];
         for (var i = 0; i < stats.Length; i++) stats[i] = new CatStats();
         var defects = new List<string>();
 
         var only = Environment.GetEnvironmentVariable("PFS_CRAWL_ONLY");   // 디버그 재현용 키 필터(쉼표 구분) — 미설정 = 175 전수
+        var selected = new List<Target>(targets.Count);
         foreach (var t in targets)
+            if (string.IsNullOrEmpty(only) || Array.IndexOf(only.Split(','), t.Entry.Key) >= 0) selected.Add(t);
+
+        var results = new CrawlResult?[selected.Count];
+        var rootDefects = new List<string>[selected.Count];
+        var elapsed = new long[selected.Count];
+        var gate = new object();
+        long peakMb = 0; var peakKey = "";
+        var next = -1;
+        var wall = System.Diagnostics.Stopwatch.StartNew();
+        async Task WorkerAsync()
         {
-            if (!string.IsNullOrEmpty(only) && Array.IndexOf(only.Split(','), t.Entry.Key) < 0) continue;
+            int i;
+            while ((i = Interlocked.Increment(ref next)) < selected.Count)
+            {
+                var t = selected[i];
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                var local = new List<string>();
+                var root = BuildRoot(owner);
+                try { results[i] = await CrawlAsync(root, t); }
+                finally
+                {
+                    await DisposeRootAsync(root, local);
+                    rootDefects[i] = local;
+                    elapsed[i] = sw.ElapsedMilliseconds;
+                }
+                var ws = Environment.WorkingSet / (1024 * 1024);
+                lock (gate) { if (ws > peakMb) { peakMb = ws; peakKey = t.Entry.Key; } }
+                GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();   // 폐기 Runner 의 LOH 가우시안/프레임 버퍼를 gen2 지연 없이 즉시 회수(톱니 피크 제거)
+            }
+        }
+        var workers = new Task[Math.Min(CrawlWorkers, Math.Max(1, selected.Count))];
+        for (var w = 0; w < workers.Length; w++) workers[w] = Task.Run(WorkerAsync);
+        await Task.WhenAll(workers);
+        wall.Stop();
+
+        var slow = new List<(long Ms, string Key)>(selected.Count);
+        var waitsHit = 0;
+        for (var i = 0; i < selected.Count; i++)
+        {
+            var t = selected[i]; var r = results[i]!;
             var s = stats[t.Entry.Category];
             s.Modals++;
-            if (root is null || sinceRecycle >= RecycleEvery)
-            {
-                if (root is not null)
-                {
-                    await DisposeRootAsync(root, defects);
-                    GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();   // 폐기 Runner 의 LOH 가우시안/프레임 버퍼를 gen2 지연 없이 즉시 회수(톱니 피크 제거)
-                }
-                root = BuildRoot(owner);
-                sinceRecycle = 0;
-            }
-            sinceRecycle++;
-            var r = await CrawlAsync(root, t);
             if (r.MountError is null) s.Mounted++; else defects.Add("[MOUNT] " + t.Entry.Key + " " + t.Component.Name + ": " + r.MountError);
             s.Switches += r.Switches; s.Sliders += r.Sliders; s.Buttons += r.Buttons; s.Selects += r.Selects; s.Inputs += r.Inputs;
             s.Dispatched += r.Dispatched; s.Healthy += r.Healthy; s.Reacted += r.Reacted; s.Disabled += r.Disabled;
             defects.AddRange(r.Defects);
-            var ws = Environment.WorkingSet / (1024 * 1024);
-            if (ws > peakMb) { peakMb = ws; peakKey = t.Entry.Key; }
+            defects.AddRange(rootDefects[i]);
+            waitsHit += r.WaitsHit;
+            slow.Add((elapsed[i], t.Entry.Key + "(w" + r.WaitsHit.ToString(CultureInfo.InvariantCulture) + " m" + r.MountMs.ToString(CultureInfo.InvariantCulture) + " x" + r.MaxDispatchMs.ToString(CultureInfo.InvariantCulture) + ":" + r.MaxDispatchKey + ")"));
         }
-        if (root is not null) await DisposeRootAsync(root, defects);
         GC.Collect();
         GC.WaitForPendingFinalizers();
         var liveMb = Environment.WorkingSet / (1024 * 1024);
         var threads = System.Diagnostics.Process.GetCurrentProcess().Threads.Count;
+        slow.Sort((a, b) => b.Ms.CompareTo(a.Ms));
+        _out.WriteLine("crawl timing: workers=" + workers.Length.ToString(CultureInfo.InvariantCulture) + " wallMs=" + wall.ElapsedMilliseconds.ToString(CultureInfo.InvariantCulture) + " waitsHit=" + waitsHit.ToString(CultureInfo.InvariantCulture)
+            + " slowest=" + string.Join(", ", slow.GetRange(0, Math.Min(8, slow.Count)).ConvertAll(x => x.Key + "=" + x.Ms.ToString(CultureInfo.InvariantCulture))));
         _out.WriteLine("crawl end: workingSet=" + liveMb.ToString(CultureInfo.InvariantCulture) + "MB threads=" + threads.ToString(CultureInfo.InvariantCulture) + " peakAfterModal=" + peakMb.ToString(CultureInfo.InvariantCulture) + "MB@" + peakKey);
 
         var sb = new StringBuilder();
@@ -96,7 +125,9 @@ public class InteractiveModalCrawlerTests
         Assert.True(defects.Count == 0, sb.ToString());
     }
 
-    private const int RecycleEvery = 1;   // 25 단위 실측 피크 1.7 GB · 120 스레드 → 모달 단위 격리로 Runner 동시 생존 ≤ 1
+    // 모달 단위 전용 루트(25 모달 공유 시 실측 피크 1.7 GB · 120 스레드) → Runner 동시 생존 ≤ CrawlWorkers.
+    // 워커 3: 단일 모달 피크 ≈ 1 GB 기준 동시 ≤ 3 GB · 4 코어 미만 머신에서도 dispatcher 대기 기아 없음.
+    private const int CrawlWorkers = 3;
 
     private static ServiceProvider BuildRoot(System.Windows.Forms.Control owner)
     {
@@ -301,7 +332,8 @@ public class InteractiveModalCrawlerTests
     private sealed class CrawlResult
     {
         public string? MountError;
-        public int Switches, Sliders, Buttons, Selects, Inputs, Dispatched, Healthy, Reacted, Disabled;
+        public int Switches, Sliders, Buttons, Selects, Inputs, Dispatched, Healthy, Reacted, Disabled, WaitsHit;
+        public long MountMs, MaxDispatchMs; public string MaxDispatchKey = "";   // Step 35 진단(크롤 시간 분해)
         public readonly List<string> Defects = new();
     }
 
@@ -324,6 +356,7 @@ public class InteractiveModalCrawlerTests
         if (t.Entry.Key == "@help") sp.GetRequiredService<PromptFlowStudio.Services.Help.HelpState>().Open();
         var r = new CrawlRenderer(sp);
         var tag = t.Entry.Key + " " + t.Component.Name;
+        var sw0 = System.Diagnostics.Stopwatch.StartNew();
         try
         {
             int id;
@@ -337,6 +370,7 @@ public class InteractiveModalCrawlerTests
             }
             catch (Exception ex) { res.MountError = ex.GetType().Name + ": " + ex.Message; return res; }
 
+            res.MountMs = sw0.ElapsedMilliseconds;
             var seen = new HashSet<string>(StringComparer.Ordinal);
             var pending = new List<(string Key, Task Task)>();
             var dispatches = 0;
@@ -354,6 +388,7 @@ public class InteractiveModalCrawlerTests
                 if (next is null) break;
 
                 Ctl? before = null;
+                var dsw = System.Diagnostics.Stopwatch.StartNew();
                 var task = await r.Dispatcher.InvokeAsync<Task>(() =>
                 {
                     var now = r.Scan(id);
@@ -367,7 +402,7 @@ public class InteractiveModalCrawlerTests
 
                 // 비동기 핸들러(네트워크 프로브 등)는 완료까지 최대 AsyncSettle 대기 후 판정 — 미완료면 STUCK 판정 보류(오탐 방지)
                 var settled = await Task.WhenAny(task, Task.Delay(before.Kind == "button" ? DispatchWait : AsyncSettle)) == task;
-                if (!settled) pending.Add((tag + " ▸ " + before.Key, task));
+                if (!settled) { res.WaitsHit++; pending.Add((tag + " ▸ " + before.Key, task)); }
                 var fault = task.IsFaulted ? task.Exception!.GetBaseException() : r.TakeErrors();
                 if (fault is null && before.FollowId != 0)
                 {
@@ -376,7 +411,7 @@ public class InteractiveModalCrawlerTests
                         var mid = r.Scan(id).Find(next);
                         return mid is null || mid.FollowId == 0 ? Task.CompletedTask : r.DispatchEventAsync(mid.FollowId, null, ArgsFor(before));
                     });
-                    if (await Task.WhenAny(follow, Task.Delay(DispatchWait)) != follow) pending.Add((tag + " ▸ " + before.Key + " (change)", follow));
+                    if (await Task.WhenAny(follow, Task.Delay(DispatchWait)) != follow) { res.WaitsHit++; pending.Add((tag + " ▸ " + before.Key + " (change)", follow)); }
                     fault = follow.IsFaulted ? follow.Exception!.GetBaseException() : r.TakeErrors();
                 }
                 var after = await r.Dispatcher.InvokeAsync(() => r.Scan(id));
@@ -386,6 +421,7 @@ public class InteractiveModalCrawlerTests
                 if (settled && Stuck(before, after.Find(next))) { ok = false; res.Defects.Add("[STUCK] " + tag + " ▸ " + before.Key + " — 값 고정(" + before.Event + (before.FollowId != 0 ? "+onchange" : "") + " · " + (before.Value ?? before.Checked.ToString()) + "→" + (before.Target ?? "toggle") + ")"); }
                 if (after.Hash != snapshot.Hash) res.Reacted++;
                 if (ok) res.Healthy++;
+                if (dsw.ElapsedMilliseconds > res.MaxDispatchMs) { res.MaxDispatchMs = dsw.ElapsedMilliseconds; res.MaxDispatchKey = before.Key; }
             }
             if (dispatches >= MaxDispatchPerModal) res.Defects.Add("[CAP] " + tag + " — 디스패치 상한 " + MaxDispatchPerModal.ToString(CultureInfo.InvariantCulture) + " 도달(무한 생성 컨트롤 의심)");
 

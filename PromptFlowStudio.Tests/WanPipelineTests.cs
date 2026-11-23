@@ -604,6 +604,7 @@ public class ServiceLifecycleTests
 }
 
 /// <summary>v12.2.0 Phase 1 감사: 핸들/소켓 수명주기 엣지케이스 회귀 잠금 - 벽시계 비교 없이 신호/상태로만 판정.</summary>
+[Collection("TimingSensitivePerformance")]   // Step 35: 소켓 타임아웃 · 비정상 종료 정리 지연 단언 → 병렬 구간 제외
 public class Phase1AuditHardeningTests
 {
     private static readonly TimeSpan SafetyNet = TimeSpan.FromSeconds(45);

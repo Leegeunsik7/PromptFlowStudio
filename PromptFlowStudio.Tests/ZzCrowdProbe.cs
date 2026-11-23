@@ -1,9 +1,42 @@
 using Nc = PromptFlowStudio.Services.NeuralCrowd;
+/// <summary>
+/// 군중 시뮬 스모크 — 원래 단언 0 건의 디버그 덤프(1 800 + 900 스텝 ≈ 13 s · %TEMP% 기록)였다(Step 35 감사).
+/// 기본 실행은 짧은 창(600 평시 + 300 패닉 스텝)에서 유한성 · 월드 경계 · 활성 수 불변식을 실제로 단언하고,
+/// 원래의 장기 덤프는 <c>PFS_CROWD_PROBE_DUMP=1</c> 일 때만 수행한다(디버그 재현 경로 보존).
+/// </summary>
 public sealed class ZzCrowdProbe
 {
+    private const float World = 64f;
+
+    private static void AssertSane(Nc.NeuralCrowdStudioRunner r, string tag)
+    {
+        var e = r.Engine;
+        Xunit.Assert.True(e.Count > 0 && e.ActiveCount > 0 && e.ActiveCount <= e.Count, tag + " 활성 " + e.ActiveCount + "/" + e.Count);
+        Xunit.Assert.True(float.IsFinite(e.MeanSpeed) && e.MeanSpeed >= 0f, tag + " 평균 속도 " + e.MeanSpeed);
+        for (var i = 0; i < e.Count; i++)
+        {
+            if (e.Active[i] == 0) continue;
+            Xunit.Assert.True(float.IsFinite(e.PX[i]) && float.IsFinite(e.PY[i]) && float.IsFinite(e.VX[i]) && float.IsFinite(e.VY[i]), tag + " 비유한 에이전트 " + i);
+            Xunit.Assert.True(e.PX[i] >= 0f && e.PX[i] <= World && e.PY[i] >= 0f && e.PY[i] <= World, tag + " 월드 이탈 " + i + " (" + e.PX[i] + "," + e.PY[i] + ")");
+        }
+    }
+
     [Xunit.Fact]
     public void Probe()
     {
+        var dump = System.Environment.GetEnvironmentVariable("PFS_CROWD_PROBE_DUMP") == "1";
+        if (!dump)
+        {
+            using var calm = new Nc.NeuralCrowdStudioRunner();
+            for (var i = 0; i < 600; i++) calm.Step();
+            AssertSane(calm, "평시");
+            using var panic = new Nc.NeuralCrowdStudioRunner();
+            panic.SetMood(Nc.CrowdMood.Panic, 0.9f);
+            for (var i = 0; i < 300; i++) panic.Step();
+            AssertSane(panic, "패닉");
+            return;
+        }
+
         var sb = new System.Text.StringBuilder();
         void Dump(string tag, Nc.NeuralCrowdStudioRunner r) => sb.AppendLine(tag + $" act={r.Engine.ActiveCount} spd={r.Engine.MeanSpeed:0.00} arr={r.Engine.Arrivals} evac={r.Engine.Evacuated} peakD={r.Guard.PeakDensity:0.0} pen={r.Guard.PeakPenetrationSeen:0.000} panic={r.Social.PanicCount} fear={r.Social.MeanFear:0.00}");
         void Map(Nc.NeuralCrowdStudioRunner r)

@@ -15,6 +15,7 @@ namespace PromptFlowStudio.Tests;
 /// #️⃣🔒⚔️🧬 Step 19 — SHA-256 내용 동일성 가드 · 기준선 부트스트랩 · Drive 데몬 일시 잠금 재시도 · 의미 기반 충돌 합집합 병합 + 해결 UI ·
 /// BGM/태그 컨텍스트 알파 과거 이력 소급(1회) · 자율 추가(적재 직전 해결 적용 · 검증된 원자 첫 복원 + 충돌 사본 중복 방지 · A/B 실시간 컨텍스트 알파 정확히 1회).
 /// </summary>
+[Collection("TimingSensitivePerformance")]   // Step 35: 벽시계 상한 단언(초 단위 폴백/종료 지연) → 병렬 구간 제외
 public sealed class PlutoSyncHardeningAndBackfillTests : IDisposable
 {
     private static readonly DateTime Stamp = new(2026, 11, 1, 0, 0, 0, DateTimeKind.Utc);

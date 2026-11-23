@@ -12,6 +12,7 @@ using Xunit;
 namespace PromptFlowStudio.Tests;
 
 /// <summary>🎚️ 사이드체인 더킹 DSP · 🪐 PlutoCore 허브 관리자/페일오버 라우팅.</summary>
+[Collection("TimingSensitivePerformance")]   // Step 35: 벽시계 상한 단언(초 단위 폴백/종료 지연) → 병렬 구간 제외
 public sealed class PlutoCoreAndDuckingTests
 {
     private const int Rate = 48000;

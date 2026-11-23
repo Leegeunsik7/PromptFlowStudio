@@ -11,6 +11,7 @@ using Xunit;
 
 namespace PromptFlowStudio.Tests;
 
+[Collection("TimingSensitivePerformance")]   // Step 35: 벽시계 상한 단언(초 단위 폴백/종료 지연) → 병렬 구간 제외
 public sealed class PlutoSubtitleDirectorTests : IDisposable
 {
     private readonly string _dir = Path.Combine(Path.GetTempPath(), "pfs_letter_" + Guid.NewGuid().ToString("N"));

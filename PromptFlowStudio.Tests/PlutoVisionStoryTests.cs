@@ -5,6 +5,7 @@ using PromptFlowStudio.Services.Pluto;
 namespace PromptFlowStudio.Tests;
 
 /// <summary>📸 Pluto Vision-to-Story — 사진 1장 → 15초 3막 4컷 · 통합 디렉터 HUD.</summary>
+[Collection("TimingSensitivePerformance")]   // Step 35: 벽시계 상한 단언(초 단위 폴백/종료 지연) → 병렬 구간 제외
 public sealed class PlutoVisionStoryTests : IDisposable
 {
     private readonly string _dir = Path.Combine(Path.GetTempPath(), "pfs_vstory_" + Guid.NewGuid().ToString("N"));

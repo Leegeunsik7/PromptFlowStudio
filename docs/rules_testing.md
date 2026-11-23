@@ -25,3 +25,12 @@
 - 느린 외부 의존(VLM 등)은 `TaskCompletionSource` 게이트형 페이크로 응답 시점을 테스트가 통제 → 백프레셔 드롭 수가 결정적(`요청 + 드롭 == 틱`).
 - 종료 대기는 `SpinWait.SpinUntil(cond, 상한ms)`을 `Assert.True`로 감싸 무한 대기 차단.
 - Gen2 "0건" 단언은 블로킹 기준: `GC.GetGCMemoryInfo(GCKind.FullBlocking).Index`를 기준선 직후/부하 직후 비교. `CollectionCount(2)`는 백그라운드(동시) Gen2까지 세어 타 할당원(메시·암호) 승격 타이밍에 따라 플래키.
+
+## 병렬 실행 · 직렬 컬렉션 (Step 35)
+- `xunit.runner.json` = 컬렉션 병렬(`maxParallelThreads` 4). `DisableParallelization` 컬렉션은 병렬 구간이 끝난 뒤 단독 실행 → 아래 테스트는 반드시 해당 컬렉션에:
+  - 벽시계 µs/ms 예산 단언(엔진 내부 `Max*Us`·`Last*Ms` 포함) · `CiFrameBudget` 실측 → `[Collection("TimingSensitivePerformance")]`
+  - GC 모드/프로세스 전역 GC 지표 → `[Collection("ProcessGcMode")]`
+  - `Environment.SetEnvironmentVariable` → `[Collection("ProcessEnvironment")]`
+- 벽시계 상한은 `CiFrameBudget.Scaled(n)`(상한) · `CiFrameBudget.MeetsFloor(값, 하한)`(처리율 하한) — 기준 통과 시 탐침 0회, 미달 시에만 외부 경합 배수(≤ 3)로 재판정.
+- CI 워크플로는 `RunConfiguration.DisableParallelization=true` 로 계속 완전 직렬(보수적 게이트).
+- 10 s 이상 테스트는 `[Trait("Speed", "Slow")]` — 빠른 내부 루프 `--filter "Speed!=Slow"`.

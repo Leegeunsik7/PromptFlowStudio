@@ -793,6 +793,7 @@ public class ProductionArtifactPackagerExclusionTests
 }
 /// <summary>v14.0.1: 카나리 키 Resolve 는 32건 감사 링버퍼를 잠식하지 않고 전용 카운터로만 집계.</summary>
 [Trait("Category", "Integration")]
+[Collection("ProcessEnvironment")]   // Step 35: 프로세스 환경 변수 변경
 public class SecureSecretVaultCanaryIsolationTests
 {
     [Fact]

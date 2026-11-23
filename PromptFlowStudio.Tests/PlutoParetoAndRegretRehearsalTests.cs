@@ -14,6 +14,7 @@ namespace PromptFlowStudio.Tests;
 /// ⚖️🔁☁️⏱️ Step 15 — Drive 핵심 허브 8종(메타 보정 상태 포함) · 능동 후회 리허설(회복 사전 → 챌린저 B) · 다목적 파레토 프런티어 랭킹 ·
 /// 스위트 전역 부하 인지 프레임 예산 · 자율 추가(회로 차단 수동 탐침/해제 + UI 표면화 · 보정 상태 마지막 정상본 복구 + 읽기 전용 세션 자가 치유).
 /// </summary>
+[Collection("TimingSensitivePerformance")]   // Step 35: CiFrameBudget 실측 탐침(전 코어 스핀) → 병렬 구간 제외
 public sealed class PlutoParetoAndRegretRehearsalTests : IDisposable
 {
     private static readonly DateTime T0 = new(2026, 11, 20, 9, 0, 0, DateTimeKind.Utc);

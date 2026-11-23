@@ -7,6 +7,7 @@ using PromptFlowStudio.ViewModels;
 namespace PromptFlowStudio.Tests;
 
 /// <summary>무선 카메라 — 연결 상태 전이 · 캡처 메타/BMP 버퍼 · 해제 초기화 · I2V 핸드오프 · 실물 수신기(루프백 HTTP)/폴백 회귀 잠금.</summary>
+[Collection("TimingSensitivePerformance")]   // Step 35: 벽시계 상한 단언(초 단위 폴백/종료 지연) → 병렬 구간 제외
 public class WirelessCameraTests
 {
     [Fact]

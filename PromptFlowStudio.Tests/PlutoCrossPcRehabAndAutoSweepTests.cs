@@ -11,6 +11,7 @@ using Xunit;
 namespace PromptFlowStudio.Tests;
 
 /// <summary>🌱 Step 29 — 복권 장부 멀티 PC 동기화 · 합집합 병합 · 수집 후 자동 채점/복권 스윕 · 진단서 .md 원자 저장 · 자체 추가 안전장치.</summary>
+[Collection("TimingSensitivePerformance")]   // Step 35: 고정 지연(150 ms) 기반 후행 트리거 동기화 → 병렬 구간 제외
 public sealed class PlutoCrossPcRehabAndAutoSweepTests : IDisposable
 {
     private readonly string _dir = Path.Combine(Path.GetTempPath(), "pfs_xpc_rehab_" + Guid.NewGuid().ToString("N"));

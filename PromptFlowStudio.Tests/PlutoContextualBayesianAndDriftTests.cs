@@ -451,6 +451,7 @@ public sealed class PlutoContextualBayesianAndDriftTests : IDisposable
     /// 프로세스가 살아 있고 수명 불변식(MFStartup ≤ 1 · 누수 0 · 유예 해제 소진)이 유지되어야 한다.
     /// </summary>
     [Fact]
+    [Trait("Speed", "Slow")]   // Step 35: 기준 실행 ≥ 10 s — 빠른 루프는 --filter "Speed!=Slow"
     public void MediaFoundation_ParallelInitAbruptDisposeAndDisposeRace_KeepLifetimeInvariants()
     {
         if (!OperatingSystem.IsWindows()) return;

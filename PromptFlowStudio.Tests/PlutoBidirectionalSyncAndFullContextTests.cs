@@ -114,11 +114,18 @@ public sealed class PlutoBidirectionalSyncAndFullContextTests : IDisposable
         Assert.Contains("plutoStore.WriteBackNewerLocalToDrive(PromptFlowStudio.Services.Pluto.PlutoDriveHealthService.PlutoFiles); plutoStore.RestoreCoreHubsToLocal(PromptFlowStudio.Services.Pluto.PlutoDriveHealthService.PlutoFiles);", mainForm, StringComparison.Ordinal);
     }
 
+    /// <summary>프로브 창 만료 → 재연결 감지까지 폴링(상한 10 s) — 고정 지연 대신 조건 대기(부하 무관 · 유휴 시 창 길이만큼만 대기).</summary>
+    private static async Task WaitForReconnectAsync(PlutoDriveStorageManager storage)
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (!storage.IsCloudSynced && sw.ElapsedMilliseconds < 10_000) await Task.Delay(20);
+    }
+
     [Fact]
     public async Task WriteBack_OnReconnect_PushesFilesStrandedInLocalFallbackDuringOutage()
     {
         var (drive, local) = Dirs("reconnect");
-        var storage = new PlutoDriveStorageManager(drive, local) { ProbeWindow = TimeSpan.FromMilliseconds(40) };
+        var storage = new PlutoDriveStorageManager(drive, local) { ProbeWindow = TimeSpan.FromSeconds(2) };   // Step 35: 다운 창은 MarkPrimaryDown 직후 로컬 폴백 쓰기(디스크 경합 시 수백 ms)까지 덮어야 "직후 다운" 단언이 결정론 → 2 s 창 + 재연결은 폴링
         Assert.True(await storage.WriteAllTextAtomicAsync("mem.json", "{\"v\":1}"));
         var target = Path.Combine(drive, "mem.json");
 
@@ -130,7 +137,7 @@ public sealed class PlutoBidirectionalSyncAndFullContextTests : IDisposable
         File.SetLastWriteTimeUtc(target, DateTime.UtcNow.AddHours(-1));   // 장시간 오프라인 모사
 
         // ☁️ 재연결 감지 → 고립 파일 즉시 반환(다음 기록 · 재시작을 기다리지 않음)
-        await Task.Delay(120);
+        await WaitForReconnectAsync(storage);
         Assert.True(storage.IsCloudSynced);
         await storage.WaitForStrandedPushAsync();
         Assert.Equal("{\"v\":2}", File.ReadAllText(target));
@@ -141,7 +148,7 @@ public sealed class PlutoBidirectionalSyncAndFullContextTests : IDisposable
             Assert.True(await storage.WriteAllTextAtomicAsync("mem.json", "{\"v\":3}"));
         File.WriteAllText(target, "{\"v\":\"other-pc\"}");
         File.SetLastWriteTimeUtc(target, DateTime.UtcNow.AddHours(1));
-        await Task.Delay(120);
+        await WaitForReconnectAsync(storage);
         Assert.True(storage.IsCloudSynced);
         await storage.WaitForStrandedPushAsync();
         Assert.Equal("{\"v\":\"other-pc\"}", File.ReadAllText(target));

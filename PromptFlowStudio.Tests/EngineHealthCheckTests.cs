@@ -6,6 +6,7 @@ namespace PromptFlowStudio.Tests;
 
 /// <summary>렌더 엔진 사전 헬스체크 — 실제 루프백 HTTP 응답/거부에 따른 Online/Offline 판정 · 배지 문구 · 변화 통지 회귀 잠금.</summary>
 [Trait("Category", "FastUnit")]
+[Collection("TimingSensitivePerformance")]   // Step 35: 벽시계 상한 단언(초 단위 폴백/종료 지연) → 병렬 구간 제외
 public class EngineHealthCheckTests
 {
     /// <summary>요청 1건당 200 응답하는 최소 HTTP 서버(루프백 · 임의 포트).</summary>

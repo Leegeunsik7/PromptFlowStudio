@@ -955,6 +955,7 @@ public class TitanReleaseTests
     /// </summary>
     [Fact]
     [Trait("Category", "Integration")]
+    [Trait("Speed", "Slow")]   // Step 35: 기준 실행 ≥ 10 s — 빠른 루프는 --filter "Speed!=Slow"
     public async Task Headless_UI_Rendering_Check()
     {
         // ══ UI-1 7대 카테고리 대표 모달 헤드리스 렌더(Null 참조 · 수명주기 예외 없음) + Dispose 후 이벤트 누수 0 ══
@@ -4180,6 +4181,7 @@ public class TitanReleaseTests
     // ── v16.30.0 마스터 스위트: 제로 트러스트(KEK DPAPI-NG · 비밀 · 인가/스텝업/디바이스 · 스트리밍 AES-GCM 변조/절단 · HMAC 감사 체인 · KEK 회전) · OIDC(RS256/JWKS/nonce/PKCE) · SAML2(XML-DSig/XSW) · CDC 델타 동기화(무할당 경계 · 증분 · 복원 · 릴레이 · 수렴 암호화) · 30 모듈 매트릭스/파이프라인 ──
     [Fact]
     [Trait("Category", "Integration")]
+    [Trait("Speed", "Slow")]   // Step 35: 기준 실행 ≥ 10 s — 빠른 루프는 --filter "Speed!=Slow"
     public async Task UniversalMasterSuite_And_ZeroTrustShield_Check()
     {
         var root = Path.Combine(Path.GetTempPath(), "pfs_master_" + Guid.NewGuid().ToString("N"));
@@ -4680,6 +4682,7 @@ public class TitanReleaseTests
     // ── v16.28.0 AI 자율주행 디렉터: 트렌드 파싱(YouTube/RSS·XXE 차단) · 24h 스케줄 · 스토리보드 검증/템플릿 · 보상/특성/UCB(무할당) · 진단/자가 정제(Gemini·폴백) · ROI 배분/정수 배분(무할당)/기여도 · 자율 루프(가드·승인·게시·학습) ──
     [Fact]
     [Trait("Category", "Integration")]
+    [Trait("Speed", "Slow")]   // Step 35: 기준 실행 ≥ 10 s — 빠른 루프는 --filter "Speed!=Slow"
     public async Task AutonomousCampaign_And_SelfTuningEngine_Check()
     {
         // 1) 트렌드 파싱 — YouTube mostPopular · Google Trends RSS(DTD 거부) · 병합 · 포맷 분류
@@ -14295,6 +14298,7 @@ class "Proto"
 
     [Fact]
     [Trait("Category", "Integration")]
+    [Trait("Speed", "Slow")]   // Step 35: 기준 실행 ≥ 10 s — 빠른 루프는 --filter "Speed!=Slow"
     public void GenerativeFilmScore_And_NeuralSoundDesign_Check()
     {
         const int B = Sc.NeuralCinematographicFilmScoreGenerator.Block, SR = Sc.NeuralCinematographicFilmScoreGenerator.SampleRate;
@@ -16589,7 +16593,7 @@ class "Proto"
         Assert.Equal(Moco.StopCause.KeepOut, guard.Cause);
         // v17.63.1: 전 트립 최댓값(MaxTriggerUs)은 OS 선점 1 회로 깨진다 — 웜업된 트립들 중 최선값(Best-of)으로 경로 비용 < 1 ms 검증 · 최댓값은 50 ms 교착 상한만
         Assert.True(Math.Min(guard.LastTriggerUs, triggerUs) < 1000, "트립 경로 " + guard.LastTriggerUs + " µs");
-        Assert.True(guard.MaxTriggerUs < 50_000, "트립 최댓값 " + guard.MaxTriggerUs + " µs");
+        Assert.True(guard.MaxTriggerUs < CiFrameBudget.Scaled(50_000), "트립 최댓값 " + guard.MaxTriggerUs + " µs");
         Assert.Equal(0.5f, Moco.HardwareInTheLoopSafetyEStopGuard.SegmentDistance(V3.Zero, V3.UnitX, new V3(0.5f, 0.5f, -1f), new V3(0.5f, 0.5f, 1f)), 5);
 
         // ── 러너: 패스 검증 · 스태프 진입 → 정지 · DMX 안전/턴테이블 · 무할당 ──
@@ -18240,6 +18244,7 @@ class "Proto"
 
     [Fact]
     [Trait("Category", "Integration")]
+    [Trait("Speed", "Slow")]   // Step 35: 기준 실행 ≥ 10 s — 빠른 루프는 --filter "Speed!=Slow"
     public async Task HardwareAcceleration_And_DistributedRendering_Check()
     {
         // ── HW-1: DirectPath 아레나 — 제자리 게시 · 공유 메모리 교차 인스턴스 · 회수 · 3DGS 제자리 렌더 ──
@@ -23908,6 +23913,7 @@ public sealed class StrandHairIsolatedTests
 public sealed class GarmentDynamicsIsolatedTests
 {
     [Fact]
+    [Trait("Speed", "Slow")]   // Step 35: 기준 실행 ≥ 10 s — 빠른 루프는 --filter "Speed!=Slow"
     public void MultiLayerGarment_And_NeuralDraping_Check()
     {
         var rng = new Random(1716);
@@ -24275,6 +24281,7 @@ public sealed class NeuralVoiceIsolatedTests
 public sealed class FluidWetnessIsolatedTests
 {
     [Fact]
+    [Trait("Speed", "Slow")]   // Step 35: 기준 실행 ≥ 10 s — 빠른 루프는 --filter "Speed!=Slow"
     public void MultiphaseFluidWetness_And_DropletDynamics_Check()
     {
         const float dt = 1f / 60f;
@@ -24612,6 +24619,7 @@ public sealed class CognitiveCinematographyIsolatedTests
 }
 
 [Trait("Category", "Integration")]
+[Collection("TimingSensitivePerformance")]   // Step 35: 엔진 내부 벽시계 ms/µs 게이트 → 병렬 구간 제외
 public sealed class StereoXrIsolatedTests
 {
     private static long Diff(ReadOnlySpan<uint> a, ReadOnlySpan<uint> b)
@@ -24789,6 +24797,7 @@ public sealed class StereoXrIsolatedTests
 
 /// <summary>v17.23.0 AI 6DoF 공간 음향 &amp; 광선 추적 — BVH/커널 비트 동일 · RT60 · HRTF ITD/ILD · 도플러 · 회절 · 위상 가드 · 러너 무할당.</summary>
 [Trait("Category", "Integration")]
+[Collection("TitanHeavyCompute")]   // Step 35: CPU 집약 엔진 스위트 — 서로 직렬(동시 1 개) · 경량 테스트와는 병렬
 public sealed class SpatialAcousticsIsolatedTests
 {
     [Fact]
@@ -25010,6 +25019,7 @@ public sealed class SpatialAcousticsIsolatedTests
 
 /// <summary>v17.24.0 AI 6DoF 공간 햅틱 &amp; 역각 피드백 — SIMD 커널 비트 동일 · 갓-오브젝트 프록시 · 켈빈-보이트 · 진동 텍스처/맥동 · POPC 가드 · 러너 무할당.</summary>
 [Trait("Category", "FastUnit")]
+[Collection("TitanHeavyCompute")]   // Step 35: CPU 집약 엔진 스위트 — 서로 직렬(동시 1 개) · 경량 테스트와는 병렬
 public sealed class SpatialHapticsIsolatedTests
 {
     [Fact]
@@ -25132,6 +25142,7 @@ public sealed class SpatialHapticsIsolatedTests
 
 /// <summary>v17.25.0 AI 홀로그래픽 텔레프레전스 — 체적 LoD 스트리밍(SIMD 비트 동일 · 예산 · 양자화 오차) · 시선/AEC/햅틱 정합 · GGPO 롤백 결정성 · 에르미트 워프 · 러너 무할당.</summary>
 [Trait("Category", "Integration")]
+[Collection("TimingSensitivePerformance")]   // Step 35: 엔진 내부 벽시계 ms/µs 게이트 → 병렬 구간 제외
 public sealed class HolographicTelepresenceIsolatedTests
 {
     [Fact]
@@ -25284,9 +25295,11 @@ public sealed class HolographicTelepresenceIsolatedTests
 
 /// <summary>v17.26.0 AI 뉴럴 물리 &amp; 연속체 역학 — MPM SIMD 커널 비트 동일 · 야코비 고유분해 · APIC 질량 보존 · 점탄소성 · 보로노이 파괴 · 비침투/에너지 가드 · 러너 무할당.</summary>
 [Trait("Category", "Integration")]
+[Collection("TitanHeavyCompute")]   // Step 35: CPU 집약 엔진 스위트 — 서로 직렬(동시 1 개) · 경량 테스트와는 병렬
 public sealed class ContinuumPhysicsIsolatedTests
 {
     [Fact]
+    [Trait("Speed", "Slow")]   // Step 35: 기준 실행 ≥ 10 s — 빠른 루프는 --filter "Speed!=Slow"
     public void NeuralPhysics_And_ContinuumMechanics_Check()
     {
         var rng = new Random(1726);
@@ -25414,6 +25427,7 @@ public sealed class ContinuumPhysicsIsolatedTests
 
 /// <summary>v17.27.0 AI 생성형 월드 확장 &amp; 4D 인페인팅 — 해시 그리드 MLP SIMD 비트 동일 · 프롬프트 스타일 · 예측 생성 · 고정 메모리 예산 · 알파-디졸브 · 심도 유도 인페인팅 · 러너 무할당.</summary>
 [Trait("Category", "Integration")]
+[Collection("TitanHeavyCompute")]   // Step 35: CPU 집약 엔진 스위트 — 서로 직렬(동시 1 개) · 경량 테스트와는 병렬
 public sealed class WorldExpansionIsolatedTests
 {
     [Fact]
@@ -25554,9 +25568,11 @@ public sealed class WorldExpansionIsolatedTests
 
 /// <summary>v17.28.0 AI 대기 기상 &amp; 미기후 — 격자 SIMD 커널 비트 동일 · 무발산 투영 · 마하/NaN/에너지 가드 · 운량/강수/안개 · 헤어/의상 항력 · 젖음 · 적설 안식각 · 러너 무할당.</summary>
 [Trait("Category", "Integration")]
+[Collection("TitanHeavyCompute")]   // Step 35: CPU 집약 엔진 스위트 — 서로 직렬(동시 1 개) · 경량 테스트와는 병렬
 public sealed class MicroclimateIsolatedTests
 {
     [Fact]
+    [Trait("Speed", "Slow")]   // Step 35: 기준 실행 ≥ 10 s — 빠른 루프는 --filter "Speed!=Slow"
     public void AtmosphericWeather_And_DynamicMicroclimate_Check()
     {
         var rng = new Random(1728);
@@ -25657,6 +25673,7 @@ public sealed class MicroclimateIsolatedTests
 
 /// <summary>v17.31.0: AI 버추얼 라이브 방송 &amp; 시청자 인터랙션 — 패킷화 규격 · 세이프티 가드 · 감정/슈퍼챗 합성 · ABR/스파이크 안정 보간 · 무할당.</summary>
 [Trait("Category", "FastUnit")]
+[Collection("TimingSensitivePerformance")]   // Step 35: 엔진 내부 벽시계 ms/µs 게이트 → 병렬 구간 제외
 public sealed class VirtualLiveIsolatedTests
 {
     private sealed class CountingSink : VL.ILiveTransportSink
@@ -25849,9 +25866,11 @@ public sealed class VirtualLiveIsolatedTests
 
 /// <summary>v17.32.0: AI 다국어 동시 더빙 &amp; 신경망 립싱크 — G2P 음절 증감 · 지연 예산 · 음소 → 블렌드셰이프 · WSOLA 피치 보존 · 드리프트/플리커 가드 · 음색 클로닝 · 무할당.</summary>
 [Trait("Category", "Integration")]
+[Collection("TimingSensitivePerformance")]   // Step 35: 엔진 내부 벽시계 ms/µs 게이트 → 병렬 구간 제외
 public sealed class LiveDubbingIsolatedTests
 {
     [Fact]
+    [Trait("Speed", "Slow")]   // Step 35: 기준 실행 ≥ 10 s — 빠른 루프는 --filter "Speed!=Slow"
     public void MultilingualDubbing_And_NeuralLipSync_Check()
     {
         // ── DUB-1: G2P 계획 길이 — 한국어 원문 대비 스페인어 증가 · 일본어 단문 수축 · 지연 예산 ──
@@ -25946,6 +25965,7 @@ public sealed class LiveDubbingIsolatedTests
 
 /// <summary>v17.33.0: AI 뉴럴 모션 매칭 &amp; 지형 적응 생체역학 — 가속 검색 정확성 · 궤적 예측 · 관성 블렌딩 · 지형 IK/ZMP · 풋스케이팅/과신전 가드 · 무할당.</summary>
 [Trait("Category", "FastUnit")]
+[Collection("TitanHeavyCompute")]   // Step 35: CPU 집약 엔진 스위트 — 서로 직렬(동시 1 개) · 경량 테스트와는 병렬
 public sealed class MotionMatchingIsolatedTests
 {
     private static MM.NeuralMotionMatchingStudioRunner Run(int frames, Action<MM.NeuralMotionMatchingStudioRunner>? setup = null)
@@ -26029,6 +26049,7 @@ public sealed class MotionMatchingIsolatedTests
 
 /// <summary>v17.34.0: AI 헤드리스 시각 QA &amp; ZMP 디버깅 — 소프트웨어 래스터 · 실 Blazor 헤드리스 캡처 · SSIM/픽셀 회귀 · 레이아웃 붕괴/팝핑 판독 · 계단 ZMP 교정 · 무할당.</summary>
 [Trait("Category", "Integration")]
+[Collection("TitanHeavyCompute")]   // Step 35: CPU 집약 엔진 스위트 — 서로 직렬(동시 1 개) · 경량 테스트와는 병렬
 public sealed class VisualQaIsolatedTests
 {
     [Fact]
@@ -26131,6 +26152,7 @@ public sealed class VisualQaIsolatedTests
 
 /// <summary>v17.35.0: AI 접촉 로코모션 &amp; 계단 보행 — 볼류메트릭 스캔 · 4보 발 배치 · 계단 합성(포착 스텝 · 속도 정합) · 접지 창 LIPM/DCM ZMP 95%+ · 각운동량 · 무할당.</summary>
 [Trait("Category", "FastUnit")]
+[Collection("TitanHeavyCompute")]   // Step 35: CPU 집약 엔진 스위트 — 서로 직렬(동시 1 개) · 경량 테스트와는 병렬
 public sealed class ContactLocomotionIsolatedTests
 {
     [Fact]
@@ -26344,7 +26366,7 @@ public sealed class NeuralRagdollIsolatedTests
         Assert.Equal(1, rc.GetUps);
         Assert.Equal(NR.RecoveryState.Locomotion, rc.State);
         Assert.True(rc.StablePct >= 80f, "기립 ZMP 안정 " + rc.StablePct);
-        Assert.True(rc.MaxClassifyUs < 2000, "자세 판독 " + rc.MaxClassifyUs + " µs");
+        Assert.True(rc.MaxClassifyUs < CiFrameBudget.Scaled(2000), "자세 판독 " + rc.MaxClassifyUs + " µs");
         Assert.True(rc.MaxSupportN > 100f && rc.OrderCount >= 4, "지지 " + rc.MaxSupportN + " N · 순서 " + rc.OrderCount);
         Assert.True(rc.LastGetUpSeconds > 3f && rc.LastGetUpSeconds < 12f, "기립 " + rc.LastGetUpSeconds + " s");
         Assert.True(fwd.Engine.MaxWeight < 1e-3f && fwd.Engine.DynamicCount == 0, "키네마틱 복귀 " + fwd.Engine.MaxWeight);
@@ -26528,6 +26550,7 @@ public sealed class ProceduralFoleyIsolatedTests
 public sealed class CinematicDirectorIsolatedTests
 {
     [Fact]
+    [Trait("Speed", "Slow")]   // Step 35: 기준 실행 ≥ 10 s — 빠른 루프는 --filter "Speed!=Slow"
     public void CinematicMultiCameraDirector_And_ShotOrchestration_Check()
     {
         CD.CinematicDirectorStudioRunner Run(CD.CutPacing pacing, bool guard, int seconds = 60)
@@ -26624,6 +26647,7 @@ public sealed class CinematicDirectorIsolatedTests
 public sealed class NarrativeTimelineIsolatedTests
 {
     [Fact]
+    [Trait("Speed", "Slow")]   // Step 35: 기준 실행 ≥ 10 s — 빠른 루프는 --filter "Speed!=Slow"
     public void ScriptToScreenNarrativeTimeline_And_Dramaturgy_Check()
     {
         // ── STORY-1: Fountain 토크나이저 — 씬 3 · 배역 2 · 섹션(메인 + 2) · 분기 1(옵션 2) · 1 ms 이내 · 무할당 ──
@@ -27595,6 +27619,7 @@ public sealed class InstagramViralReelsRemixIsolatedTests
 }
 
 [Trait("Category", "FastUnit")]
+[Collection("TitanHeavyCompute")]   // Step 35: CPU 집약 엔진 스위트 — 서로 직렬(동시 1 개) · 경량 테스트와는 병렬
 public sealed class MetaGraphApiBridgeIsolatedTests
 {
     private static int RunUntil(Gb.GraphApiBridgeStudioRunner run, Func<bool> done, int max)
@@ -27755,6 +27780,7 @@ public sealed class MetaGraphApiBridgeIsolatedTests
 }
 
 [Trait("Category", "Integration")]
+[Collection("TitanHeavyCompute")]   // Step 35: CPU 집약 엔진 스위트 — 서로 직렬(동시 1 개) · 경량 테스트와는 병렬
 public sealed class VerticalVideoTranscodeIsolatedTests
 {
     private sealed class Collect : Vt.IMfSampleSink
@@ -27942,9 +27968,11 @@ public sealed class VerticalVideoTranscodeIsolatedTests
 }
 
 [Trait("Category", "Integration")]
+[Collection("TitanHeavyCompute")]   // Step 35: CPU 집약 엔진 스위트 — 서로 직렬(동시 1 개) · 경량 테스트와는 병렬
 public sealed class ViralLoopAutomationIsolatedTests
 {
     [Fact]
+    [Trait("Speed", "Slow")]   // Step 35: 기준 실행 ≥ 10 s — 빠른 루프는 --filter "Speed!=Slow"
     public void ViralLoopAutomation_And_EngagementSelfTuning_Check()
     {
         var reels = new Vr.ViralReelsStudioRunner();
@@ -28051,6 +28079,7 @@ public sealed class ViralLoopAutomationIsolatedTests
 }
 
 [Trait("Category", "Integration")]
+[Collection("TimingSensitivePerformance")]   // Step 35: 엔진 내부 벽시계 ms/µs 게이트 → 병렬 구간 제외
 public sealed class OmniChannelPublishingIsolatedTests
 {
     [Fact]
@@ -28189,6 +28218,7 @@ public sealed class OmniChannelPublishingIsolatedTests
 public sealed class MotionTypographyIsolatedTests
 {
     [Fact]
+    [Trait("Speed", "Slow")]   // Step 35: 기준 실행 ≥ 10 s — 빠른 루프는 --filter "Speed!=Slow"
     public void MotionTypography_And_InteractiveOverlay_Check()
     {
         // ── MOTION-1a: SDF 아틀라스 — 부호(내부 > 0.5) · 'O' 구멍 외부 · 단조 거리 · 한글 글리프 ──
@@ -28309,6 +28339,7 @@ public sealed class MotionTypographyIsolatedTests
 }
 
 [Trait("Category", "Integration")]
+[Collection("TitanHeavyCompute")]   // Step 35: CPU 집약 엔진 스위트 — 서로 직렬(동시 1 개) · 경량 테스트와는 병렬
 public sealed class BeatSyncAudioDuckingIsolatedTests
 {
     [Fact]
@@ -28435,6 +28466,7 @@ public sealed class BeatSyncAudioDuckingIsolatedTests
 }
 
 [Trait("Category", "Integration")]
+[Collection("TitanHeavyCompute")]   // Step 35: CPU 집약 엔진 스위트 — 서로 직렬(동시 1 개) · 경량 테스트와는 병렬
 public sealed class RhythmActionMvIsolatedTests
 {
     [Fact]
@@ -29129,6 +29161,7 @@ public sealed class GaussianClothHairIsolatedTests
     }
 
     [Fact]
+    [Trait("Speed", "Slow")]   // Step 35: 기준 실행 ≥ 10 s — 빠른 루프는 --filter "Speed!=Slow"
     public void GaussianCloth_And_HairPhysics_Check()
     {
         const int Head = (int)PromptFlowStudio.Services.NeuralRagdoll.RagdollJoint.Head;
@@ -29265,6 +29298,7 @@ public sealed class AvatarActingIsolatedTests
     }
 
     [Fact]
+    [Trait("Speed", "Slow")]   // Step 35: 기준 실행 ≥ 10 s — 빠른 루프는 --filter "Speed!=Slow"
     public void AvatarAutonomousActing_And_JointLimit_Check()
     {
         const int RW = (int)PromptFlowStudio.Services.NeuralRagdoll.RagdollJoint.RWrist, RE = (int)PromptFlowStudio.Services.NeuralRagdoll.RagdollJoint.RElbow, RS = (int)PromptFlowStudio.Services.NeuralRagdoll.RagdollJoint.RShoulder;
@@ -29393,6 +29427,7 @@ public sealed class AvatarActingIsolatedTests
     }
 
     [Fact]
+    [Trait("Speed", "Slow")]   // Step 35: 기준 실행 ≥ 10 s — 빠른 루프는 --filter "Speed!=Slow"
     public void VirtualInfluencer_LiveAndInstantClipping_Check()
     {
         // ── LIVE-3: 세이프티 가드 — 유해 100 % 차단 · 오탐 0 · 누출 버킷 · 도배 · 레이드 · 섀도우밴 · 무할당 ──
@@ -29930,6 +29965,7 @@ public sealed class AvatarActingIsolatedTests
 
 /// <summary>v17.63.1 시스템 전반 결선 감사 &amp; 하드닝 — 스텁 결선 3 건 · z-index 토큰 정규화 회귀 고정.</summary>
 [Trait("Category", "Integration")]
+[Collection("TitanHeavyCompute")]   // Step 35: CPU 집약 엔진 스위트 — 서로 직렬(동시 1 개) · 경량 테스트와는 병렬
 public sealed class SystemWideHardeningIsolatedTests
 {
     private static string Root()
@@ -30037,6 +30073,7 @@ public sealed class SystemWideHardeningIsolatedTests
 
 /// <summary>v17.64.0 실시간 다국어 동시 번역 · 다국어 음성 라우팅 · 로컬라이즈드 가우시안 립싱크 회귀.</summary>
 [Trait("Category", "Integration")]
+[Collection("TimingSensitivePerformance")]   // Step 35: 엔진 내부 벽시계 ms/µs 게이트 → 병렬 구간 제외
 public sealed class MultilingualDubbingIsolatedTests
 {
     private static readonly string[] GlobalLines = PromptFlowStudio.Services.GlobalDubbing.GlobalDubbingStudioRunner.DemoLines;
@@ -30284,6 +30321,7 @@ public sealed class BroadcastMcrIsolatedTests
     }
 
     [Fact]
+    [Trait("Speed", "Slow")]   // Step 35: 기준 실행 ≥ 10 s — 빠른 루프는 --filter "Speed!=Slow"
     public void UnifiedGaussian_And_BroadcastMcr_Check()
     {
         // ── MCR-2a: 트랜지션 보간 수치(무할당 정적 경로) ──
@@ -30548,6 +30586,7 @@ public sealed class LiveCommerceIsolatedTests
     }
 
     [Fact]
+    [Trait("Speed", "Slow")]   // Step 35: 기준 실행 ≥ 10 s — 빠른 루프는 --filter "Speed!=Slow"
     public void LiveCommerce_SalesPitch_And_Compliance_Check()
     {
         // ── COMM-3a: 금지어 — 공백 · 대소문자 변형 탐지 · 치환 · 차단 100 % ──
@@ -31007,6 +31046,7 @@ public sealed class MasterStationIsolatedTests
     }
 
     [Fact]
+    [Trait("Speed", "Slow")]   // Step 35: 기준 실행 ≥ 10 s — 빠른 루프는 --filter "Speed!=Slow"
     public async Task MasterStation_EpgAndFailover_Check()
     {
         // ── STAT-1a: EPG 링 — 24 h = 1440 분 · 연속 · 프리롤 → Take · +1440 재순환 · 트래픽 대체 · 연장 원복 · 무할당 ──
@@ -31392,7 +31432,7 @@ public sealed class OmniChannelPublisherIsolatedTests
             // 무할당: 토큰 파서
             var tokens = "TITLE: 무할당 제목\nDESC: 설명 줄\nTAGS: #a #b #c #d #e\n".ToCharArray();
             var parseAlloc = AllocationProbe.MinAllocated(() => { for (var k = 0; k < 50; k++) { rec.Reset(); for (var i = 0; i < tokens.Length; i += 3) rec.OnToken(tokens.AsSpan(i, Math.Min(3, tokens.Length - i))); } });
-            Assert.True(parseAlloc == 0 && rec.TagCount == 5 && rec.MaxTokenUs < 1_000, "파서 할당 " + parseAlloc);
+            Assert.True(parseAlloc == 0 && rec.TagCount == 5 && rec.MaxTokenUs < CiFrameBudget.Scaled(1_000), "파서 할당 " + parseAlloc);
             // ── PUB-2d: 24 h 편성 추천 — 성과 사후 × 시간대 트래픽 · 중복 회피 · 앰비언트 저트래픽 한정 ──
             for (var i = 0; i < 40; i++) { rec.RecordOutcome(SM.StationProgramKind.LiveCommerce, Pub.ProductCategory.Beauty, 0.95f); rec.RecordOutcome(SM.StationProgramKind.Talkshow, Pub.ProductCategory.Tech, 0.2f); }
             Assert.Equal(3, rec.Recommend(9));
@@ -31506,6 +31546,7 @@ public sealed class SemanticChatWeatherIsolatedTests
     }
 
     [Fact]
+    [Trait("Speed", "Slow")]   // Step 35: 기준 실행 ≥ 10 s — 빠른 루프는 --filter "Speed!=Slow"
     public async Task SemanticChat_And_WeatherEngine_Check()
     {
         // ── CHAT-1a: 정규화 · 플랫폼 태그 · 우선 레인 · 링 포화 ──
@@ -31578,11 +31619,12 @@ public sealed class SemanticChatWeatherIsolatedTests
         var offeredPerSec = real.Offered / 3.0;
         var acceptedPerSec = (real.Accepted - real.PriorityAccepted) / 3.0;
         Assert.True(prodAlloc.All(a => a == 0) && consAlloc == 0, "할당 생산 " + string.Join("/", prodAlloc) + " 소비 " + consAlloc);
-        Assert.True(offeredPerSec > 1_400 && real.Shed > 0 && acceptedPerSec < 1_350 && acceptedPerSec > 700 && real.PriorityDropped == 0 && an.Consumed == real.Accepted,
+        // Step 35: 제안률 하한은 생산자 3 스레드의 벽시계 CPU 몫에 비례 → 외부 경합 배수로만 완화(유휴에선 1 400/s 그대로) · 밸브 상한(1 350/s)·셰딩·정합은 불변
+        Assert.True(CiFrameBudget.MeetsFloor(offeredPerSec, 1_400) && real.Shed > 0 && acceptedPerSec < 1_350 && CiFrameBudget.MeetsFloor(acceptedPerSec, 700) && real.PriorityDropped == 0 && an.Consumed == real.Accepted,
             "제안 " + offeredPerSec + "/s 수용 " + acceptedPerSec + "/s 셰딩 " + real.Shed + " 소비 " + an.Consumed + "/" + real.Accepted);
         // 벽시계 단일 최대값은 OS 스케줄러 선점(~15.6–20 ms 퀀텀) 1 회로 튈 수 있음 → p99 로 상한 단언, 최대값은 진단 메시지만(v18.0.7 정규화 규칙)
         Array.Sort(drains, 0, dn); var p95 = drains[(int)(dn * 0.95)]; var p99 = drains[(int)(dn * 0.99)];
-        Assert.True(p95 < 2_600 && p99 < 12_000 && an.Toxic > 0 && an.Vector.Dominant == Scw.CrowdEmotion.Hype, "드레인 p95 " + p95 + " p99 " + p99 + " 최대 " + maxDrain + " µs · 분석 " + an.MaxConsumeUs + " · 블라인드 " + an.Blinded + " · " + an.Vector.Dominant);
+        Assert.True(p95 < CiFrameBudget.Scaled(2_600) && p99 < CiFrameBudget.Scaled(12_000) && an.Toxic > 0 && an.Vector.Dominant == Scw.CrowdEmotion.Hype, "드레인 p95 " + p95 + " p99 " + p99 + " 최대 " + maxDrain + " µs · 분석 " + an.MaxConsumeUs + " · 블라인드 " + an.Blinded + " · " + an.Vector.Dominant);
         for (var p = 0; p < 3; p++) Assert.True(real.ByPlatform((SG.ChatPlatform)p) > 0);
 
         // ── CHAT-2: 감성 분류 · 부정어 반전 · 톡시시티 블라인드 · 5 s 창 정규화 벡터 ──
@@ -31933,7 +31975,7 @@ public sealed class ZeroTouchAutopilotIsolatedTests
             e.Disable(); e.Enable();
             await Run(() => e.Stage == Ap.AutopilotStage.Broadcasting, 20);
             var tickAlloc = AllocationProbe.MinAllocated(() => { for (var i = 0; i < 100; i++) { clock += 100; e.Tick(); } });
-            Assert.True(tickAlloc == 0 && e.Stage == Ap.AutopilotStage.Broadcasting && e.MaxTickUs < 5_000, "FSM 틱 할당 " + tickAlloc + " · " + e.Stage + " · " + e.MaxTickUs + " µs");
+            Assert.True(tickAlloc == 0 && e.Stage == Ap.AutopilotStage.Broadcasting && e.MaxTickUs < CiFrameBudget.Scaled(5_000), "FSM 틱 할당 " + tickAlloc + " · " + e.Stage + " · " + e.MaxTickUs + " µs");
             e.Disable();
             ap.Dispose(); pub.Dispose(); factory.Dispose();
         }
@@ -32123,7 +32165,7 @@ public sealed class ReelsVisualPolishIsolatedTests
         vp.Attach();
         mcr.Prepare();
         for (var i = 0; i < 30; i++) mcr.Step();
-        Assert.True(vp.Tracker.Frames >= 30 && vp.Tracker.MaxStepUs < 2_000, "MCR 레이어 " + vp.Tracker.Frames + " · " + vp.Tracker.MaxStepUs + " µs");
+        Assert.True(vp.Tracker.Frames >= 30 && vp.Tracker.MaxStepUs < CiFrameBudget.Scaled(2_000), "MCR 레이어 " + vp.Tracker.Frames + " · " + vp.Tracker.MaxStepUs + " µs");
         var layerAlloc = AllocationProbe.MinAllocated(() => { for (var i = 0; i < 10; i++) mcr.Step(); });
         Assert.True(layerAlloc == 0, "MCR + 추적 레이어 할당 " + layerAlloc);
         // 타일 기하: 9:16 전체 카메라 1 장(대칭) 의 u 좌표 = 타일 렌더 u + 타일 원점(투영식 검증)
@@ -32461,7 +32503,7 @@ public sealed class SmartPublishingSchedulerIsolatedTests
         // ── SFX-4a: 러너 — SFX 미리보기 · 데모 예약 → 골든타임 발행(가상 시계) · A/B 승자 승격 결선 ──
         var retention = new Rto.ViralRetentionOptimizerStudioRunner();
         var run = new Sps.SmartPublishingSchedulerStudioRunner(retention: retention, simulate: true);
-        Assert.True(run.BuildSfxPreview() >= 10 && run.PreviewReady && run.PreviewMixUs < 50_000, "SFX 미리보기 " + run.Sfx.CueCount);
+        Assert.True(run.BuildSfxPreview() >= 10 && run.PreviewReady && run.PreviewMixUs < CiFrameBudget.Scaled(50_000), "SFX 미리보기 " + run.Sfx.CueCount);
         var louder = 0; for (var c = 0; c < Sps.SmartPublishingSchedulerStudioRunner.WaveCols; c++) if (run.WaveMax[c] > run.BedMax[c] + 0.2f) louder++;
         Assert.True(louder > 10, "SFX 가산 열 " + louder);
         Assert.Equal(8, run.ScheduleDemoBatch());
@@ -32896,6 +32938,7 @@ public sealed class HormoziKineticBRollIsolatedTests
     }
 
     [Fact]
+    [Trait("Speed", "Slow")]   // Step 35: 기준 실행 ≥ 10 s — 빠른 루프는 --filter "Speed!=Slow"
     public async Task HormoziSubtitle_And_DynamicBRoll_Check()
     {
         SubtitleChecks();
@@ -33814,6 +33857,7 @@ public sealed class ViralVoiceFxIsolatedTests
 /// UI 전수 감사 회귀 — 전 스튜디오 모달 스크롤 컨테이너 규격 · 구독 컴포넌트 IDisposable · 오버레이 이벤트 투과 · Esc 닫기 · 휠 리스너 범위.
 /// </summary>
 [Trait("Category", "Integration")]
+[Collection("TitanHeavyCompute")]   // Step 35: CPU 집약 엔진 스위트 — 서로 직렬(동시 1 개) · 경량 테스트와는 병렬
 public sealed class UiExhaustiveAuditIsolatedTests
 {
     private static readonly System.Text.RegularExpressions.Regex ModalPair = new(
@@ -34212,7 +34256,7 @@ public sealed class MultilingualDubbingLipSyncIsolatedTests
         run.InjectAudioJump(25);
         run.Tick(Mld.AudioVisualPhaseDriftGuard.FrameUs);
         Assert.True(run.Drift.Corrections == c0 + 1 && Math.Abs(run.Drift.DriftUs) < 1000 && run.Drift.LastResyncFrames == 1 && run.Drift.Regressions == 0, "점프 복원 " + run.Drift.DriftUs);
-        Assert.True(run.After.MaxUs < 16_667, "비젬 분석 " + run.After.MaxUs + " µs");
+        Assert.True(run.After.MaxUs < CiFrameBudget.Scaled(16_667), "비젬 분석 " + run.After.MaxUs + " µs");
         run.AudioSkew = 5f;
         Assert.Equal(Mld.MultilingualDubbingStudioRunner.MaxSkew, run.AudioSkew);
         run.AudioSkew = 1f;
@@ -34413,7 +34457,7 @@ public sealed class OmniLiveRestreamIsolatedTests
         for (var i = 0; i < Rst.OmniLiveRestreamStudioRunner.TargetCount; i++) AssertIntegrity(run, i, 250);
         Assert.True(run.Engine.Fanouts >= run.VideoFramesOut + run.AudioFramesOut - 4 && run.Engine.ChunkBuilds <= run.Engine.Messages + 4, "제로-카피 분기 " + run.Engine.Fanouts + "/" + run.Engine.ChunkBuilds);
         Assert.True(run.Abr.Tier == 0 && run.Fps1s >= 28f && run.TotalKbps > 9_000f, "정상 송출 tier " + run.Abr.Tier + " fps " + run.Fps1s + " kbps " + run.TotalKbps);
-        Assert.True(run.Engine.MaxMuxUs < 50_000, "먹스 " + run.Engine.MaxMuxUs + " µs");
+        Assert.True(run.Engine.MaxMuxUs < CiFrameBudget.Scaled(50_000), "먹스 " + run.Engine.MaxMuxUs + " µs");
         run.Tick(Dt);
         var tickAlloc = AllocationProbe.MinAllocated(() => { for (var k = 0; k < 6; k++) run.Tick(Dt); });
         Assert.True(tickAlloc == 0, "송출 틱 할당 " + tickAlloc);
@@ -34453,7 +34497,7 @@ public sealed class OmniLiveRestreamIsolatedTests
         Assert.Equal("후원천사", new string(run.Chat.Author(0)));
         run.InjectCheer();
         Assert.True(run.Chat.Event(0).Kind == Rst.ChatKind.Bits && run.Chat.Event(0).Importance == 2 && run.Pose == PromptFlowStudio.Services.LiveShowroom.HoldPose.Clap, "치어");
-        Assert.True(run.Chat.MaxReactionUs < 150_000, "리액션 지연 " + run.Chat.MaxReactionUs);
+        Assert.True(run.Chat.MaxReactionUs < CiFrameBudget.Scaled(150_000), "리액션 지연 " + run.Chat.MaxReactionUs);
         for (var k = 0; k < 60 * 4; k++) run.Tick(Dt);
         Assert.True(run.Pose != PromptFlowStudio.Services.LiveShowroom.HoldPose.Clap || run.PoseLeftSec > 0, "제스처 감쇠");
 
@@ -34689,7 +34733,7 @@ public sealed class LiveToShortsAutoClipperIsolatedTests
         Assert.True(tickAlloc == 0, "라이브 틱 할당 " + tickAlloc);
         var sw = System.Diagnostics.Stopwatch.StartNew();
         for (var k = 0; k < 600; k++) run.Tick(Dt);
-        Assert.True(sw.Elapsed.TotalMilliseconds / 600 < 4, "틱 평균 " + sw.Elapsed.TotalMilliseconds / 600 + " ms");
+        Assert.True(sw.Elapsed.TotalMilliseconds / 600 < CiFrameBudget.Scaled(4), "틱 평균 " + sw.Elapsed.TotalMilliseconds / 600 + " ms");
 
         var spikeAt = run.NowUs;
         run.TriggerHype();
@@ -34874,7 +34918,7 @@ public sealed class LiveToShortsAutoClipperIsolatedTests
         fd.Second(ring, 30, 3_000);
         var alloc = AllocationProbe.MinAllocated(() => fd.Second(ring, 30, 3_000));
         Assert.True(alloc == 0, "링 기록 할당 " + alloc);
-        Assert.True(ring.MaxWriteUs < 16_667, "기록 " + ring.MaxWriteUs);
+        Assert.True(ring.MaxWriteUs < CiFrameBudget.Scaled(16_667), "기록 " + ring.MaxWriteUs);
 
         // 용량 축출 + 랩어라운드 — 200 kbps 링에 ~1.4 Mbps 기록 → 창 < 120 s · 경계 걸친 슬라이스 바이트 일치
         var small = new Clp.RollingCircularVideoBufferEngine(200);
@@ -36232,6 +36276,7 @@ public sealed class CopyrightComplianceIsolatedTests
 public sealed class MasterPipelineRealRunnerIsolatedTests
 {
     [Fact]
+    [Trait("Speed", "Slow")]   // Step 35: 기준 실행 ≥ 10 s — 빠른 루프는 --filter "Speed!=Slow"
     public async Task MasterPipeline_RealRunnerE2EChain_Check()
     {
         // ── RUN-3: 스테이징 리스 · 트립 래치 · 원자 롤백 · 중복 회수 0 · 리스 재사용 무할당 ──
@@ -39542,6 +39587,7 @@ public sealed class RealDiskExportBinaryIntegrityTests
 public sealed class DesktopRuntimeSmokeTests
 {
     [Fact]
+    [Trait("Speed", "Slow")]   // Step 35: 기준 실행 ≥ 10 s — 빠른 루프는 --filter "Speed!=Slow"
     public async Task DesktopRuntimeSmoke_Check()
     {
         var services = new Microsoft.Extensions.DependencyInjection.ServiceCollection();

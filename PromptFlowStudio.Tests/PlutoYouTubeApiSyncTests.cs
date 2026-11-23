@@ -17,6 +17,7 @@ namespace PromptFlowStudio.Tests;
 /// 🔄 Step 33 — YouTube Data API v3 다채널 동기화: 봉인 자격 증명 · 토큰 자동 갱신 · 50개 묶음 videos.list · 로캘 변형 연결 · A/B 제목 귀속 ·
 /// Studio CSV/ZIP 와의 비파괴 융합 · 429/quotaExceeded 백오프 · 무네트워크 격리 · 자체 추가 안전장치(가짜 지표 차단 · 워터마크 분리 · API 확인 성숙 · 대기열 회수 · 비밀 누출 차단).
 /// </summary>
+[Collection("ProcessEnvironment")]   // Step 35: 프로세스 환경 변수 변경
 public sealed class PlutoYouTubeApiSyncTests : IDisposable
 {
     private readonly string _dir = Path.Combine(Path.GetTempPath(), "pfs_ytapi_" + Guid.NewGuid().ToString("N"));
