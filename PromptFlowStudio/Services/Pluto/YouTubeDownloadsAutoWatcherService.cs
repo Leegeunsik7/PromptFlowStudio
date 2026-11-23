@@ -18,6 +18,8 @@ public sealed record PlutoDownloadsAutoIngestEvent(string FileName, string Sha25
     public int NewlyLearned => Result.MatchedAndLearnedCount;
     public int Matured => Result.MaturityDeltaCount;
     public bool HasImpact => NewlyLearned + Matured > 0;
+    /// <summary>📦 Step 37 — 이번 수집 직후 <c>Pluto_Ingested/</c> 로 정리됨(자율 활동 피드 표기용).</summary>
+    public bool Archived { get; init; }
 
     /// <summary>토스트 1줄.</summary>
     public string ToastKorean => "📥 유튜브 자동 수집 완료: 신규 " + NewlyLearned.ToString(CultureInfo.InvariantCulture) + "건 · 성숙 보정 "
@@ -532,10 +534,10 @@ public sealed class YouTubeDownloadsAutoWatcherService : IYouTubeDownloadsAutoWa
                 }
                 var ledgerDurable = await RecordAsync(sha, rejected: false, ct).ConfigureAwait(false);
                 Remember(path);
-                ArchiveAfterIngest(path, sha, r, ledgerDurable);   // 📦 Step 30 — 완전 수집 · 영속 확인 후에만(기본 OFF · 실패 격리)
+                var archived = ArchiveAfterIngest(path, sha, r, ledgerDurable);   // 📦 Step 30 — 완전 수집 · 영속 확인 후에만(기본 OFF · 실패 격리)
                 Interlocked.Increment(ref _ingestedCount);
                 _lastIngestUtc = Now();
-                var evt = new PlutoDownloadsAutoIngestEvent(name, sha, r, DateTimeOffset.UtcNow);
+                var evt = new PlutoDownloadsAutoIngestEvent(name, sha, r, DateTimeOffset.UtcNow) { Archived = archived };
                 if (!evt.HasImpact) { Interlocked.Increment(ref _suppressed); return false; }   // 🔕 0건 학습 → 토스트 생략
                 RaiseIngested(evt);
                 return true;
@@ -749,9 +751,9 @@ public sealed class YouTubeDownloadsAutoWatcherService : IYouTubeDownloadsAutoWa
     }
 
     /// <summary>수집 게이트 안 · 장부 기록 직후 — 토글 ON + 영속 확인 시에만 이동(예외 비전파).</summary>
-    private void ArchiveAfterIngest(string path, string sha, PlutoTelemetryBatchImportResult result, bool ledgerDurable)
+    private bool ArchiveAfterIngest(string path, string sha, PlutoTelemetryBatchImportResult result, bool ledgerDurable)
     {
-        if (!ArchiveIngestedExports) return;
+        if (!ArchiveIngestedExports) return false;
         PlutoIngestArchiveOutcome outcome;
         try
         {
@@ -769,8 +771,10 @@ public sealed class YouTubeDownloadsAutoWatcherService : IYouTubeDownloadsAutoWa
         {
             Interlocked.Increment(ref _archivedCount);
             _ignoredSignatures.TryRemove(path, out _);   // 자리에 새 파일이 오면 다시 판정
+            return true;
         }
-        else Interlocked.Increment(ref _archiveSkipped);
+        Interlocked.Increment(ref _archiveSkipped);
+        return false;
     }
 
     /// <summary>

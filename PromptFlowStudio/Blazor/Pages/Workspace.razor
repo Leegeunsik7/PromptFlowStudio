@@ -154,6 +154,11 @@
                         @* 📐 Step 27 — 기획안 적중률 요약(적용 기획 실측 채점 1건 이상) *@
                         <span class="@(bs.BriefHitRate.HitRatePct >= 50.0 ? "ws-pcore on" : "ws-retry")" data-brain-brief-hitrate="@(bs.BriefHitRate.EvaluatedBriefs.ToString(CultureInfo.InvariantCulture))" style="white-space:normal" title="[기획 즉시 적용]으로 만든 영상의 실측 합성 지표(0.4·3초 + 0.4·완주 + 0.2·CTR×10)를 기획 시점 기대치와 비교 — 조회 50회부터 클립당 1회 채점 · 시리즈는 기획 1건으로 집계 · 기대 대비 −12p 이하면 그 훅×룩 조합을 오답 노트에 사후 분석 · 3건부터 활용/탐색 점수 보정">🎯 기획안 적중률 요약: @(bs.BriefHitRateLabel)</span>
                     }
+                    @if (_activityLatest is { } act)
+                    {
+                        @* 🛰️ Step 37 — 최근 자율 활동 1줄(백그라운드 API 동기화 · Downloads 수집 · 사후 분석 · 복권 · 경로/비밀값 가림) *@
+                        <span class="ws-retry" data-brain-activity="@(act.Kind.ToString())" style="white-space:normal;flex-basis:100%;opacity:.85" title="관리자 설정의 최근 자율 활동 피드에서 최근 30건을 볼 수 있습니다">🛰️ 최근 자율 활동 · @(act.ToLine())</span>
+                    }
                     <div class="ws-topic-plans" data-topic-plan-count="@(_topicBriefs.Count.ToString(CultureInfo.InvariantCulture))" style="flex-basis:100%;display:flex;flex-direction:column;gap:4px;font-size:12px">
                         <div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center">
                             <span class="ws-retry">🗺️ 다음 제작 기획안</span>
@@ -3479,6 +3484,7 @@
 
     // ── 🧠 Pluto 4.6 — 두뇌 리포트(판정 · 승률 · 오답 가드 · 다음 가설) ──
     private PromptFlowStudio.Services.Pluto.PlutoBrainSummarySnapshot? _brainSummary;
+    private PromptFlowStudio.Services.Pluto.PlutoActivityEntry? _activityLatest;   // 🛰️ Step 37 — 두뇌 리포트 본문 최근 자율 활동(구독 없음 · 갱신 시점 스냅샷)
     private bool _brainOpen, _brainBusy;
     private int _brainSeq;
 
@@ -3514,6 +3520,7 @@
             if (_disposed || seq != _brainSeq) return;
             _brainSummary = snap;
             _mistakeRules = LoadMistakeRules();
+            _activityLatest = (EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoAutonomousActivityFeedService)) as PromptFlowStudio.Services.Pluto.IPlutoAutonomousActivityFeedService)?.Latest;   // 🛰️ Step 37
         }
         catch (OperationCanceledException) { return; }   // 페이지 이탈
         catch (Exception ex) { Program.Log("Workspace.BrainSummary", ex); return; }
@@ -3948,6 +3955,7 @@
         {
             var r = await api.SyncNowAsync(_mediaCts.Token);
             _batchToast = r.SummaryKorean;
+            (EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoAutonomousActivityFeedService)) as PromptFlowStudio.Services.Pluto.IPlutoAutonomousActivityFeedService)?.RecordApiSync(r, background: false);   // 🛰️ Step 37 수동 동기화도 피드에(새 연결 · 회수 · 정지만)
             if (r.Import is { ApiObservedCount: > 0 } or { QueueRecoveredCount: > 0 })
             {
                 await RefreshCatalogClipsAsync();
@@ -4922,6 +4930,7 @@
             _ytWatchOn = _ytWatcher.IsEnabled;
             _ytArchiveOn = _ytWatcher.ArchiveIngestedExports;   // 📦 Step 30 — 영속 토글(기본 OFF)
             if (_ytWatchOn) _ytWatcher.Start();   // 멱등 · 격리 env(PROMPTFLOW_PLUTO_DRIVE=off 등) → 미기동
+            (EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoBackgroundAutonomyBootstrapper)) as PromptFlowStudio.Services.Pluto.IPlutoBackgroundAutonomyBootstrapper)?.StartInBackground();   // 🚀 Step 37 — 호스트 기동분에 합류(단일 비행 · 피드 브리지 재구독 없음)
             _ = PruneYouTubeLedgerAsync(_ytWatcher);        // 🧹 Step 24 장부 TTL/상한 정리 영속
             (EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoBriefOutcomeAttributionService)) as PromptFlowStudio.Services.Pluto.IPlutoBriefOutcomeAttributionService)?.Start();   // 🎯 Step 27 — 카탈로그 변경 → 적용 기획 실측 채점(멱등)
         }

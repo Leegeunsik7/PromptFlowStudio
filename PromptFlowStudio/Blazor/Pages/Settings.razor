@@ -8,6 +8,7 @@
 @inject PromptFlowStudio.Services.Pluto.IPlutoFlywheelSelfTestService FlywheelSelfTest
 @inject PromptFlowStudio.Services.Platform.IClipboardService Clipboard
 @inject PromptFlowStudio.Services.Pluto.IPlutoYouTubeApiSyncService YouTubeApi
+@inject PromptFlowStudio.Services.Pluto.IPlutoAutonomousActivityFeedService ActivityFeed
 @using PromptFlowStudio.Services.Pluto
 @using System.Globalization
 @implements IDisposable
@@ -206,6 +207,30 @@ else
                 <button class="dh-btn" data-yt-api-save="1" disabled="@_ytApiBusy" @onclick="SaveYouTubeApiAsync">🔐 암호화 저장</button>
             </div>
             @if (_ytApiToast is { } yat) { <div class="dh-sum" role="status" data-yt-api-toast="1">@(yat)</div> }
+        </section>
+
+        @* 🛰️ Step 37 — 최근 자율 활동 피드(백그라운드 API 동기화 · Downloads 자동 수집 · 기획 사후 분석 · 유기적 복권 · 최근 30건 · 이 PC 전용 · 경로/비밀값 가림) *@
+        <section class="dh" data-activity-feed="@(_activity.Count.ToString(CultureInfo.InvariantCulture))">
+            <div class="dh-head">
+                <div>
+                    <div class="dh-title">🛰️ 최근 자율 활동 피드</div>
+                    <div class="dh-sum">⏱️ API 동기화 · 📥 Downloads 자동 수집 · 🩻 기획 사후 분석(−12pt) · 🌱 유기적 복권(+8pt) — 최근 @(PlutoAutonomousActivityFeedService.Capacity.ToString(CultureInfo.InvariantCulture))건 · 이 PC 전용(Drive 미동기화)</div>
+                </div>
+                <button class="dh-btn" data-activity-clear="1" disabled="@(_activityBusy || _activity.Count == 0)" @onclick="ClearActivityAsync" title="이 PC 의 자율 활동 기록만 지웁니다(학습 데이터 · 장부는 그대로)">[🧹 활동 로그 비우기]</button>
+            </div>
+            @if (_activity.Count == 0)
+            {
+                <div class="dh-sum" data-activity-empty="1">아직 기록된 자율 활동이 없습니다.</div>
+            }
+            else
+            {
+                <ul style="margin:6px 0 0;padding-left:18px;font-size:12px;line-height:1.6">
+                    @foreach (var entry in _activity)
+                    {
+                        <li data-activity-kind="@(entry.Kind.ToString())">@(entry.ToLine())</li>
+                    }
+                </ul>
+            }
         </section>
     }
     else if (_tab == Tab.Gemini)
@@ -424,6 +449,32 @@ else
 
     // ── ⏱️ Step 36 — 주기 자동 동기화 토글 · 실시간 상태 ──
     private PlutoYouTubeApiAutoSyncStatus? _ytAuto;
+
+    // ── 🛰️ Step 37 — 최근 자율 활동 피드(Changed 구독/해제 쌍 · 백그라운드 → InvokeAsync) ──
+    private IReadOnlyList<PlutoActivityEntry> _activity = Array.Empty<PlutoActivityEntry>();
+    private bool _activityBusy, _activitySubscribed;
+
+    private void RefreshActivity()
+    {
+        try { _activity = ActivityFeed.GetRecent(); }
+        catch (Exception ex) { Program.Log("Settings.ActivityFeed", ex); _activity = Array.Empty<PlutoActivityEntry>(); }
+    }
+
+    private void OnActivityChanged()
+    {
+        if (_disposed) return;
+        try { _ = InvokeAsync(() => { if (_disposed) return; RefreshActivity(); StateHasChanged(); }); }
+        catch (Exception ex) when (ex is ObjectDisposedException or InvalidOperationException) { }
+    }
+
+    private async Task ClearActivityAsync()
+    {
+        if (_activityBusy) return;
+        _activityBusy = true;
+        try { await ActivityFeed.ClearAsync(); }
+        catch (Exception ex) { Program.Log("Settings.ActivityClear", ex); }
+        finally { _activityBusy = false; RefreshActivity(); }
+    }
     private bool _ytApiSubscribed;
     private bool _disposed;
 
@@ -451,6 +502,7 @@ else
     {
         _disposed = true;
         if (_ytApiSubscribed) { YouTubeApi.Changed -= OnYouTubeApiChanged; _ytApiSubscribed = false; }
+        if (_activitySubscribed) { ActivityFeed.Changed -= OnActivityChanged; _activitySubscribed = false; }
     }
 
     private async Task SaveYouTubeApiAsync()
@@ -504,6 +556,8 @@ else
         RefreshConflicts();
         RefreshYouTubeApiStatus();
         if (!_ytApiSubscribed) { YouTubeApi.Changed += OnYouTubeApiChanged; _ytApiSubscribed = true; }
+        RefreshActivity();
+        if (!_activitySubscribed) { ActivityFeed.Changed += OnActivityChanged; _activitySubscribed = true; }
     }
 
     // v5.3.2: 쿼리(?tab=) 값이 바뀔 때만 초기 활성 탭을 반영한다(사용자의 이후 탭 클릭은 보존).
