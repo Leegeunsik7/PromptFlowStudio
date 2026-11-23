@@ -170,6 +170,12 @@ public sealed record PlutoLocalizedSubtitleProjection(string Locale, IReadOnlyLi
     public int UntranslatedCueCount { get { var n = 0; foreach (var f in Fits) if (f.Untranslated) n++; return n; } }
     public bool HasTtsOverflow => TtsOverflowCueCount > 0;
 
+    /// <summary>📖 Step 34 — 비파괴 로캘 번역 트랙이 본문으로 쓰였다.</summary>
+    public bool UsedTranslationTrack { get; init; }
+
+    /// <summary>🕰️ Step 34 — 같은 로캘 트랙이 있었지만 원문(본문 · 구간)이 번역 이후 바뀌어 쓰지 않았다(다시 번역 필요).</summary>
+    public bool StaleTranslationTrack { get; init; }
+
     /// <summary>⚠️ 간결 경고 1줄(없음 → 빈 문자열) — 최악 컷 · 줄일 글자 수 정확 표기.</summary>
     public string WarningKorean
     {
@@ -187,7 +193,8 @@ public sealed record PlutoLocalizedSubtitleProjection(string Locale, IReadOnlyLi
                   .Append(worst.ExcessChars.ToString(inv)).Append("자)");
             }
             if (UntranslatedCueCount > 0)
-                sb.Append(sb.Length > 0 ? " · " : "").Append("🌐 번역 안 된 한글 자막 ").Append(UntranslatedCueCount.ToString(inv)).Append("컷");
+                sb.Append(sb.Length > 0 ? " · " : "").Append("🌐 번역 안 된 한글 자막 ").Append(UntranslatedCueCount.ToString(inv)).Append("컷")
+                  .Append(StaleTranslationTrack ? " (원문 수정됨 — 다시 번역)" : "");
             return sb.ToString();
         }
     }
@@ -243,6 +250,13 @@ public static class PlutoLocaleSubtitleFitter
 
     /// <summary>🎞️ 표시 자막(장식 포함 · <see cref="PlutoSeriesSubtitleOverlay.Compose"/> 결과) → 로캘 렌더 투영.</summary>
     public static PlutoLocalizedSubtitleProjection Project(IReadOnlyList<SubtitleCue> displayed, IPlutoMultiLanguageChannelService? channels, string? locale, int episode = 0, int total = 0)
+        => Project(displayed, channels, locale, episode, total, null);
+
+    /// <summary>
+    /// 📖 Step 34 — 비파괴 번역 트랙 적용 투영: 트랙 로캘 = 대상 로캘 ∧ 원문 지문 일치일 때만 본문을 번역문으로 대체(원문 · 편집 인덱스 불변).
+    /// 낡은 트랙(원문 수정 · 재타이밍)은 쓰지 않는다 → 한글 잔존 경고가 정직하게 되살아남.
+    /// </summary>
+    public static PlutoLocalizedSubtitleProjection Project(IReadOnlyList<SubtitleCue> displayed, IPlutoMultiLanguageChannelService? channels, string? locale, int episode, int total, PlutoLocaleSubtitleTrack? track)
     {
         ArgumentNullException.ThrowIfNull(displayed);
         var p = ActiveProfile(channels, locale);
@@ -258,11 +272,18 @@ public static class PlutoLocaleSubtitleFitter
         var cues = new List<SubtitleCue>(count + 4);
         var fits = new PlutoLocalizedCueFit[count];
         var rate = Math.Clamp(p.BaseSpeakingRate, PlutoMultiLanguageChannelService.MinSpeakingRate, PlutoMultiLanguageChannelService.MaxSpeakingRate);
+        var sameLocale = track is not null && string.Equals(track.Locale, loc, StringComparison.Ordinal);
+        var useTrack = sameLocale && track!.IsFreshFor(displayed, episode, total);
         for (var i = 0; i < count; i++)
         {
             var c = displayed[i];
             var core = PlutoSeriesSubtitleOverlay.StripDecoration(c.Text, i, count, episode, total);
             var secondary = c.SecondaryText;
+            if (useTrack && track!.Texts[i] is { Length: > 0 } translated && !string.Equals(translated, core, StringComparison.Ordinal))
+            {
+                core = translated;
+                secondary = null;   // 한국어/영어 보조 줄은 번역 본문과 어긋남 → 번인하지 않음
+            }
             // 🌐 이중 언어 큐 승격 — en-US 채널인데 본문이 한글이고 영문 보조 줄이 있으면 영문을 주 자막으로(보조 줄의 Part/꼬리 장식은 제거)
             if (string.Equals(loc, "en-US", StringComparison.Ordinal) && PlutoYouTubePublishPackService.ContainsHangul(core) && !string.IsNullOrWhiteSpace(secondary))
             {
@@ -280,7 +301,11 @@ public static class PlutoLocaleSubtitleFitter
             fits[i] = new PlutoLocalizedCueFit(i, wrap.Lines.Count, wrap.ExceedsSafeZone, seg > 0 ? seg : 0, tts, untranslated);
             AppendWrapped(cues, c, wrap.Lines, secondary);
         }
-        return new PlutoLocalizedSubtitleProjection(loc, cues, fits, p.DefaultTtsVoiceId, Math.Round(rate, 3, MidpointRounding.AwayFromZero));
+        return new PlutoLocalizedSubtitleProjection(loc, cues, fits, p.DefaultTtsVoiceId, Math.Round(rate, 3, MidpointRounding.AwayFromZero))
+        {
+            UsedTranslationTrack = useTrack,
+            StaleTranslationTrack = sameLocale && !useTrack,
+        };
     }
 
     /// <summary>🎙️ 단일 낭독(립싱크 대사 등) 계획 — 구간 미상(≤0 · 비유한) → 로캘 기본 속도 · 초과 없음. 기본 로캘 → null.</summary>

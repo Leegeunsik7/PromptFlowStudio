@@ -423,7 +423,62 @@ public sealed class PlutoConflictMergeService
             for (var i = 0; i < keys.Count; i++) obj[keys[i]] = bl[keys[i]];
             root["Baselines"] = obj;
         }
+        if (a["Glossary"] is JsonObject || b["Glossary"] is JsonObject) root["Glossary"] = MergeGlossary(a["Glossary"] as JsonObject, b["Glossary"] as JsonObject);
         return root;
+    }
+
+    /// <summary>
+    /// 📖 Step 34 — 용어집 병합: 범위 키 → 원어 키 · 최종 기록 우선(LWW <c>UpdatedUtc</c>) · 동시각 → 삭제 표식 우선 → 직렬화 서수 비교(결정론).
+    /// 단순 합집합이면 한 PC 에서 지운 용어가 상대 사본에서 되살아난다 → 삭제 표식(<c>Deleted</c>)도 일반 항목처럼 시각으로 겨룬다.
+    /// 레거시(용어집 없는) 사본은 빈 쪽으로 취급 — 다른 필드는 기존 규칙 그대로.
+    /// </summary>
+    private static JsonObject MergeGlossary(JsonObject? a, JsonObject? b)
+    {
+        var scopes = new SortedDictionary<string, Dictionary<string, JsonObject>>(StringComparer.Ordinal);
+        foreach (var side in new[] { a, b })
+        {
+            if (side is null) continue;
+            foreach (var kv in side)
+            {
+                var scope = kv.Key.Trim();
+                if (scope.Length == 0 || kv.Value is not JsonArray arr) continue;
+                if (!scopes.TryGetValue(scope, out var map)) scopes[scope] = map = new Dictionary<string, JsonObject>(StringComparer.Ordinal);
+                foreach (var n in arr)
+                {
+                    if (n is not JsonObject e) continue;
+                    var src = PlutoGlossaryEntry.NormalizeTerm(Str(e, "Source"));
+                    if (src.Length == 0) continue;
+                    if (!map.TryGetValue(src, out var have) || GlossaryBeats(e, have))
+                    {
+                        var clone = (JsonObject)e.DeepClone();
+                        clone["Source"] = src;
+                        map[src] = clone;
+                    }
+                }
+            }
+        }
+        var root = new JsonObject();
+        var kept = 0;
+        foreach (var kv in scopes)
+        {
+            if (kept >= PlutoSeriesArcMemoryService.MaxGlossaryScopes) break;
+            var keys = new List<string>(kv.Value.Keys);
+            keys.Sort(StringComparer.Ordinal);
+            var arr = new JsonArray();
+            for (var i = 0; i < keys.Count; i++) arr.Add(kv.Value[keys[i]]);
+            root[kv.Key] = arr;
+            kept++;
+        }
+        return root;
+    }
+
+    private static bool GlossaryBeats(JsonObject x, JsonObject have)
+    {
+        var c = Time(x, "UpdatedUtc").CompareTo(Time(have, "UpdatedUtc"));
+        if (c != 0) return c > 0;
+        bool dx = Bool(x, "Deleted"), dh = Bool(have, "Deleted");
+        if (dx != dh) return dx;
+        return string.CompareOrdinal(x.ToJsonString(Compact), have.ToJsonString(Compact)) > 0;
     }
 
     private static bool EpisodeBeats(JsonObject x, JsonObject have)

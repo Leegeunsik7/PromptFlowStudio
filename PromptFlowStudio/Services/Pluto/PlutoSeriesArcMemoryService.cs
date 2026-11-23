@@ -133,6 +133,15 @@ public interface IPlutoSeriesArcMemoryService
 
     /// <summary>백그라운드 기록 완료 대기(테스트 · 종료 시).</summary>
     Task FlushAsync() => Task.CompletedTask;
+
+    /// <summary>📖 Step 34 시리즈 용어집(시즌 무관 테마 범위 + 전역 <c>*</c> · 시리즈 항목이 같은 원어의 전역 항목을 가림 · 삭제 표식 제외).</summary>
+    IReadOnlyList<PlutoGlossaryEntry> GetGlossary(string? seriesThemeOrTitle) => Array.Empty<PlutoGlossaryEntry>();
+
+    /// <summary>📖 용어 등록/수정(영속 · 변경 없음/검증 실패 → false).</summary>
+    Task<bool> UpsertGlossaryEntryAsync(string? seriesThemeOrTitle, PlutoGlossaryEntry entry, CancellationToken ct = default) => Task.FromResult(false);
+
+    /// <summary>📖 용어 삭제(삭제 표식으로 기록 → PC 간 병합에서 되살아나지 않음).</summary>
+    Task<bool> RemoveGlossaryEntryAsync(string? seriesThemeOrTitle, string? sourceTerm, CancellationToken ct = default) => Task.FromResult(false);
 }
 
 /// <summary>
@@ -204,6 +213,7 @@ public sealed class PlutoSeriesArcMemoryService : IPlutoSeriesArcMemoryService, 
     private readonly object _sync = new();
     private readonly Dictionary<string, SeriesDto> _series = new(StringComparer.Ordinal);
     private readonly Dictionary<string, BaselineDto> _baselines = new(StringComparer.Ordinal);   // 📐 (Domain, RenderMode) 유지율 기준선(시리즈 편 전용 · 전역 = ctx:*)
+    private readonly Dictionary<string, List<GlossaryEntryDto>> _glossary = new(StringComparer.Ordinal);   // 📖 Step 34 범위 키 → 용어(삭제 표식 포함)
     private readonly List<PlutoRenderedClipRecord> _preLoadRenders = new(4);                     // ⚡ 적재 이전 write-through — 적재 후 디스크 상태 위에 재적용
     private readonly object _flushLock = new();
     private Task _flushTask = Task.CompletedTask;
@@ -288,9 +298,22 @@ public sealed class PlutoSeriesArcMemoryService : IPlutoSeriesArcMemoryService, 
         [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)] public DateTimeOffset SeasonUtc { get; set; }
     }
 
+    /// <summary>📖 Step 34 용어집 항목(원어 → 로캘 고정 표기 · LWW 시각 · 삭제 표식).</summary>
+    public sealed class GlossaryEntryDto
+    {
+        public string Source { get; set; } = string.Empty;
+        [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] public string? En { get; set; }
+        [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] public string? Ja { get; set; }
+        [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] public string? Es { get; set; }
+        public DateTimeOffset UpdatedUtc { get; set; }
+        [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)] public bool Deleted { get; set; }
+    }
+
     public sealed class Snapshot
     {
         public int Version { get; set; } = 1;
+        /// <summary>📖 Step 34 시리즈 용어집(테마 범위 키 → 항목 · 선택 필드 — 누락 = 레거시 파일).</summary>
+        [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] public Dictionary<string, List<GlossaryEntryDto>>? Glossary { get; set; }
         public List<SeriesDto>? Series { get; set; }
         [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] public Dictionary<string, BaselineDto>? Baselines { get; set; }
         /// <summary>📺 에스컬레이션 적용 방식(0 = 자동 각색 · 1 = 추천만).</summary>
@@ -699,6 +722,21 @@ public sealed class PlutoSeriesArcMemoryService : IPlutoSeriesArcMemoryService, 
                         _baselines[kv.Key] = new BaselineDto { H = Pct(b.H), C = Pct(b.C), N = Math.Min(PlutoLearningService.MaxExpectancySamples, b.N) };
                     }
                 _mode = data?.Mode == 1 ? 1 : 0;
+                _glossary.Clear();
+                if (data?.Glossary is { } gl)
+                    foreach (var kv in gl)
+                    {
+                        if (string.IsNullOrWhiteSpace(kv.Key) || kv.Value is null || _glossary.Count >= MaxGlossaryScopes) continue;
+                        var glist = new List<GlossaryEntryDto>(Math.Min(kv.Value.Count, MaxGlossaryEntriesPerScope));
+                        foreach (var g in kv.Value)
+                        {
+                            var src = PlutoGlossaryEntry.NormalizeTerm(g?.Source);
+                            if (g is null || src.Length == 0 || FindGlossary(glist, src) >= 0) continue;
+                            glist.Add(new GlossaryEntryDto { Source = src, En = PlutoGlossaryEntry.CleanTarget(g.En), Ja = PlutoGlossaryEntry.CleanTarget(g.Ja), Es = PlutoGlossaryEntry.CleanTarget(g.Es), UpdatedUtc = g.UpdatedUtc, Deleted = g.Deleted });
+                        }
+                        TrimGlossary(glist);
+                        if (glist.Count > 0) _glossary[kv.Key.Trim()] = glist;
+                    }
     }
 
     // ── ♻️ Step 20 — 실행 중 재적재 ──
@@ -868,7 +906,20 @@ public sealed class PlutoSeriesArcMemoryService : IPlutoSeriesArcMemoryService, 
                     baselines = new Dictionary<string, BaselineDto>(keys.Count, StringComparer.Ordinal);
                     for (var i = 0; i < keys.Count; i++) baselines[keys[i]] = _baselines[keys[i]];
                 }
-                json = JsonSerializer.Serialize(new Snapshot { Series = list, Baselines = baselines, Mode = _mode }, JsonOpts);
+                Dictionary<string, List<GlossaryEntryDto>>? glossary = null;
+                if (_glossary.Count > 0)
+                {
+                    var gk = new List<string>(_glossary.Keys);
+                    gk.Sort(StringComparer.Ordinal);
+                    glossary = new Dictionary<string, List<GlossaryEntryDto>>(gk.Count, StringComparer.Ordinal);
+                    for (var i = 0; i < gk.Count; i++)
+                    {
+                        var entries = new List<GlossaryEntryDto>(_glossary[gk[i]]);
+                        entries.Sort(static (a, b) => string.CompareOrdinal(a.Source, b.Source));   // 결정론 순서(병합 결과와 동일)
+                        glossary[gk[i]] = entries;
+                    }
+                }
+                json = JsonSerializer.Serialize(new Snapshot { Series = list, Baselines = baselines, Mode = _mode, Glossary = glossary }, JsonOpts);
             }
             return _storage is not null
                 ? await _storage.WriteAllTextAtomicAsync(FileName, json, ct).ConfigureAwait(false)
@@ -1085,6 +1136,115 @@ public sealed class PlutoSeriesArcMemoryService : IPlutoSeriesArcMemoryService, 
         _mode = value;
         await PersistAsync(ct).ConfigureAwait(false);
         RaiseChanged();
+    }
+
+    // ── 📖 Step 34 — 시리즈 용어집 ──
+
+    public const int MaxGlossaryScopes = 64;
+    public const int MaxGlossaryEntriesPerScope = 200;
+    /// <summary>전역 용어집 범위(모든 시리즈에 적용 · 시리즈 항목이 우선).</summary>
+    public const string GlobalGlossaryScope = "*";
+
+    /// <summary>
+    /// 📖 용어집 범위 키 — 시즌 · 총 편수와 무관한 정규화 테마(빈 값 → 전역 <c>*</c>).
+    /// 시즌별 <see cref="SeriesDto"/> 에 두지 않는 이유: 새 시즌 분리 · <see cref="MaxSeries"/> 축출 · 편수 변경 때 용어집이 함께 사라지면 안 된다.
+    /// </summary>
+    public static string GlossaryScopeOf(string? seriesThemeOrTitle)
+    {
+        var norm = PlutoRenderCatalogService.NormalizeKey(SeriesThemeOf(seriesThemeOrTitle));
+        return norm.Length == 0 ? GlobalGlossaryScope : norm;
+    }
+
+    private static int FindGlossary(List<GlossaryEntryDto> list, string source)
+    {
+        for (var i = 0; i < list.Count; i++) if (string.Equals(list[i].Source, source, StringComparison.Ordinal)) return i;
+        return -1;
+    }
+
+    /// <summary>상한 초과 → 가장 오래된 삭제 표식부터 · 그다음 가장 오래된 항목 제거.</summary>
+    internal static void TrimGlossary(List<GlossaryEntryDto> list)
+    {
+        while (list.Count > MaxGlossaryEntriesPerScope)
+        {
+            var victim = -1;
+            for (var pass = 0; pass < 2 && victim < 0; pass++)
+                for (var i = 0; i < list.Count; i++)
+                {
+                    if (pass == 0 && !list[i].Deleted) continue;
+                    if (victim < 0 || list[i].UpdatedUtc < list[victim].UpdatedUtc) victim = i;
+                }
+            list.RemoveAt(victim);
+        }
+    }
+
+    public IReadOnlyList<PlutoGlossaryEntry> GetGlossary(string? seriesThemeOrTitle)
+    {
+        var scope = GlossaryScopeOf(seriesThemeOrTitle);
+        var result = new List<PlutoGlossaryEntry>();
+        lock (_sync)
+        {
+            _glossary.TryGetValue(scope, out var own);
+            if (own is not null)
+                foreach (var g in own) if (!g.Deleted) result.Add(new PlutoGlossaryEntry(g.Source, g.En, g.Ja, g.Es) { UpdatedUtc = g.UpdatedUtc });
+            if (!string.Equals(scope, GlobalGlossaryScope, StringComparison.Ordinal) && _glossary.TryGetValue(GlobalGlossaryScope, out var global))
+                foreach (var g in global)
+                {
+                    if (g.Deleted || (own is not null && FindGlossary(own, g.Source) is var k && k >= 0 && !own[k].Deleted)) continue;   // 살아 있는 시리즈 항목만 전역을 가림(시리즈 삭제 → 전역 표기 복귀)
+                    result.Add(new PlutoGlossaryEntry(g.Source, g.En, g.Ja, g.Es) { UpdatedUtc = g.UpdatedUtc });
+                }
+        }
+        result.Sort(static (a, b) => string.CompareOrdinal(a.Source, b.Source));
+        return result;
+    }
+
+    public async Task<bool> UpsertGlossaryEntryAsync(string? seriesThemeOrTitle, PlutoGlossaryEntry entry, CancellationToken ct = default)
+    {
+        if (entry is null) return false;
+        var src = PlutoGlossaryEntry.NormalizeTerm(entry.Source);
+        string? en = PlutoGlossaryEntry.CleanTarget(entry.EnUs), ja = PlutoGlossaryEntry.CleanTarget(entry.JaJp), es = PlutoGlossaryEntry.CleanTarget(entry.EsEs);
+        if (src.Length == 0 || (en is null && ja is null && es is null)) return false;
+        await EnsureLoadedAsync(ct).ConfigureAwait(false);
+        if (_readOnly) return false;
+        var scope = GlossaryScopeOf(seriesThemeOrTitle);
+        lock (_sync)
+        {
+            if (!_glossary.TryGetValue(scope, out var list))
+            {
+                if (_glossary.Count >= MaxGlossaryScopes) return false;
+                _glossary[scope] = list = new List<GlossaryEntryDto>(4);
+            }
+            var i = FindGlossary(list, src);
+            if (i >= 0 && !list[i].Deleted && list[i].En == en && list[i].Ja == ja && list[i].Es == es) return false;
+            var now = Now();
+            if (i >= 0 && now <= list[i].UpdatedUtc) now = list[i].UpdatedUtc.AddTicks(1);   // LWW 단조 증가(시계 역행에도 내 편집이 이김)
+            var dto = new GlossaryEntryDto { Source = src, En = en, Ja = ja, Es = es, UpdatedUtc = now };
+            if (i >= 0) list[i] = dto; else list.Add(dto);
+            TrimGlossary(list);
+        }
+        await PersistAsync(ct).ConfigureAwait(false);
+        RaiseChanged();
+        return true;
+    }
+
+    public async Task<bool> RemoveGlossaryEntryAsync(string? seriesThemeOrTitle, string? sourceTerm, CancellationToken ct = default)
+    {
+        var src = PlutoGlossaryEntry.NormalizeTerm(sourceTerm);
+        if (src.Length == 0) return false;
+        await EnsureLoadedAsync(ct).ConfigureAwait(false);
+        if (_readOnly) return false;
+        var scope = GlossaryScopeOf(seriesThemeOrTitle);
+        lock (_sync)
+        {
+            if (!_glossary.TryGetValue(scope, out var list)) return false;
+            var i = FindGlossary(list, src);
+            if (i < 0 || list[i].Deleted) return false;
+            var now = Now();
+            if (now <= list[i].UpdatedUtc) now = list[i].UpdatedUtc.AddTicks(1);
+            list[i] = new GlossaryEntryDto { Source = src, UpdatedUtc = now, Deleted = true };   // 🪦 삭제 표식(대상 표기는 지움)
+        }
+        await PersistAsync(ct).ConfigureAwait(false);
+        RaiseChanged();
+        return true;
     }
 
     // ── 조회 ──

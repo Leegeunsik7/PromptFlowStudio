@@ -435,6 +435,26 @@
                             <button class="ws-back @(lcOn ? "on" : "")" data-publish-locale="@(lc.Locale)" aria-pressed="@(lcOn ? "true" : "false")" @onclick="@(() => SelectPublishLocale(lc.Locale))" disabled="@(_publishPackBusy)" title="@(lc.Locale) 지역 채널용 업로드 패키지 — 마스터 렌더를 {클립ID}::@(lc.Locale) 변형으로 분기(독립 YouTube 연결 · 성숙도 · 기획 채점) · 로캘 편 토큰 · 훅 · 해시태그 · 설명/CTA · {영상}_@(lc.Locale)_publish_pack.txt">@(lc.Label)</button>
                         }
                     </span>
+                    @* 📖 Step 34 — 선택 언어 자동 번역(비파괴 로캘 트랙) · 시리즈 용어집 *@
+                    <button class="ws-back" data-locale-translate="1" @onclick="TranslateActiveLocaleAsync" disabled="@(_localeTranslateBusy || _publishPackBusy || _montageCues is not { Count: > 0 } || IsDefaultPublishLocale())" title="한국어 자막을 @(_publishLocale)(으)로 번역해 별도 트랙에 저장(원문 불변) — 용어집 · 고유명사(@@핸들 · #태그 · 라틴 대문자 단어) 고정 · 컷 길이 기반 낭독 글자 예산 · 오프라인이면 용어집 치환만">@(_localeTranslateBusy ? "⏳ 번역 중…" : "[🌐 선택 언어 자동 번역]")</button>
+                    <button class="ws-back @(_glossaryOpen ? "on" : "")" data-glossary-toggle="1" aria-pressed="@(_glossaryOpen ? "true" : "false")" @onclick="ToggleGlossaryEditorAsync" title="시리즈 용어집 — 한국어 용어의 EN · JA · ES 고정 번역(PC 간 동기화 · 병합)">📖 용어집 @(_glossaryEntries.Count.ToString(CultureInfo.InvariantCulture))</button>
+                    @if (_localeTranslateToast is { } ltt) { <span class="ws-pcore on" role="status" data-locale-translate-result="1" style="white-space:normal">@(ltt)</span> }
+                    @if (_glossaryOpen)
+                    {
+                        <span role="group" aria-label="시리즈 용어집" data-glossary-editor="@(GlossaryScopeLabel())" style="display:inline-flex;flex-wrap:wrap;gap:3px;align-items:center">
+                            <span class="ws-retry" title="용어집 범위">📖 @(GlossaryScopeLabel())</span>
+                            <input type="text" data-glossary-ko="1" @bind="_glossaryKo" maxlength="64" placeholder="한국어" aria-label="한국어 용어" style="width:6em" disabled="@(_glossaryBusy)" />
+                            <input type="text" data-glossary-en="1" @bind="_glossaryEn" maxlength="96" placeholder="EN" aria-label="영어 고정 번역" style="width:6em" disabled="@(_glossaryBusy)" />
+                            <input type="text" data-glossary-ja="1" @bind="_glossaryJa" maxlength="96" placeholder="JA" aria-label="일본어 고정 번역" style="width:6em" disabled="@(_glossaryBusy)" />
+                            <input type="text" data-glossary-es="1" @bind="_glossaryEs" maxlength="96" placeholder="ES" aria-label="스페인어 고정 번역" style="width:6em" disabled="@(_glossaryBusy)" />
+                            <button class="ws-back" data-glossary-add="1" @onclick="AddGlossaryEntryAsync" disabled="@(_glossaryBusy || string.IsNullOrWhiteSpace(_glossaryKo))" title="용어 등록/수정">＋ 등록</button>
+                            @foreach (var ge in _glossaryEntries)
+                            {
+                                var geSrc = ge.Source;
+                                <span class="ws-pcore on" data-glossary-entry="@(geSrc)" title="EN @(ge.EnUs ?? "—") · JA @(ge.JaJp ?? "—") · ES @(ge.EsEs ?? "—")">@(geSrc) → @(ge.TargetFor(_publishLocale) ?? ge.EnUs ?? ge.JaJp ?? ge.EsEs) <button class="ws-back" data-glossary-remove="@(geSrc)" @onclick="() => RemoveGlossaryEntryAsync(geSrc)" disabled="@(_glossaryBusy)" aria-label="@(geSrc) 삭제">✕</button></span>
+                            }
+                        </span>
+                    }
                     @if (LocaleFit() is { IsIdentity: false } lfit)
                     {
                         @* 🌐 Step 32 — 로캘 자막 줄바꿈 · TTS 1.30x 상한 적합(렌더 직전 투영 · 편집 원문 불변) *@
@@ -5063,9 +5083,111 @@
     private IReadOnlyList<PromptFlowStudio.Services.Export.SubtitleCue>? _localeFitCues;
     private string? _localeFitLocale;
     private int _localeFitEpisode;
+    private PromptFlowStudio.Services.Pluto.PlutoLocaleSubtitleTrack? _localeFitTrack;
 
     private PromptFlowStudio.Services.Pluto.IPlutoMultiLanguageChannelService? LocaleChannels()
         => EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoMultiLanguageChannelService)) as PromptFlowStudio.Services.Pluto.IPlutoMultiLanguageChannelService;
+
+    // ── 📖 Step 34 — 선택 언어 자동 번역(비파괴 로캘 트랙) · 시리즈 용어집 ──
+    private bool _localeTranslateBusy;
+    private string? _localeTranslateToast;
+    private bool _glossaryOpen;
+    private bool _glossaryBusy;
+    private string? _glossaryKo, _glossaryEn, _glossaryJa, _glossaryEs;
+    private IReadOnlyList<PromptFlowStudio.Services.Pluto.PlutoGlossaryEntry> _glossaryEntries = Array.Empty<PromptFlowStudio.Services.Pluto.PlutoGlossaryEntry>();
+
+    private PromptFlowStudio.Services.Pluto.IPlutoSubtitleLocalizationService? SubtitleLocalization()
+        => EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoSubtitleLocalizationService)) as PromptFlowStudio.Services.Pluto.IPlutoSubtitleLocalizationService;
+
+    private bool IsDefaultPublishLocale() => string.Equals(_publishLocale, PromptFlowStudio.Services.Pluto.PlutoMultiLanguageChannelService.DefaultLocale, StringComparison.Ordinal);
+
+    /// <summary>용어집 범위 테마(시리즈 → 시리즈 테마 · 그 외 → 전역).</summary>
+    private string? GlossaryTheme() => _series?.SeriesTheme;
+
+    private string GlossaryScopeLabel() => _series is { } s ? s.SeriesTheme : "전역";
+
+    /// <summary>번역 트랙 맥락 키 — 시리즈 편(테마 · 편수 · 편) 또는 몽타주.</summary>
+    private string LocaleTrackContext()
+    {
+        var (ep, total) = LocaleEpisode();
+        return _series is { } s && ep > 0
+            ? "series:" + PromptFlowStudio.Services.Pluto.PlutoSeriesArcMemoryService.GlossaryScopeOf(s.SeriesTheme) + "#" + total.ToString(CultureInfo.InvariantCulture) + "|ep" + ep.ToString(CultureInfo.InvariantCulture)
+            : "montage";
+    }
+
+    /// <summary>현재 로캘 · 맥락의 번역 트랙(신선도는 투영이 판정).</summary>
+    private PromptFlowStudio.Services.Pluto.PlutoLocaleSubtitleTrack? ActiveLocaleTrack()
+        => IsDefaultPublishLocale() ? null : SubtitleLocalization()?.GetTrack(LocaleTrackContext(), _publishLocale);
+
+    private async Task ReloadGlossaryAsync()
+    {
+        if (SeriesArcMemory() is not { } arc) { _glossaryEntries = Array.Empty<PromptFlowStudio.Services.Pluto.PlutoGlossaryEntry>(); return; }
+        try
+        {
+            await arc.EnsureLoadedAsync(_mediaCts.Token);
+            _glossaryEntries = arc.GetGlossary(GlossaryTheme());
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { Program.Log("Workspace.Glossary", ex); }
+    }
+
+    private async Task ToggleGlossaryEditorAsync()
+    {
+        _glossaryOpen = !_glossaryOpen;
+        if (_glossaryOpen) await ReloadGlossaryAsync();
+    }
+
+    private async Task AddGlossaryEntryAsync()
+    {
+        if (_glossaryBusy || string.IsNullOrWhiteSpace(_glossaryKo) || SeriesArcMemory() is not { } arc) return;
+        _glossaryBusy = true;
+        try
+        {
+            var ok = await arc.UpsertGlossaryEntryAsync(GlossaryTheme(), new PromptFlowStudio.Services.Pluto.PlutoGlossaryEntry(_glossaryKo!, _glossaryEn, _glossaryJa, _glossaryEs), _mediaCts.Token);
+            _localeTranslateToast = ok ? "📖 '" + _glossaryKo!.Trim() + "' 용어 등록 — 다시 번역하면 반영" : "⚠ 용어 등록 안 됨(EN · JA · ES 중 하나 이상 · 변경 없음 · 잠긴 파일)";
+            if (ok) { _glossaryKo = _glossaryEn = _glossaryJa = _glossaryEs = null; }
+            await ReloadGlossaryAsync();
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { Program.Log("Workspace.GlossaryAdd", ex); _localeTranslateToast = "⚠ 용어 등록 실패: " + ex.Message; }
+        finally { _glossaryBusy = false; }
+    }
+
+    private async Task RemoveGlossaryEntryAsync(string source)
+    {
+        if (_glossaryBusy || SeriesArcMemory() is not { } arc) return;
+        _glossaryBusy = true;
+        try
+        {
+            await arc.RemoveGlossaryEntryAsync(GlossaryTheme(), source, _mediaCts.Token);
+            await ReloadGlossaryAsync();
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { Program.Log("Workspace.GlossaryRemove", ex); }
+        finally { _glossaryBusy = false; }
+    }
+
+    /// <summary>🌐 [선택 언어 자동 번역] — 표시 자막(한국어 원문) → 로캘 트랙(원문 불변) → 투영 캐시 무효화로 미리보기 · TTS 예산 즉시 갱신(예외 전파 금지).</summary>
+    private async Task TranslateActiveLocaleAsync()
+    {
+        if (_localeTranslateBusy || IsDefaultPublishLocale() || _montageCues is not { Count: > 0 } cues || SubtitleLocalization() is not { } svc) return;
+        _localeTranslateBusy = true;
+        var locale = _publishLocale;
+        try
+        {
+            await ReloadGlossaryAsync();
+            var (ep, total) = LocaleEpisode();
+            var result = await svc.TranslateAsync(LocaleTrackContext(), cues, locale, _glossaryEntries, ep, total, _mediaCts.Token);
+            if (_disposed) return;
+            _localeFitCache = null;   // 🔄 투영 재계산(번역 트랙 반영 · 한글 잔존 경고 해제 · TTS 재적합)
+            var fit = LocaleFit();
+            _localeTranslateToast = result.MessageKorean + (fit is { } f && f.UsedTranslationTrack ? " · 🎙️ " + f.SpeakingRate.ToString("0.00", CultureInfo.InvariantCulture) + "x" : "");
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { Program.Log("Workspace.LocaleTranslate", ex); _localeTranslateToast = "⚠ 번역 실패: " + ex.Message; }
+        finally { _localeTranslateBusy = false; }
+        await InvokeAsync(StateHasChanged);
+    }
 
     /// <summary>현재 표시 자막이 시리즈 장식을 달고 있으면 (편, 총 편수) — 아니면 (0, 0).</summary>
     private (int Episode, int Total) LocaleEpisode()
@@ -5076,8 +5198,10 @@
     {
         if (_montageCues is not { Count: > 0 } cues || string.Equals(_publishLocale, PromptFlowStudio.Services.Pluto.PlutoMultiLanguageChannelService.DefaultLocale, StringComparison.Ordinal)) return null;
         var (ep, total) = LocaleEpisode();
-        if (_localeFitCache is not null && ReferenceEquals(cues, _localeFitCues) && string.Equals(_localeFitLocale, _publishLocale, StringComparison.Ordinal) && _localeFitEpisode == ep * 1000 + total) return _localeFitCache;
-        try { _localeFitCache = PromptFlowStudio.Services.Pluto.PlutoLocaleSubtitleFitter.Project(cues, LocaleChannels(), _publishLocale, ep, total); }
+        var track = ActiveLocaleTrack();
+        if (_localeFitCache is not null && ReferenceEquals(cues, _localeFitCues) && string.Equals(_localeFitLocale, _publishLocale, StringComparison.Ordinal) && _localeFitEpisode == ep * 1000 + total && ReferenceEquals(track, _localeFitTrack)) return _localeFitCache;
+        _localeFitTrack = track;
+        try { _localeFitCache = PromptFlowStudio.Services.Pluto.PlutoLocaleSubtitleFitter.Project(cues, LocaleChannels(), _publishLocale, ep, total, track); }
         catch (Exception ex) { Program.Log("Workspace.LocaleFit", ex); _localeFitCache = null; }
         _localeFitCues = cues;
         _localeFitLocale = _publishLocale;
@@ -5089,7 +5213,8 @@
     private PromptFlowStudio.Services.Pluto.PlutoLocalizedSubtitleProjection LocalizeCuesForRender(IReadOnlyList<PromptFlowStudio.Services.Export.SubtitleCue> cues)
     {
         var (ep, total) = ReferenceEquals(cues, _montageCues) ? LocaleEpisode() : (0, 0);
-        try { return PromptFlowStudio.Services.Pluto.PlutoLocaleSubtitleFitter.Project(cues, LocaleChannels(), _publishLocale, ep, total); }
+        var track = ReferenceEquals(cues, _montageCues) ? ActiveLocaleTrack() : null;   // 📖 신선한 번역 트랙만 본문 대체(낡은 트랙 → 원문 · 경고)
+        try { return PromptFlowStudio.Services.Pluto.PlutoLocaleSubtitleFitter.Project(cues, LocaleChannels(), _publishLocale, ep, total, track); }
         catch (Exception ex)
         {
             Program.Log("Workspace.LocaleRender", ex);
@@ -5117,6 +5242,7 @@
         _publishPack = null;
         _publishPackClip = null;
         _publishPackToast = null;
+        _localeTranslateToast = null;
     }
 
     /// <summary>🅰️🅱️ Step 25 — 제목 A/B 단일 복사 + 카탈로그에 선택 변형 기록(실측 CTR 귀속 기준).</summary>
