@@ -306,7 +306,7 @@ public sealed class PlutoCapstoneSelfTestAndArchiverTests : IDisposable
         Assert.False(okQueue.LastPersistFailed);
     }
 
-    // ── ⑤ 샌드박스 7단계 플라이휠 자가진단 — 전 단계 PASS · 임시 폴더 삭제 · 라이브 무접촉 ──
+    // ── ⑤ 샌드박스 전 단계(Step 32 = 8단계) 플라이휠 자가진단 — 전 단계 PASS · 임시 폴더 삭제 · 라이브 무접촉 ──
 
     [Fact]
     public async Task FlywheelSelfTest_PassesAllSevenStagesInIsolatedSandbox_DeletesIt_AndLeavesLiveStateUntouched()
@@ -344,7 +344,7 @@ public sealed class PlutoCapstoneSelfTestAndArchiverTests : IDisposable
         Assert.Equal("{\"live\":true}", File.ReadAllText(liveFile));
         Assert.Equal(stamp, File.GetLastWriteTimeUtc(liveFile));
         Assert.Single(Directory.GetFileSystemEntries(live));
-        Assert.Contains("PASS 7/7", rep.SummaryKorean, StringComparison.Ordinal);
+        Assert.Contains("PASS " + PlutoFlywheelSelfTestService.StageCount + "/" + PlutoFlywheelSelfTestService.StageCount, rep.SummaryKorean, StringComparison.Ordinal);
         Assert.Same(rep, svc.LastReport);
 
         // 반복 실행도 결정론 PASS(전역 상태 누수 없음 · 매번 새 샌드박스)

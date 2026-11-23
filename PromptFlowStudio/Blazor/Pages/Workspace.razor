@@ -147,6 +147,8 @@
                     <span class="@(bs.UnresolvedConflictCount > 0 ? "ws-pcore on" : "ws-retry")" data-brain-conflicts="@(bs.UnresolvedConflictCount.ToString(CultureInfo.InvariantCulture))" style="white-space:normal" title="두 PC 가 오프라인에서 같은 기록을 바꿔 Drive 동기화가 갈라진 경우 — 덮이기 전에 보관한 사본 수 · 환경설정에서 키 단위 병합/복원/무시">⚔️ 동기화 충돌: @(bs.ConflictLabel)</span>
                     @* 📺 Step 26 — 실측 유튜브 성과 요약 · 🎯 다음 제작 기획안(1클릭 적용 · 수동 자막 보존) *@
                     <span class="@(bs.RealizedYouTube.HasRealizedData ? "ws-pcore on" : "ws-retry")" data-brain-realized="@(bs.RealizedYouTube.MeasuredVideoCount.ToString(CultureInfo.InvariantCulture))" data-brain-realized-framing="@(bs.RealizedYouTube.LeadingFraming)" style="white-space:normal" title="YouTube ID 로 연결된 영상의 최신 워터마크 — CTR · 3초 유지율 · 완주율을 조회수 가중(1,000회에서 가중치 상한 · 바이럴 1편 독점 방지) · 선두 제목 프레이밍은 실측 귀속 2건부터 축소 CTR 로 판정">📺 실측 유튜브 성과 요약: @(bs.RealizedYouTubeLabel)</span>
+                    @* 🌐 Step 32 — 로캘별 성과(KO · EN · JA · ES 연결 · 가중 CTR/3초/완주 · 로캘 선두 제목) *@
+                    <span class="@(bs.RealizedYouTube.Locales.Count > 0 && bs.RealizedYouTube.LinkedVideoCount > 0 ? "ws-pcore on" : "ws-retry")" data-brain-locales="@(bs.RealizedYouTube.Locales.Count.ToString(CultureInfo.InvariantCulture))" style="white-space:normal" title="연결 영상을 업로드 로캘(변형 ID {클립}::{로캘} 우선)별로 조회수 가중 집계 — 로캘마다 CTR 기준선이 달라 제목 프레이밍도 로캘 귀속 2건부터 로캘 안에서 따로 판정(미달 → 전역 사전)">🌐 로캘별 성과: @(bs.LocaleBreakdownLabel)</span>
                     @if (bs.BriefHitRate.HasEvidence)
                     {
                         @* 📐 Step 27 — 기획안 적중률 요약(적용 기획 실측 채점 1건 이상) *@
@@ -432,6 +434,11 @@
                             <button class="ws-back @(lcOn ? "on" : "")" data-publish-locale="@(lc.Locale)" aria-pressed="@(lcOn ? "true" : "false")" @onclick="@(() => SelectPublishLocale(lc.Locale))" disabled="@(_publishPackBusy)" title="@(lc.Locale) 지역 채널용 업로드 패키지 — 마스터 렌더를 {클립ID}::@(lc.Locale) 변형으로 분기(독립 YouTube 연결 · 성숙도 · 기획 채점) · 로캘 편 토큰 · 훅 · 해시태그 · 설명/CTA · {영상}_@(lc.Locale)_publish_pack.txt">@(lc.Label)</button>
                         }
                     </span>
+                    @if (LocaleFit() is { IsIdentity: false } lfit)
+                    {
+                        @* 🌐 Step 32 — 로캘 자막 줄바꿈 · TTS 1.30x 상한 적합(렌더 직전 투영 · 편집 원문 불변) *@
+                        <span class="@(lfit.HasTtsOverflow || lfit.UntranslatedCueCount > 0 ? "ws-retry" : "ws-pcore on")" role="status" data-locale-fit="@(lfit.Locale)" data-locale-tts-excess="@(lfit.TotalExcessChars.ToString(CultureInfo.InvariantCulture))" style="white-space:normal" title="@(lfit.Locale) 줄당 최대 글자 · 금칙/문자소 줄바꿈 · 2줄 초과 컷은 시간 비례 분할 · 음성 @(lfit.VoiceId) · 낭독 속도 0.85x~1.30x 자동 적합">@(lfit.WarningKorean.Length > 0 ? lfit.WarningKorean : "🎙️ " + lfit.Locale + " 자막/TTS 적합 · " + lfit.SpeakingRate.ToString("0.00", CultureInfo.InvariantCulture) + "x · " + lfit.VoiceId)</span>
+                    }
                     <button class="ws-back" data-publish-pack="1" @onclick="GeneratePublishPackAsync" disabled="@(_publishPackBusy || (_catalogClips.Count == 0 && string.IsNullOrWhiteSpace(_perfVideoId)))" title="활성 렌더의 주제 · n/N편 · 승리 훅/태그 · 시리즈 연속성 · 오답 노트 기준으로 A/B 제목 · 설명 · 고정 댓글 · 해시태그를 만들어 복사 — 편 표기를 지켜 게시 후 내보내기가 자동 연결됩니다">[📋 업로드 패키지 생성/복사]</button>
                     @if (_publishPack is { } ppk)
                     {
@@ -2475,6 +2482,8 @@
             // 🧩 프리플라이트 — 빈/연속 중복 자막 큐 보정 · 9:16 폭 초과 · 오답 노트 차단 훅×룩 조합 경고
             var montageGate = RunCoherenceGate(_prompt, null, cues, cues.Count > 0 && !string.IsNullOrWhiteSpace(cues[0].Text) ? cues[0].Text.Trim() : null, _montageLook, vertical9x16 ? "9:16" : "16:9");
             if (montageGate is { WasAutoSanitized: true, SanitizedSubtitleCues.Count: > 0 }) cues = montageGate.SanitizedSubtitleCues;
+            var localeRender = LocalizeCuesForRender(cues);   // 🌐 Step 32 — 비기본 로캘 → 로캘 줄바꿈 · 편 토큰 재장식(편집 원문 불변)
+            cues = localeRender.Cues;
             // 🔒 Zero-Drift — 프리뷰 · 3막 자막과 동일한 컷 경계(클립 수 일치 시)
             var locked = _activeMontagePlan is { } lp && lp.Clips.Count == photos.Length ? lp : null;
             var montageOptions = new PromptFlowStudio.Services.Export.ExportOptions();
@@ -2491,6 +2500,7 @@
             }
             _montageToast = r.Ok ? "✅ " + r.Message : "⚠ " + r.Message;
             if (montageGate is { HasFindings: true }) _montageToast += " · " + montageGate.SummaryKorean;
+            if (localeRender.WarningKorean.Length > 0) _montageToast += " · " + localeRender.WarningKorean;
         }
         catch (OperationCanceledException) { }   // 페이지 이탈
         catch (Exception ex) { Program.Log("Workspace.MontageVideo", ex); _montageToast = "⚠ 몽타주 렌더 실패: " + ex.Message; }
@@ -2519,6 +2529,7 @@
             var focals = await EnsureStagedFocalPointsAsync(photos, _mediaCts.Token);
             StockSuite.MistakeNotebook ??= EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoMistakeNotebookService)) as PromptFlowStudio.Services.Pluto.IPlutoMistakeNotebookService;
             IReadOnlyList<PromptFlowStudio.Services.Export.SubtitleCue> cues = _montageCues is { Count: > 0 } mc ? mc : (await GenerateWorkspaceLetterAsync(_mediaCts.Token)).ToCues();
+            cues = LocalizeCuesForRender(cues).Cues;   // 🌐 Step 32 — 두 마스터 공통 로캘 자막
             var packager = EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoMultiFormatPackager)) as PromptFlowStudio.Services.Pluto.IPlutoMultiFormatPackager;
             var dualCustomWav = _customBgm?.CroppedWavBytes;   // 🎵 두 마스터 공통 하이라이트
             var r = await StockSuite.ExportDualAspectMontageMastersAsync(photos, focals, new PromptFlowStudio.Services.Export.ExportOptions(), locked, cues,
@@ -3590,10 +3601,21 @@
         finally { if (seq == _topicPlanSeq) _topicPlanBusy = false; }
     }
 
+    /// <summary>🌐 Step 32 — 교차 로캘 각색 기획 적용: 원본 클립 · 대상 로캘 선택 → 로캘 업로드 패키지 생성({원본}::{로캘} 변형 멱등 분기 · 새 렌더/프롬프트 변경 없음).</summary>
+    private async Task ApplyCrossLocaleBriefAsync(PromptFlowStudio.Services.Pluto.PlutoTopicBrief brief)
+    {
+        if (_publishPackBusy) return;
+        _perfVideoId = brief.SourceClipId;
+        if (!string.Equals(_publishLocale, brief.TargetLocale, StringComparison.Ordinal)) SelectPublishLocale(brief.TargetLocale);
+        _topicPlanToast = "🌐 " + brief.TargetLocale + " 채널 각색 — " + brief.SourceClipId + " 로캘 업로드 패키지 생성";
+        await GeneratePublishPackAsync();
+    }
+
     /// <summary>🎯 [기획 즉시 적용] — 테마 · 시리즈 편수 · 룩 고정 · BGM · 학습 추천 갱신 · (직접 고친 자막이 없을 때만) 몽타주 재구성.</summary>
     private async Task ApplyTopicBriefAsync(PromptFlowStudio.Services.Pluto.PlutoTopicBrief brief)
     {
         if (brief is null || _topicPlanBusy || _montageBusy || State.IsBusy) return;
+        if (brief.IsCrossLocale) { await ApplyCrossLocaleBriefAsync(brief); return; }
         _topicPlanBusy = true;
         try
         {
@@ -4552,7 +4574,11 @@
         try
         {
             var ct = _mediaCts.Token;
-            var audio = await Tts.SynthesizeAsync(_lipText, NarrationTone.FairyTale, 1.0, TtsProvider.Auto, ct);
+            // 🌐 Step 32 — 비기본 로캘 → 로캘 기본 음성 + 적합 속도(0.85x~1.30x) · 기본 로캘 → 기존 동화 톤
+            var narration = PromptFlowStudio.Services.Pluto.PlutoLocaleSubtitleFitter.PlanNarration(LocaleChannels(), _publishLocale, _lipText, 0);
+            var audio = narration is { } np
+                ? await Tts.SynthesizeVoiceAsync(_lipText, np.ToProsody(), null, TtsProvider.Auto, ct)
+                : await Tts.SynthesizeAsync(_lipText, NarrationTone.FairyTale, 1.0, TtsProvider.Auto, ct);
             if (audio is null) { _lipMsg = "⚠ 나레이션 합성 실패(TTS 엔진/네트워크 확인)"; return; }
             var dir = Path.GetDirectoryName(src) ?? Media.MediaRoot;
             var output = Path.Combine(dir, Path.GetFileNameWithoutExtension(src) + "_lipsync.mp4");
@@ -5004,6 +5030,57 @@
     private static readonly (string Locale, string Label)[] PublishLocaleChips = { ("ko-KR", "KO"), ("en-US", "EN"), ("ja-JP", "JA"), ("es-ES", "ES") };
     private string _publishLocale = PromptFlowStudio.Services.Pluto.PlutoMultiLanguageChannelService.DefaultLocale;
 
+    // ── 🌐 Step 32 — 런타임 로캘 자막/TTS 적합(렌더 직전 투영 · 참조 캐시 = 렌더마다 재계산 없음) ──
+    private PromptFlowStudio.Services.Pluto.PlutoLocalizedSubtitleProjection? _localeFitCache;
+    private IReadOnlyList<PromptFlowStudio.Services.Export.SubtitleCue>? _localeFitCues;
+    private string? _localeFitLocale;
+    private int _localeFitEpisode;
+
+    private PromptFlowStudio.Services.Pluto.IPlutoMultiLanguageChannelService? LocaleChannels()
+        => EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoMultiLanguageChannelService)) as PromptFlowStudio.Services.Pluto.IPlutoMultiLanguageChannelService;
+
+    /// <summary>현재 표시 자막이 시리즈 장식을 달고 있으면 (편, 총 편수) — 아니면 (0, 0).</summary>
+    private (int Episode, int Total) LocaleEpisode()
+        => _seriesCueState is not null && _series is { } s && _seriesActiveEpisode > 0 && ReferenceEquals(_montageCues, _seriesComposedCues) ? (_seriesActiveEpisode, s.Episodes.Count) : (0, 0);
+
+    /// <summary>🌐 표시 자막의 로캘 적합(TTS 초과 경고 칩) — 자막 · 로캘 · 편이 같으면 캐시.</summary>
+    private PromptFlowStudio.Services.Pluto.PlutoLocalizedSubtitleProjection? LocaleFit()
+    {
+        if (_montageCues is not { Count: > 0 } cues || string.Equals(_publishLocale, PromptFlowStudio.Services.Pluto.PlutoMultiLanguageChannelService.DefaultLocale, StringComparison.Ordinal)) return null;
+        var (ep, total) = LocaleEpisode();
+        if (_localeFitCache is not null && ReferenceEquals(cues, _localeFitCues) && string.Equals(_localeFitLocale, _publishLocale, StringComparison.Ordinal) && _localeFitEpisode == ep * 1000 + total) return _localeFitCache;
+        try { _localeFitCache = PromptFlowStudio.Services.Pluto.PlutoLocaleSubtitleFitter.Project(cues, LocaleChannels(), _publishLocale, ep, total); }
+        catch (Exception ex) { Program.Log("Workspace.LocaleFit", ex); _localeFitCache = null; }
+        _localeFitCues = cues;
+        _localeFitLocale = _publishLocale;
+        _localeFitEpisode = ep * 1000 + total;
+        return _localeFitCache;
+    }
+
+    /// <summary>🌐 렌더용 로캘 투영(기본 로캘 · 실패 → 원문 그대로 [부분 구제]).</summary>
+    private PromptFlowStudio.Services.Pluto.PlutoLocalizedSubtitleProjection LocalizeCuesForRender(IReadOnlyList<PromptFlowStudio.Services.Export.SubtitleCue> cues)
+    {
+        var (ep, total) = ReferenceEquals(cues, _montageCues) ? LocaleEpisode() : (0, 0);
+        try { return PromptFlowStudio.Services.Pluto.PlutoLocaleSubtitleFitter.Project(cues, LocaleChannels(), _publishLocale, ep, total); }
+        catch (Exception ex)
+        {
+            Program.Log("Workspace.LocaleRender", ex);
+            return PromptFlowStudio.Services.Pluto.PlutoLocaleSubtitleFitter.Project(cues, null, null);
+        }
+    }
+
+    /// <summary>🌐 Step 32 — 로캘 패키지 동작(복사 · 사이드카) 전 {클립ID}::{로캘} 변형 멱등 보장 → 이후 그 언어 Studio 내보내기가 도착 즉시 연결.</summary>
+    private async Task EnsurePublishPackVariantAsync(PromptFlowStudio.Services.Pluto.IPlutoYouTubePublishPackService svc, PromptFlowStudio.Services.Pluto.PlutoYouTubePublishPack pack)
+    {
+        if (_publishPackClip is not { } clip || pack.Locale.Length == 0) return;
+        try
+        {
+            if (await svc.EnsureLocaleVariantAsync(clip.VideoId, pack, _mediaCts.Token) is { } ensured) _publishPackClip = ensured with { OutputPath = string.IsNullOrWhiteSpace(ensured.OutputPath) ? clip.OutputPath : ensured.OutputPath };
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) { Program.Log("Workspace.PublishPackVariant", ex); }   // [부분 구제] 복사/저장은 계속
+    }
+
     /// <summary>🌐 로캘 전환 — 이전 로캘 패키지를 비워 다른 채널용 제목/사이드카가 저장되지 않게 함.</summary>
     private void SelectPublishLocale(string locale)
     {
@@ -5022,6 +5099,7 @@
         try
         {
             var cand = pack.Candidate(variant);
+            await EnsurePublishPackVariantAsync(svc, pack);
             bool copied;
             try { copied = Clipboard.SetText(cand.Title); }
             catch (Exception ex) { Program.Log("Workspace.PublishTitleCopy", ex); copied = false; }
@@ -5042,6 +5120,7 @@
         _publishPackBusy = true;
         try
         {
+            await EnsurePublishPackVariantAsync(svc, pack);
             var r = await svc.WriteSidecarAsync(_publishPackClip?.OutputPath ?? "", pack, _publishPackClip?.VideoId, _mediaCts.Token);
             _publishPackToast = r.MessageKorean;
         }

@@ -102,7 +102,7 @@ public sealed record PlutoBriefHitRateSummary(int EvaluatedBriefs, int Hits, int
         for (var i = 0; i < clips.Count; i++)
         {
             var c = clips[i];
-            if (c is null || !c.HasAppliedBrief || !seenClips.Add(c.VideoId)) continue;
+            if (c is null || !c.HasAppliedBrief || c.IsLocaleVariant || !seenClips.Add(c.VideoId)) continue;   // 🌐 Step 32 — 로캘 변형은 기획 결정이 아님(마스터만 집계)
             if (!c.AppliedBriefEvaluated || c.AppliedBriefSurpriseDelta is not { } d || !double.IsFinite(d)) { pending++; continue; }
             evaluatedClips++;
             var key = PlutoBriefOutcomeAttributionService.DecisionKeyOf(c);
@@ -378,6 +378,9 @@ public sealed class PlutoBriefOutcomeAttributionService : IPlutoBriefOutcomeAttr
     public static PlutoBriefVerdict? Grade(PlutoRenderedClipRecord? clip)
     {
         if (clip is null || !clip.HasAppliedBrief || clip.AppliedBriefEvaluated || clip.AppliedBriefExpectedRetention is not { } expected || !double.IsFinite(expected)) return null;
+        // 🌐 Step 32 — 로캘 변형은 마스터(원본 로캘 채널) 기준 기대치를 상속할 뿐 — 콜드 지역 채널의 초기 저조를 마스터 기대치로 채점하면
+        // 전역 오답 노트(훅×룩 · 도메인×훅)에 사후 분석이 찍혀 원본 채널에서 검증된 조합까지 차단되고, 같은 결정 키라 마스터 복권도 막힌다.
+        if (clip.IsLocaleVariant) return null;
         if (clip.YouTubeWatermark is not { } wm || wm.Views < MinViews) return null;
         if (!TryMeasured(clip, out var realized, out _)) return null;
         var delta = Math.Round(realized - expected, 2, MidpointRounding.AwayFromZero);
@@ -637,7 +640,7 @@ public sealed class PlutoBriefOutcomeAttributionService : IPlutoBriefOutcomeAttr
         {
             ct.ThrowIfCancellationRequested();
             var c = clips[i];
-            if (c is null) continue;
+            if (c is null || c.IsLocaleVariant) continue;   // 🌐 Step 32 — 로캘 변형 성과는 다른 채널 기준선 → 원본 로캘 오답 노트 복권 근거로 쓰지 않음
             if (c.HasAppliedBrief && postMortemDecisions.Contains(DecisionKeyOf(c))) continue;   // 🧮 사후 분석된 기획 결정의 형제 편은 그 판정을 뒤집지 못함
             double? graded = null;
             if (verdicts is not null)

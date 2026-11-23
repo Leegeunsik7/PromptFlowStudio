@@ -193,6 +193,18 @@ public sealed class PlutoSystemDiagnosticService : IPlutoSystemDiagnosticService
         }
         else sb.Append("- 실측 데이터 없음\n");
         sb.Append("- 🎯 기획 적중률: ").Append(Cell((input.HitRate ?? PlutoBriefHitRateSummary.Empty).ToLabel())).Append("\n\n");
+        // 🌐 Step 32 — 로캘별 분해(KO · EN · JA · ES 고정 행 · 미분기 로캘도 노출)
+        sb.Append(LocaleHeading).Append("\n\n| 로캘 | 연결 | 실측 | 가중 CTR | 3초 | 완주 | 선두 제목 |\n|---|---|---|---|---|---|---|\n");
+        var localeRows = input.Realized is { Locales.Count: > 0 } rl ? rl.Locales : PlutoLocalePerformanceRow.ComputeAll(null);
+        foreach (var row in localeRows)
+        {
+            sb.Append("| ").Append(row.ShortLabel).Append(" (").Append(Cell(row.Locale)).Append(") | ").Append(row.LinkedCount.ToString(Inv)).Append(" | ").Append(row.MeasuredCount.ToString(Inv)).Append(" | ");
+            if (row.MeasuredCount > 0)
+                sb.Append(row.WeightedCtrPct.ToString("0.0", Inv)).Append("% | ").Append(row.WeightedHookPct.ToString("0.0", Inv)).Append("% | ").Append(row.WeightedCompletionPct.ToString("0.0", Inv)).Append("% | ");
+            else sb.Append("— | — | — | ");
+            sb.Append(Cell(row.LeadingFraming)).Append(row.FramingEvidenced ? "" : " (전역 사전)").Append(" |\n");
+        }
+        sb.Append('\n');
 
         // 3) ⚖️ 4축 파레토 · 제목 프레이밍
         sb.Append("## 3. ⚖️ 4축 파레토 선두 · 제목 프레이밍\n\n");
@@ -236,6 +248,8 @@ public sealed class PlutoSystemDiagnosticService : IPlutoSystemDiagnosticService
 
     /// <summary>동반 동기화 소제목 헤더(테스트 · UI 공통).</summary>
     public const string CompanionHeading = "### 🔁 동반 동기화 파일(핵심 허브 9종 집계 밖)";
+    /// <summary>🌐 Step 32 — 로캘별 성과 소절 제목.</summary>
+    public const string LocaleHeading = "### 🌐 로캘별 성과(KO · EN · JA · ES)";
 
     /// <summary>🔁 Step 30 — 동반 파일 2종 소절(핵심 허브 표 · 집계와 분리 · 경로 없음 · 해시는 앞 12자).</summary>
     private static void AppendCompanions(StringBuilder sb, IReadOnlyList<PlutoCompanionSyncItem> companions)

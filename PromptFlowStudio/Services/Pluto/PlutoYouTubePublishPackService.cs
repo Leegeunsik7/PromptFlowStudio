@@ -42,6 +42,9 @@ public sealed record PlutoYouTubePublishPack(PlutoPublishTitleCandidate TitleA, 
     /// <summary>🌐 Step 31 — 생성 로캘(레거시 → 빈 문자열). 사이드카 이름 <c>{base}_{locale}_publish_pack.txt</c> 에 쓰인다.</summary>
     public string Locale { get; init; } = string.Empty;
 
+    /// <summary>🌐 Step 32 — 생성 기준 카탈로그 제목(로캘 변형 제목 · 사후 변형 보장 시 그대로 사용).</summary>
+    public string CatalogTitle { get; init; } = string.Empty;
+
     /// <summary>클립보드 1회 복사용 전체 텍스트.</summary>
     public string ToClipboardText()
     {
@@ -100,6 +103,24 @@ public interface IPlutoYouTubePublishPackService
 
     /// <summary>💾 Step 25 — 렌더된 영상 옆에 <c>{base}_publish_pack.txt</c> 원자 기록(경로 검증 실패 → 무기록).</summary>
     Task<PlutoSidecarWriteResult> WriteSidecarAsync(string videoPath, PlutoYouTubePublishPack pack, string? clipVideoId = null, CancellationToken ct = default);
+
+    /// <summary>
+    /// 🌐 Step 32 — 로캘 패키지(생성 · 복사 · 사이드카) 대상 <c>{BaseClipId}::{Locale}</c> 변형을 멱등 보장(연결된 YouTube ID · 게시 후 제목은 덮지 않음).
+    /// 레거시(로캘 없음) 패키지 · 카탈로그 미연결 · 마스터 없음 → null. 기본 구현 = 미지원(null).
+    /// </summary>
+    Task<PlutoRenderedClipRecord?> EnsureLocaleVariantAsync(string? clipVideoId, PlutoYouTubePublishPack pack, CancellationToken ct = default)
+        => Task.FromResult<PlutoRenderedClipRecord?>(null);
+
+    /// <summary>🌐 Step 32 — 로캘별 프레이밍 순위(로캘 귀속 ≥ 2건 → 로캘 실측 · 그 밖 전역 사전으로 폴백). 기본 구현 = 전역.</summary>
+    PlutoLocaleFramingRanking GetLocaleFramingRanking(string? locale)
+        => new(PlutoMultiLanguageChannelService.NormalizeLocale(locale) ?? string.Empty, GetFramingRanking(), false, 0);
+}
+
+/// <summary>🌐 Step 32 — 로캘 프레이밍 순위(<paramref name="LocaleEvidenced"/> = 로캘 귀속 표본으로 정렬 · false = 전역 사전 폴백).</summary>
+public sealed record PlutoLocaleFramingRanking(string Locale, IReadOnlyList<PlutoTitleFramingStat> Ranking, bool LocaleEvidenced, int LocaleSamples)
+{
+    /// <summary>1위 프레이밍(없음 → outcome-proof).</summary>
+    public string TopFraming => Ranking.Count > 0 ? Ranking[0].Framing : PlutoTitleFramings.OutcomeProof;
 }
 
 /// <summary>🅰️🅱️ Step 25 — 업로드 제목 프레이밍 상수(학습 키 · 카탈로그 기록값).</summary>
@@ -167,6 +188,7 @@ public sealed class PlutoYouTubePublishPackService : IPlutoYouTubePublishPackSer
     private readonly IPlutoRenderCatalogService? _catalog;
     private readonly Func<DateTimeOffset> _clock;
     private PlutoTitleFramingStat[] _framingStats = Array.Empty<PlutoTitleFramingStat>();   // 교체식 갱신 → 락 없는 스냅샷 읽기
+    private Dictionary<string, PlutoTitleFramingStat[]> _localeFramingStats = new(StringComparer.Ordinal);   // 🌐 Step 32 — 로캘별(교체식)
 
     public PlutoYouTubePublishPackService(IPlutoAdaptivePatternRanker? ranker = null, IPlutoSeriesArcMemoryService? arc = null, IPlutoMistakeNotebookService? notebook = null,
         IPlutoRenderCatalogService? catalog = null, Func<DateTimeOffset>? clock = null)
@@ -219,6 +241,7 @@ public sealed class PlutoYouTubePublishPackService : IPlutoYouTubePublishPackSer
         ArgumentNullException.ThrowIfNull(clips);
         var stats = ComputeFramingStats(clips);
         Volatile.Write(ref _framingStats, stats);
+        Volatile.Write(ref _localeFramingStats, ComputeLocaleFramingStats(clips));
         var n = 0;
         foreach (var s in stats) n += s.Samples;
         return n;
@@ -268,6 +291,81 @@ public sealed class PlutoYouTubePublishPackService : IPlutoYouTubePublishPackSer
         return result;
     }
 
+    // ── 🌐 Step 32 — 로캘별 프레이밍 귀속 ──
+
+    /// <summary>클립의 업로드 로캘(변형 ID 로캘 우선 → 기록 로캘 → ko-KR).</summary>
+    public static string LocaleOf(PlutoRenderedClipRecord clip)
+    {
+        ArgumentNullException.ThrowIfNull(clip);
+        return PlutoMultiLanguageChannelService.ParseVariantClipId(clip.VideoId).Locale
+            ?? PlutoMultiLanguageChannelService.NormalizeLocale(clip.TargetLocale) ?? PlutoMultiLanguageChannelService.DefaultLocale;
+    }
+
+    /// <summary>
+    /// 🌐 순수 — 한 로캘의 프레이밍 통계(같은 귀속 규칙 · 축소 사전 = 그 로캘 평균). 로캘마다 CTR 기준선이 달라
+    /// 전역 풀링은 고CTR 로캘에서 많이 쓴 프레이밍을 과대평가(심슨 역설)하므로, 로캘 근거가 충분하면 로캘 안에서만 비교한다.
+    /// </summary>
+    public static PlutoTitleFramingStat[] ComputeFramingStats(IReadOnlyList<PlutoRenderedClipRecord> clips, string? locale)
+    {
+        ArgumentNullException.ThrowIfNull(clips);
+        var loc = PlutoMultiLanguageChannelService.NormalizeLocale(locale);
+        if (loc is null) return ComputeFramingStats(clips);
+        var subset = new List<PlutoRenderedClipRecord>(clips.Count);
+        foreach (var c in clips) if (c is not null && string.Equals(LocaleOf(c), loc, StringComparison.Ordinal)) subset.Add(c);
+        return ComputeFramingStats(subset);
+    }
+
+    private static Dictionary<string, PlutoTitleFramingStat[]> ComputeLocaleFramingStats(IReadOnlyList<PlutoRenderedClipRecord> clips)
+    {
+        var locales = new List<string>(4);
+        foreach (var c in clips)
+        {
+            if (c is null) continue;
+            var l = LocaleOf(c);
+            if (!locales.Contains(l)) locales.Add(l);
+        }
+        var map = new Dictionary<string, PlutoTitleFramingStat[]>(StringComparer.Ordinal);
+        foreach (var l in locales) map[l] = ComputeFramingStats(clips, l);
+        return map;
+    }
+
+    /// <summary>합성 프레이밍 귀속 표본 합.</summary>
+    public static int ComposableSamples(IReadOnlyList<PlutoTitleFramingStat>? stats)
+    {
+        var n = 0;
+        if (stats is not null) foreach (var s in stats) if (s is not null && PlutoTitleFramings.IsComposable(s.Framing)) n += s.Samples;
+        return n;
+    }
+
+    /// <summary>🌐 순수 — 로캘 귀속 ≥ <see cref="MinAttributedSamples"/> → 로캘 순위 · 미달(콜드스타트) → 전역 순위(전역도 미달 → 기본 순서).</summary>
+    public static PlutoLocaleFramingRanking RankForLocale(PlutoTitleFramingStat[] global, PlutoTitleFramingStat[]? localeStats, string? locale)
+    {
+        ArgumentNullException.ThrowIfNull(global);
+        var loc = PlutoMultiLanguageChannelService.NormalizeLocale(locale) ?? string.Empty;
+        var n = ComposableSamples(localeStats);
+        var evidenced = loc.Length > 0 && localeStats is not null && n >= MinAttributedSamples;
+        var src = evidenced ? localeStats! : global;
+        var order = FramingOrder(src);
+        var list = new List<PlutoTitleFramingStat>(order.Count);
+        foreach (var f in order) list.Add(FindStat(src, f) ?? new PlutoTitleFramingStat(f, 0, 0, 0, 0));
+        return new PlutoLocaleFramingRanking(loc, list, evidenced, n);
+    }
+
+    public PlutoLocaleFramingRanking GetLocaleFramingRanking(string? locale)
+    {
+        var loc = PlutoMultiLanguageChannelService.NormalizeLocale(locale);
+        var map = Volatile.Read(ref _localeFramingStats);
+        return RankForLocale(Volatile.Read(ref _framingStats), loc is not null && map.TryGetValue(loc, out var ls) ? ls : null, loc);
+    }
+
+    public async Task<PlutoRenderedClipRecord?> EnsureLocaleVariantAsync(string? clipVideoId, PlutoYouTubePublishPack pack, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(pack);
+        var loc = PlutoMultiLanguageChannelService.NormalizeLocale(pack.Locale);
+        if (_catalog is null || loc is null || string.IsNullOrWhiteSpace(clipVideoId)) return null;
+        return await _catalog.BranchLocaleVariantAsync(clipVideoId.Trim(), loc, pack.CatalogTitle.Length > 0 ? pack.CatalogTitle : null, null, ct).ConfigureAwait(false);
+    }
+
     private static PlutoTitleFramingStat? FindStat(PlutoTitleFramingStat[] stats, string framing)
     {
         foreach (var s in stats) if (string.Equals(s.Framing, framing, StringComparison.Ordinal)) return s;
@@ -291,6 +389,13 @@ public sealed class PlutoYouTubePublishPackService : IPlutoYouTubePublishPackSer
         return order;
     }
 
+    private static List<string> FramingNames(IReadOnlyList<PlutoTitleFramingStat> ranking)
+    {
+        var list = new List<string>(ranking.Count);
+        foreach (var s in ranking) if (PlutoTitleFramings.IsComposable(s.Framing)) list.Add(s.Framing);
+        return list;
+    }
+
     private static int IndexOfDefault(string f)
     {
         for (var i = 0; i < PlutoTitleFramings.DefaultOrder.Count; i++) if (PlutoTitleFramings.DefaultOrder[i] == f) return i;
@@ -310,7 +415,14 @@ public sealed class PlutoYouTubePublishPackService : IPlutoYouTubePublishPackSer
             _ => null,
         };
         if (selection is null) return false;
-        return await _catalog.RecordPublishedTitleAsync(clipVideoId, selection, ct).ConfigureAwait(false);
+        var target = clipVideoId.Trim();
+        if (PlutoMultiLanguageChannelService.NormalizeLocale(pack.Locale) is not null)
+        {
+            // 🌐 Step 32 — 로캘 패키지 선택은 반드시 그 로캘 변형에 기록(마스터 · 다른 로캘 오귀속 차단) · 변형 없으면 멱등 분기 · 마스터 없음 → 거부
+            if (await EnsureLocaleVariantAsync(target, pack, ct).ConfigureAwait(false) is not { } ensured) return false;
+            target = ensured.VideoId;
+        }
+        return await _catalog.RecordPublishedTitleAsync(target, selection, ct).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -468,7 +580,9 @@ public sealed class PlutoYouTubePublishPackService : IPlutoYouTubePublishPackSer
         if (core.Length == 0) core = StripEpisodeToken(theme);
         // 🅰️🅱️ Step 25 — 실측 CTR 순위 1위 프레이밍 = A · A와 다른 다음 순위 = B(근거 부족 → Step 24 기본: 정보형 A · 호기심형 B)
         PlutoPublishTitleCandidate? a = null, b = null;
-        foreach (var framing in FramingOrder(Volatile.Read(ref _framingStats)))
+        // 🌐 Step 32 — 로캘 지정 → 로캘 실측 순위(콜드스타트 → 전역 폴백) · 미지정 → 전역(레거시)
+        var framingOrder = locale is null ? FramingOrder(Volatile.Read(ref _framingStats)) : FramingNames(GetLocaleFramingRanking(locale).Ranking);
+        foreach (var framing in framingOrder)
         {
             var cand = EnsureLinkable(a is null ? "A" : "B", ComposeFramed(framing, core, token, hookPhrase, endingSuffix), catalogTitle, core, token, framing);
             if (a is null) { a = cand; continue; }
@@ -515,7 +629,7 @@ public sealed class PlutoYouTubePublishPackService : IPlutoYouTubePublishPackSer
 
         var description = legacyCopy ? BuildDescription(request, a.Title, hookPhrase, directive, hashtags, korean) : BuildLocalizedDescription(request, a.Title, hookPhrase, directive, hashtags, profile!.Copy);
         var pinned = legacyCopy ? BuildPinnedComment(request, korean) : BuildLocalizedPinnedComment(request, profile!.Copy);
-        return new PlutoYouTubePublishPack(a, b, description, pinned, hashtags, tags, blocked, hookPhrase, korean) { Locale = locale ?? string.Empty };
+        return new PlutoYouTubePublishPack(a, b, description, pinned, hashtags, tags, blocked, hookPhrase, korean) { Locale = locale ?? string.Empty, CatalogTitle = catalogTitle };
     }
 
     /// <summary>🌐 Step 31 — 공유 기본 로캘 레지스트리(주입 없을 때 · 내장 4종).</summary>

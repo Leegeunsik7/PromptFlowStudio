@@ -456,7 +456,7 @@ public sealed class PlutoRenderCatalogService : IPlutoRenderCatalogService, IPlu
             for (var i = _clips.Count - 1; i >= 0; i--)
                 if (string.Equals(_clips[i].VideoId, clean.VideoId, StringComparison.OrdinalIgnoreCase)) _clips.RemoveAt(i);
             _clips.Insert(0, clean);
-            if (_clips.Count > Capacity) _clips.RemoveRange(Capacity, _clips.Count - Capacity);
+            TrimToCapacityLocked(_clips, clean.VideoId, null);
             await PersistLockedAsync(ct).ConfigureAwait(false);
         }
         finally { _gate.Release(); }
@@ -674,7 +674,7 @@ public sealed class PlutoRenderCatalogService : IPlutoRenderCatalogService, IPlu
                     TargetLocale = loc, ParentClipId = baseId,
                 });
                 _clips.Insert(Math.Min(masterIdx + 1, _clips.Count), v);   // 마스터 바로 뒤(최신 렌더를 밀어내지 않음)
-                if (_clips.Count > Capacity) _clips.RemoveRange(Capacity, _clips.Count - Capacity);
+                TrimToCapacityLocked(_clips, v.VideoId, baseId);            // 🛡️ Step 32 — 방금 만든 변형 · 마스터는 축출 금지
                 result = v;
                 changed = true;
             }
@@ -683,6 +683,35 @@ public sealed class PlutoRenderCatalogService : IPlutoRenderCatalogService, IPlu
         finally { _gate.Release(); }
         if (changed) RaiseChanged();
         return result;
+    }
+
+    /// <summary>
+    /// 🛡️ Step 32 — 용량 초과 축출(게이트 안). 기본은 가장 오래된 꼬리부터(FIFO)지만,
+    ///   ▸ 방금 기록/분기한 레코드(<paramref name="protectedId"/>)와 그 마스터(<paramref name="protectedMasterId"/>)는 절대 축출하지 않는다
+    ///     (꼬리 근처 마스터를 분기하면 새 변형이 즉시 잘려 이후 제목 선택 · YouTube 연결이 조용히 유실되던 문제).
+    ///   ▸ 꼬리 후보가 실측 학습 이력(YouTube 연결)을 가진 레코드면, 미게시 로캘 변형(마스터에서 멱등 재분기 가능)을 먼저 축출 —
+    ///     로캘 분기가 카탈로그 압박을 최대 4배로 키워도 학습 이력이 밀려나지 않게.
+    /// </summary>
+    internal static void TrimToCapacityLocked(List<PlutoRenderedClipRecord> clips, string? protectedId, string? protectedMasterId)
+    {
+        while (clips.Count > Capacity)
+        {
+            var victim = -1;
+            for (var i = clips.Count - 1; i >= 0; i--)
+                if (!IsProtected(clips[i])) { victim = i; break; }
+            if (victim < 0) break;
+            if (clips[victim].YouTubeVideoId is not null)
+                for (var i = clips.Count - 1; i >= 0; i--)
+                {
+                    var c = clips[i];
+                    if (c.IsLocaleVariant && c.YouTubeVideoId is null && !IsProtected(c)) { victim = i; break; }
+                }
+            clips.RemoveAt(victim);
+        }
+
+        bool IsProtected(PlutoRenderedClipRecord c)
+            => (protectedId is not null && string.Equals(c.VideoId, protectedId, StringComparison.OrdinalIgnoreCase))
+               || (protectedMasterId is not null && string.Equals(c.VideoId, protectedMasterId, StringComparison.OrdinalIgnoreCase));
     }
 
     /// <summary>클립 1건을 게이트 안에서 변환(동일 → 무기록) · 변경 → 영속 + 통지.</summary>

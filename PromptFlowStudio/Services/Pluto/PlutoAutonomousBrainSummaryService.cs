@@ -90,6 +90,10 @@ public sealed record PlutoBrainSummarySnapshot(int TotalEvaluatedExperiments, in
     public PlutoBriefHitRateSummary BriefHitRate { get; init; } = PlutoBriefHitRateSummary.Empty;
     /// <summary>📐 Step 27 — 기획안 적중률 요약 1줄(평가 1건 이상일 때만 본문 노출).</summary>
     public string BriefHitRateLabel { get; init; } = PlutoAutonomousBrainSummaryService.NoneLabel;
+    /// <summary>🌐 Step 32 — 로캘별 성과(KO · EN · JA · ES · 연결/가중 CTR · 3초 · 완주 · 로캘 선두 제목).</summary>
+    public IReadOnlyList<PlutoLocalePerformanceRow> LocaleBreakdown => RealizedYouTube.Locales;
+    /// <summary>🌐 Step 32 — 로캘 분해 1줄(결정론 한국어).</summary>
+    public string LocaleBreakdownLabel { get; init; } = PlutoAutonomousBrainSummaryService.NoneLabel;
 }
 
 /// <summary>🧠 Pluto 4.6 자율 두뇌 텔레메트리 요약 — 실험 장부 × 적응형 랭커 × 오답 노트 집계.</summary>
@@ -289,6 +293,7 @@ public sealed class PlutoAutonomousBrainSummaryService : IPlutoAutonomousBrainSu
             RealizedYouTubeLabel = realized.ToLabel(),
             BriefHitRate = briefHitRate,
             BriefHitRateLabel = briefHitRate.ToLabel(),
+            LocaleBreakdownLabel = realized.ToLocaleLabel(),
         };
     }
 

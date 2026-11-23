@@ -49,7 +49,7 @@ public interface IPlutoFlywheelSelfTestService
 /// </summary>
 public sealed class PlutoFlywheelSelfTestService : IPlutoFlywheelSelfTestService
 {
-    public const int StageCount = 7;
+    public const int StageCount = 8;
     public const string SandboxPrefix = "pfs_flywheel_selftest_";
     public const string SandboxMarkerFileName = ".pluto_selftest_sandbox";
 
@@ -62,6 +62,7 @@ public sealed class PlutoFlywheelSelfTestService : IPlutoFlywheelSelfTestService
         "🎯 기획 채점 · 사후 분석",
         "🌱 유기적 복권 · 멀티 PC 장부 재생",
         "🩺 진단 Markdown 스냅샷",
+        "🌐 다국어 채널 분기 · 일/서 수집",
     };
 
     private const string Theme = "가을 숲 산책";
@@ -157,7 +158,8 @@ public sealed class PlutoFlywheelSelfTestService : IPlutoFlywheelSelfTestService
         3 => StageStudioExportAsync(c, ct),
         4 => StageGradingAsync(c, ct),
         5 => StageRehabilitationAsync(c, ct),
-        _ => StageDiagnosticAsync(c, ct),
+        6 => StageDiagnosticAsync(c, ct),
+        _ => StageMultiLanguageAsync(c, ct),
     };
 
     // ── ① 🧭 토픽 플래너 ──
@@ -344,6 +346,70 @@ public sealed class PlutoFlywheelSelfTestService : IPlutoFlywheelSelfTestService
         Require(saved.Ok && saved.FullPath is not null && File.Exists(saved.FullPath), "진단서 파일 저장 실패");
         return "Markdown " + md.Length.ToString(CultureInfo.InvariantCulture) + "자 · 동반 " + report.CompanionInSyncCount.ToString(CultureInfo.InvariantCulture) + "/"
             + report.Companions.Count.ToString(CultureInfo.InvariantCulture) + " 일치 · .md 저장";
+    }
+
+    // ── ⑧ 🌐 다국어 채널 분기 · 일/서 수집 ──
+
+    private const string JaCatalogTitle = "秋の森の散歩ブイログ";
+    private const string YtJa = "ytSELFTESTJ";
+    private const string JaHeader = "動画,動画のタイトル,動画公開時刻,視聴回数,平均再生率(%),インプレッションのクリック率(%),視聴を選択(%)";
+
+    private static async Task<string> StageMultiLanguageAsync(Context c, CancellationToken ct)
+    {
+        var channels = new PlutoMultiLanguageChannelService();
+        var ja = channels.GetProfileOrDefault("ja-JP");
+        // (a) ja-JP 줄바꿈 — 줄당 문자소 ≤ 15 · 금칙(행두 、。) · 로캘 편 토큰 재장식(한국어 장식 누출 없음)
+        var wrap = channels.WrapSubtitle("ja-JP", "最後まで見ると分かる、秋の森の散歩の本当の秘密がここにあります。");
+        Require(wrap.Lines.Count >= 2, "ja-JP 줄바꿈 미적용");
+        foreach (var line in wrap.Lines)
+        {
+            Require(PlutoMultiLanguageChannelService.TextLength(line) <= ja.MaxCharsPerLine, "ja-JP 줄 길이 초과");
+            Require(line.Length > 0 && line[0] is not ('、' or '。'), "ja-JP 금칙(행두) 위반");
+        }
+        var displayed = PlutoSeriesBatchPlanner.DecorateSubtitles(new[]
+        {
+            PromptFlowStudio.Services.Export.SubtitleCue.Precise(0.0, 2.5, "秋の森へ"),
+            PromptFlowStudio.Services.Export.SubtitleCue.Precise(2.5, 5.0, "最後に分かる"),
+        }, 1, 2);
+        var proj = PlutoLocaleSubtitleFitter.Project(displayed, channels, "ja-JP", 1, 2);
+        Require(proj.Cues.Count == 2 && proj.Cues[0].Text.StartsWith("第1/2話 · ", StringComparison.Ordinal) && proj.Cues[1].Text.EndsWith(PlutoLocaleSubtitleFitter.SeriesTail("ja-JP", false), StringComparison.Ordinal),
+            "ja-JP 편 토큰 재장식 실패");
+        Require(proj.Cues[0].Text.IndexOf('편') < 0 && !proj.HasTtsOverflow && string.Equals(proj.VoiceId, ja.DefaultTtsVoiceId, StringComparison.Ordinal), "ja-JP 자막/TTS 투영 이상");
+
+        // (b) 로캘 패키지 → {ClipA}::ja-JP 변형 멱등 보장 · 로캘 사이드카
+        var svc = new PlutoYouTubePublishPackService(catalog: c.Catalog, clock: static () => new DateTimeOffset(T0)) { Channels = channels };
+        var brief = c.Brief!;
+        var pack = await svc.GenerateAsync(new PlutoPublishPackRequest(JaCatalogTitle, JaCatalogTitle, 0, 0, brief.HookStyle, brief.StyleTags) { TargetLocale = "ja-JP" }, ct).ConfigureAwait(false);
+        Require(pack.Locale == "ja-JP" && string.Join(" ", pack.Hashtags).Contains("#ショート", StringComparison.Ordinal), "ja-JP 업로드 패키지 로캘 누락");
+        var before = (await c.Catalog.GetRecentClipsAsync(PlutoRenderCatalogService.Capacity, ct).ConfigureAwait(false)).Count;
+        var variant = await svc.EnsureLocaleVariantAsync(ClipA, pack, ct).ConfigureAwait(false);
+        var again = await svc.EnsureLocaleVariantAsync(ClipA + PlutoMultiLanguageChannelService.VariantSeparator + "ja-JP", pack, ct).ConfigureAwait(false);
+        var after = (await c.Catalog.GetRecentClipsAsync(PlutoRenderCatalogService.Capacity, ct).ConfigureAwait(false)).Count;
+        var variantId = ClipA + PlutoMultiLanguageChannelService.VariantSeparator + "ja-JP";
+        Require(variant is { IsLocaleVariant: true } && string.Equals(variant.VideoId, variantId, StringComparison.Ordinal) && again?.VideoId == variantId && after == before + 1, "로캘 변형 멱등 분기 실패");
+        var video = Path.Combine(c.StudioDir, "selftest_ja.mp4");
+        Directory.CreateDirectory(c.StudioDir);
+        await File.WriteAllBytesAsync(video, new byte[] { 0, 0, 0, 24, 102, 116, 121, 112 }, ct).ConfigureAwait(false);
+        var side = await svc.WriteSidecarAsync(video, pack, variantId, ct).ConfigureAwait(false);
+        Require(side.Ok && side.Path is not null && side.Path.EndsWith("_ja-JP" + PlutoYouTubePublishPackService.SidecarSuffix, StringComparison.Ordinal) && File.Exists(side.Path), "로캘 사이드카 저장 실패");
+        var best = pack.TitleA.LinkabilityScore >= pack.TitleB.LinkabilityScore ? pack.TitleA : pack.TitleB;
+        Require(await svc.RecordSelectionAsync(ClipA, pack, best.Variant, ct).ConfigureAwait(false), "로캘 제목 선택 기록 실패");
+        var master = await c.Catalog.FindByVideoIdOrTitleAsync(ClipA, ct).ConfigureAwait(false);
+        Require(master is not null && master.YouTubeVideoId == YtA && !string.Equals(master.PublishedTitleText, best.Title, StringComparison.Ordinal), "ja-JP 제목 선택이 마스터에 오귀속");
+
+        // (c) 일본어 Studio 내보내기(視聴を選択(%)) → 변형 자동 연결 · 3초 유지율 반영 · 대기열 불변
+        var queueBefore = c.Queue.Count;
+        var csv = JaHeader + "\n合計,,,800,,,\n" + YtJa + "," + Quote(best.Title) + ",2026/01/05,800,52.0,6.5,71.0\n";
+        var summary = await StudioImportAsync(c, csv, "表データ.csv", ct).ConfigureAwait(false);
+        var linked = await c.Catalog.FindByYouTubeVideoIdAsync(YtJa, ct).ConfigureAwait(false);
+        Require(linked is not null && string.Equals(linked.VideoId, variantId, StringComparison.Ordinal), "일본어 내보내기가 ja-JP 변형에 연결되지 않음");
+        Require(linked!.YouTubeWatermark is { } jw && Math.Abs(jw.HookPct - 71.0) < 0.01, "視聴を選択(%) → 3초 유지율 미반영");
+        Require(c.Queue.Count == queueBefore, "일본어 행이 미매칭 대기열로 샘");
+        var locales = PlutoRealizedYouTubeSummary.Compute(await c.Catalog.GetRecentClipsAsync(PlutoRenderCatalogService.Capacity, ct).ConfigureAwait(false)).Locales;
+        var jaRow = 0;
+        foreach (var r in locales) if (r.Locale == "ja-JP") jaRow = r.LinkedCount;
+        Require(jaRow == 1, "로캘 분해 JA 연결 수 불일치");
+        return "ja-JP 줄 " + wrap.Lines.Count.ToString(CultureInfo.InvariantCulture) + " · 변형 " + variantId + " · 사이드카 · " + summary;
     }
 
     /// <summary>진단 서비스가 인자 없는 <c>CheckHealth()</c> 로 라이브 Drive/계정 폴더를 보지 않도록 샌드박스 폴더로 고정.</summary>

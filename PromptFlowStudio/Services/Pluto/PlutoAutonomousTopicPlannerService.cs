@@ -20,6 +20,8 @@ public static class PlutoTopicBriefKinds
     public const string UpsideExplore = "upside-explore";
     /// <summary>🧬 콜드스타트 — 계층적 경험적 베이즈 사전.</summary>
     public const string ColdStartPrior = "cold-start-prior";
+    /// <summary>🌐 Step 32 — 검증된 로캘 승자를 미분기 지역 채널로 각색(<c>{BaseClipId}::{Locale}</c> 변형).</summary>
+    public const string CrossLocaleAdaptation = "cross-locale-adaptation";
 }
 
 /// <summary>🎯 Step 26 — 다음 제작 기획안 1건(테마 · 형식 · 4축 패턴 · 제목 프레이밍 · 근거).</summary>
@@ -36,6 +38,12 @@ public sealed record PlutoTopicBrief(int Rank, string BriefId, string Kind, stri
     public double ExpectedComposite { get; init; }
     /// <summary>📏 기대치가 채널 실측에 근거(아니면 사전값).</summary>
     public bool ExpectedEvidenced { get; init; }
+    /// <summary>🌐 Step 32 — 교차 로캘 각색 대상 로캘(그 밖 → 빈 문자열).</summary>
+    public string TargetLocale { get; init; } = string.Empty;
+    /// <summary>🌐 Step 32 — 교차 로캘 각색 원본(마스터) 클립 ID(그 밖 → 빈 문자열).</summary>
+    public string SourceClipId { get; init; } = string.Empty;
+    /// <summary>🌐 교차 로캘 각색 기획.</summary>
+    public bool IsCrossLocale => TargetLocale.Length > 0 && SourceClipId.Length > 0;
 }
 
 /// <summary>🎯 Step 26 — 기획 합성 입력(순수 · 결정론 · 테스트 가능).</summary>
@@ -56,6 +64,8 @@ public sealed record PlutoTopicPlannerInputs
     public string? SeedTheme { get; init; }
     public DateTimeOffset NowUtc { get; init; }
     public int MaxBriefs { get; init; } = PlutoAutonomousTopicPlannerService.DefaultMaxBriefs;
+    /// <summary>🌐 Step 32 — 교차 로캘 각색 기획 허용(<see cref="PlutoAutonomousTopicPlannerService.ProposeAsync"/> = 켬 · 순수 합성 기본 = 끔).</summary>
+    public bool CrossLocaleExpansion { get; init; }
 }
 
 /// <summary>📺 Step 26 — 두뇌 리포트 '실측 유튜브 성과 요약'(연결 영상 · 조회수 가중 CTR/유지율 · 선두 제목 프레이밍).</summary>
@@ -111,9 +121,31 @@ public sealed record PlutoRealizedYouTubeSummary(int LinkedVideoCount, int Measu
                 if (lead.Length == 0 || s.ShrunkCtrPct > leadCtr + PlutoAdaptivePatternRanker.Epsilon) { lead = s.Framing; leadN = s.Samples; leadCtr = s.ShrunkCtrPct; }
             }
         }
+        var locales = PlutoLocalePerformanceRow.ComputeAll(clips, stats);
         return wSum <= 0
-            ? new PlutoRealizedYouTubeSummary(linked, 0, 0, 0, 0, 0, lead, leadN, leadCtr)
-            : new PlutoRealizedYouTubeSummary(linked, measured, views, wCtr / wSum, wHook / wSum, wComp / wSum, lead, leadN, leadCtr);
+            ? new PlutoRealizedYouTubeSummary(linked, 0, 0, 0, 0, 0, lead, leadN, leadCtr) { Locales = locales }
+            : new PlutoRealizedYouTubeSummary(linked, measured, views, wCtr / wSum, wHook / wSum, wComp / wSum, lead, leadN, leadCtr) { Locales = locales };
+    }
+
+    /// <summary>🌐 Step 32 — 로캘별 성과(KO · EN · JA · ES 고정 순서 + 사용자 정의 로캘).</summary>
+    public IReadOnlyList<PlutoLocalePerformanceRow> Locales { get; init; } = Array.Empty<PlutoLocalePerformanceRow>();
+
+    /// <summary>🌐 Step 32 — 로캘 분해 1줄(결정론 한국어 · 연결 0편 로캘은 '—').</summary>
+    public string ToLocaleLabel()
+    {
+        if (Locales.Count == 0) return "로캘별 연결 영상 없음";
+        var sb = new StringBuilder(160);
+        foreach (var r in Locales)
+        {
+            if (sb.Length > 0) sb.Append(" | ");
+            sb.Append(r.ShortLabel).Append(' ');
+            if (r.LinkedCount == 0) { sb.Append('—'); continue; }
+            sb.Append(r.LinkedCount.ToString(Inv)).Append("편");
+            if (r.MeasuredCount > 0)
+                sb.Append(" CTR ").Append(r.WeightedCtrPct.ToString("0.0", Inv)).Append("% · 3초 ").Append(r.WeightedHookPct.ToString("0", Inv)).Append("% · 완주 ").Append(r.WeightedCompletionPct.ToString("0", Inv)).Append('%');
+            if (r.FramingEvidenced) sb.Append(" · 제목 ").Append(r.LeadingFraming);
+        }
+        return sb.ToString();
     }
 
     private static bool Valid(double v) => double.IsFinite(v) && v >= 0 && v <= 100;
@@ -129,6 +161,63 @@ public sealed record PlutoRealizedYouTubeSummary(int LinkedVideoCount, int Measu
             ? s + " · 선두 제목 " + LeadingFraming + "(CTR " + LeadingFramingCtrPct.ToString("0.0", Inv) + "% · n=" + LeadingFramingSamples.ToString(Inv) + ")"
             : s + " · 선두 제목 근거 부족(귀속 " + PlutoYouTubePublishPackService.MinAttributedSamples.ToString(Inv) + "건부터)";
     }
+}
+
+/// <summary>🌐 Step 32 — 로캘 1개의 실측 성과(연결 · 측정 · 조회수 가중 CTR/3초/완주 · 로캘 선두 프레이밍).</summary>
+public sealed record PlutoLocalePerformanceRow(string Locale, string ShortLabel, int LinkedCount, int MeasuredCount, long Views, double WeightedCtrPct, double WeightedHookPct,
+    double WeightedCompletionPct, string LeadingFraming, bool FramingEvidenced)
+{
+    /// <summary>조회수 가중 합성(0.4·3초 + 0.4·완주 + 0.2·CTR×10 · 측정 없음 → 0).</summary>
+    public double WeightedComposite => MeasuredCount > 0 ? PlutoBriefOutcomeAttributionService.Composite(WeightedHookPct, WeightedCompletionPct, WeightedCtrPct) : 0.0;
+
+    /// <summary>
+    /// 순수 — 클립(중복 YouTube ID 1회 · 변형 ID 로캘 우선)을 로캘별로 집계. 내장 4 로캘은 연결 0편이어도 행을 두어 분기 공백을 드러낸다.
+    /// 로캘 선두 프레이밍 = 로캘 귀속 ≥ 2건이면 로캘 실측 · 그 밖 전역 순위(근거 부족 표기).
+    /// </summary>
+    public static IReadOnlyList<PlutoLocalePerformanceRow> ComputeAll(IReadOnlyList<PlutoRenderedClipRecord>? clips, PlutoTitleFramingStat[]? globalFraming = null)
+    {
+        var order = new List<string>(6);
+        foreach (var p in PlutoMultiLanguageChannelService.BuiltInProfiles) order.Add(p.LocaleCode);
+        var safe = clips ?? Array.Empty<PlutoRenderedClipRecord>();
+        foreach (var c in safe)
+        {
+            if (c is null) continue;
+            var l = PlutoYouTubePublishPackService.LocaleOf(c);
+            if (!order.Contains(l)) order.Add(l);
+        }
+        var global = globalFraming ?? PlutoYouTubePublishPackService.ComputeFramingStats(safe);
+        var rows = new PlutoLocalePerformanceRow[order.Count];
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        for (var k = 0; k < order.Count; k++)
+        {
+            var loc = order[k];
+            int linked = 0, measured = 0;
+            long views = 0;
+            double wSum = 0, wCtr = 0, wHook = 0, wComp = 0;
+            foreach (var c in safe)
+            {
+                if (c is null || string.IsNullOrWhiteSpace(c.YouTubeVideoId) || !string.Equals(PlutoYouTubePublishPackService.LocaleOf(c), loc, StringComparison.Ordinal)) continue;
+                if (!seen.Add(c.YouTubeVideoId)) continue;
+                linked++;
+                if (c.YouTubeWatermark is not { } wm || wm.Views <= 0 || !Valid(wm.CtrPct) || !Valid(wm.HookPct) || !Valid(wm.CompletionPct)) continue;
+                measured++;
+                views += wm.Views;
+                var w = Math.Min(1.0, (double)wm.Views / PlutoYouTubePublishPackService.FullWeightViews);
+                wSum += w;
+                wCtr += w * wm.CtrPct;
+                wHook += w * wm.HookPct;
+                wComp += w * wm.CompletionPct;
+            }
+            var rank = PlutoYouTubePublishPackService.RankForLocale(global, PlutoYouTubePublishPackService.ComputeFramingStats(safe, loc), loc);
+            var label = loc.Length >= 2 ? loc[..2].ToUpperInvariant() : loc.ToUpperInvariant();
+            rows[k] = wSum <= 0
+                ? new PlutoLocalePerformanceRow(loc, label, linked, 0, 0, 0, 0, 0, rank.TopFraming, rank.LocaleEvidenced)
+                : new PlutoLocalePerformanceRow(loc, label, linked, measured, views, wCtr / wSum, wHook / wSum, wComp / wSum, rank.TopFraming, rank.LocaleEvidenced);
+        }
+        return rows;
+    }
+
+    private static bool Valid(double v) => double.IsFinite(v) && v >= 0 && v <= 100;
 }
 
 /// <summary>🎯 Step 26 — 자율 렌더 전 주제 · 시리즈 기획기.</summary>
@@ -253,6 +342,7 @@ public sealed class PlutoAutonomousTopicPlannerService : IPlutoAutonomousTopicPl
         {
             Hooks = hooks, Looks = looks, BgmMoods = bgms, StyleTags = tags, FramingRanking = framing, SeriesArcs = arcs,
             Suppressed = suppressed, SuppressedComposites = composites, RecentClips = clips, SeedTheme = seedTheme, NowUtc = UtcNowProvider?.Invoke() ?? DateTimeOffset.UtcNow, MaxBriefs = maxBriefs,
+            CrossLocaleExpansion = true,
         });
 
         IReadOnlyList<PlutoRankedOption> RankSafe(PlutoPatternKind kind, string? domain)
@@ -453,6 +543,9 @@ public sealed class PlutoAutonomousTopicPlannerService : IPlutoAutonomousTopicPl
             candidates[i] = Calibrate(guarded, hitRate);
         }
 
+        // ── 🌐 Step 32 교차 로캘 각색(가드 통과분만 · 룩 교체 없이 원본 그대로 — 각색은 새 패턴 실험이 아님) ──
+        if (inputs.CrossLocaleExpansion && ProposeCrossLocale(inputs, framing, seedDomain) is { } xl) candidates.Add(xl);
+
         candidates.Sort(static (a, b) =>
         {
             var c = b.Score.CompareTo(a.Score);
@@ -494,7 +587,7 @@ public sealed class PlutoAutonomousTopicPlannerService : IPlutoAutonomousTopicPl
             b = b with
             {
                 Rank = i + 1,
-                BriefId = BriefIdOf(b.Kind, b.Theme, b.HookStyle, b.ColorLookId, b.BgmMood, b.SeriesKey, b.NextEpisodeNumber),
+                BriefId = BriefIdOf(b.Kind, b.IsCrossLocale ? b.Theme + "@" + b.TargetLocale : b.Theme, b.HookStyle, b.ColorLookId, b.BgmMood, b.SeriesKey, b.NextEpisodeNumber),
                 ExpectedComposite = expected,
                 ExpectedEvidenced = evidenced,
                 RationaleKorean = b.RationaleKorean + " · 📏 기대 합성 " + expected.ToString("0.0", Inv) + "p"
@@ -543,8 +636,9 @@ public sealed class PlutoAutonomousTopicPlannerService : IPlutoAutonomousTopicPl
     public static PlutoTopicBrief? Diversify(PlutoTopicBrief candidate, IReadOnlyList<PlutoTopicBrief> selected, IReadOnlyList<PlutoRankedOption> looks, IReadOnlyList<PlutoRankedOption> bgms)
     {
         var b = candidate;
+        if (b.IsCrossLocale) return b;   // 🌐 각색은 원본 패턴을 다른 채널에 옮길 뿐(새 조합 실험 아님) → 다양성 슬롯을 소모하지 않음
         foreach (var s in selected)
-            if (b.HookStyle.Length > 0 && string.Equals(s.HookStyle, b.HookStyle, StringComparison.Ordinal)
+            if (!s.IsCrossLocale && b.HookStyle.Length > 0 && string.Equals(s.HookStyle, b.HookStyle, StringComparison.Ordinal)
                 && b.SeriesKey.Length == 0 && s.SeriesKey.Length == 0) return null;   // 시리즈 기획은 테마가 달라 훅 공유 허용
         if (!Clashes(b, selected)) return b;
         foreach (var l in looks)
@@ -563,7 +657,96 @@ public sealed class PlutoAutonomousTopicPlannerService : IPlutoAutonomousTopicPl
     private static bool Clashes(PlutoTopicBrief b, IReadOnlyList<PlutoTopicBrief> selected)
     {
         foreach (var s in selected)
-            if (string.Equals(s.ColorLookId, b.ColorLookId, StringComparison.Ordinal) && string.Equals(s.BgmMood, b.BgmMood, StringComparison.Ordinal)) return true;
+            if (!s.IsCrossLocale && string.Equals(s.ColorLookId, b.ColorLookId, StringComparison.Ordinal) && string.Equals(s.BgmMood, b.BgmMood, StringComparison.Ordinal)) return true;
+        return false;
+    }
+
+    // ── 🌐 Step 32 — 교차 로캘 각색 ──
+
+    /// <summary>원본 로캘 측정 영상이 이 수 이상이어야 '검증된 승자'를 판정(1편 요행 배제).</summary>
+    public const int CrossLocaleMinLocaleSamples = 2;
+    /// <summary>승자 클립 최소 조회수.</summary>
+    public const long CrossLocaleMinViews = 200;
+    /// <summary>원본 로캘 조회수 가중 합성 대비 최소 우위(p).</summary>
+    public const double CrossLocaleMinLift = 3.0;
+
+    /// <summary>
+    /// 🌐 순수 — 로캘 안에서 실측 합성이 기준선보다 <see cref="CrossLocaleMinLift"/>p 이상 높은 마스터 클립 중 최고를, 아직 분기하지 않은 지역 채널로 각색 제안.
+    /// 대상 로캘 = 미분기 내장 로캘 중 실측 합성 높은 순 → 미측정(콜드) 로캘은 내장 순서. 오답 노트(토큰 · 훅×룩 · 도메인×훅) 차단 패턴은 각색하지 않는다.
+    /// 제목 프레이밍 = 대상 로캘 실측 순위(콜드스타트 → 전역 폴백).
+    /// </summary>
+    public static PlutoTopicBrief? ProposeCrossLocale(PlutoTopicPlannerInputs inputs, IReadOnlyList<PlutoTitleFramingStat> globalFraming, string? seedDomain)
+    {
+        ArgumentNullException.ThrowIfNull(inputs);
+        var clips = inputs.RecentClips;
+        if (clips is null || clips.Count == 0) return null;
+        var rows = PlutoLocalePerformanceRow.ComputeAll(clips);
+        PlutoRenderedClipRecord? best = null;
+        double bestComposite = 0, bestLift = 0;
+        string bestLocale = string.Empty;
+        foreach (var c in clips)
+        {
+            if (c is null || c.IsLocaleVariant || PlutoMultiLanguageChannelService.ParseVariantClipId(c.VideoId).IsVariant || c.YouTubeWatermark is not { } wm || wm.Views < CrossLocaleMinViews) continue;
+            var loc = PlutoYouTubePublishPackService.LocaleOf(c);
+            PlutoLocalePerformanceRow? row = null;
+            foreach (var r in rows) if (string.Equals(r.Locale, loc, StringComparison.Ordinal)) { row = r; break; }
+            if (row is null || row.MeasuredCount < CrossLocaleMinLocaleSamples) continue;
+            if (!double.IsFinite(wm.HookPct) || !double.IsFinite(wm.CompletionPct) || !double.IsFinite(wm.CtrPct)) continue;
+            var comp = PlutoBriefOutcomeAttributionService.Composite(wm.HookPct, wm.CompletionPct, wm.CtrPct);
+            var lift = comp - row.WeightedComposite;
+            if (lift < CrossLocaleMinLift) continue;
+            var hook = string.IsNullOrWhiteSpace(c.AppliedBriefHookStyle) ? c.HookStyle : c.AppliedBriefHookStyle;
+            if (IsBlockedLabel(hook, inputs.Suppressed) || (!string.IsNullOrWhiteSpace(c.ColorLookId) && IsBlockedLabel(c.ColorLookId, inputs.Suppressed))
+                || (!string.IsNullOrWhiteSpace(c.BgmMood) && IsBlockedLabel(c.BgmMood, inputs.Suppressed))) continue;
+            if (inputs.SuppressedComposites is { Count: > 0 } comps)
+            {
+                if (PlutoPairAttribution.PairKey(hook, c.ColorLookId) is { } pk && comps.Contains(pk)) continue;
+                var dom = c.Title.Length > 0 ? PromptDomainClassifier.Classify(c.Title).ToString() : seedDomain;
+                if (dom is not null && PlutoPairAttribution.DomainHookKey(dom, hook) is { } dk && comps.Contains(dk)) continue;
+            }
+            if (best is null || comp > bestComposite + PlutoAdaptivePatternRanker.Epsilon) { best = c; bestComposite = comp; bestLift = lift; bestLocale = loc; }
+        }
+        if (best is null) return null;
+
+        // 대상 로캘 — 아직 분기하지 않은 내장 로캘(측정 성과 높은 순 → 콜드 로캘 내장 순서)
+        string? target = null;
+        double targetScore = double.NegativeInfinity;
+        foreach (var p in PlutoMultiLanguageChannelService.BuiltInProfiles)
+        {
+            var loc = p.LocaleCode;
+            if (string.Equals(loc, bestLocale, StringComparison.Ordinal) || IsBranched(clips, best.VideoId, loc)) continue;
+            PlutoLocalePerformanceRow? row = null;
+            foreach (var r in rows) if (string.Equals(r.Locale, loc, StringComparison.Ordinal)) { row = r; break; }
+            var score = row is { MeasuredCount: > 0 } ? 100.0 + row.WeightedComposite : 0.0;
+            if (target is null || score > targetScore + PlutoAdaptivePatternRanker.Epsilon) { target = loc; targetScore = score; }
+        }
+        if (target is null) return null;
+
+        var srcHook = string.IsNullOrWhiteSpace(best.AppliedBriefHookStyle) ? best.HookStyle : best.AppliedBriefHookStyle!;
+        var theme = PlutoSeriesArcMemoryService.SeriesThemeOf(best.Title);
+        if (string.IsNullOrWhiteSpace(theme)) theme = best.VideoId;
+        var rank = PlutoYouTubePublishPackService.RankForLocale(PlutoYouTubePublishPackService.ComputeFramingStats(clips), PlutoYouTubePublishPackService.ComputeFramingStats(clips, target), target);
+        var framing = rank.Ranking.Count > 0 ? rank.Ranking[0] : (globalFraming.Count > 0 ? globalFraming[0] : new PlutoTitleFramingStat(PlutoTitleFramings.OutcomeProof, 0, 0, 0, 0));
+        var srcLabel = bestLocale.Length >= 2 ? bestLocale[..2].ToUpperInvariant() : bestLocale;
+        var dstLabel = target[..2].ToUpperInvariant();
+        var rationale = "🌐 '" + theme + "' " + bestLocale + " 실측 합성 " + bestComposite.ToString("0.0", Inv) + "p(로캘 기준선 +" + bestLift.ToString("0.0", Inv) + "p · 조회 "
+            + best.YouTubeWatermark!.Views.ToString(Inv) + ") — " + target + " 채널 미분기 → " + best.VideoId + PlutoMultiLanguageChannelService.VariantSeparator + target
+            + " 변형으로 각색(로캘 자막 · 훅 · TTS) · 제목 " + framing.Framing + (rank.LocaleEvidenced ? "(" + target + " 실측 " + rank.LocaleSamples.ToString(Inv) + "건)" : "(전역 사전 · 로캘 콜드스타트)");
+        var score2 = 1.0 + 0.05 * Math.Min(10.0, bestLift);
+        return new PlutoTopicBrief(0, BriefIdOf(PlutoTopicBriefKinds.CrossLocaleAdaptation, theme + "@" + target, srcHook, best.ColorLookId, best.BgmMood, string.Empty, 0),
+            PlutoTopicBriefKinds.CrossLocaleAdaptation, theme, "🌐 " + srcLabel + " 승자 → " + dstLabel + " 채널 각색", FormatSingle, 1, 0, srcHook, best.ColorLookId, best.BgmMood,
+            best.Tags ?? Array.Empty<string>(), framing.Framing, rank.LocaleEvidenced && framing.Samples > 0, score2, rationale)
+        {
+            TargetLocale = target,
+            SourceClipId = best.VideoId,
+        };
+    }
+
+    /// <summary>카탈로그에 <c>{base}::{locale}</c> 변형이 이미 있음.</summary>
+    public static bool IsBranched(IReadOnlyList<PlutoRenderedClipRecord> clips, string baseClipId, string locale)
+    {
+        var id = PlutoMultiLanguageChannelService.ParseVariantClipId(baseClipId).BaseClipId + PlutoMultiLanguageChannelService.VariantSeparator + locale;
+        foreach (var c in clips) if (c is not null && string.Equals(c.VideoId, id, StringComparison.OrdinalIgnoreCase)) return true;
         return false;
     }
 
