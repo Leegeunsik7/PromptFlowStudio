@@ -103,7 +103,8 @@ public sealed class PlutoParetoAndRegretRehearsalTests : IDisposable
 
         // 기동 복원 결선 — MainForm 이 8종 목록을 그대로 사용
         var mainForm = File.ReadAllText(Path.Combine(RepoRoot(), "PromptFlowStudio", "MainForm.cs"));
-        Assert.Contains("plutoStore.RestoreCoreHubsToLocal(PromptFlowStudio.Services.Pluto.PlutoDriveHealthService.PlutoFiles)", mainForm, StringComparison.Ordinal);
+        Assert.Contains("IPlutoStartupDriveSyncService>()?.RunOnceAsync()", mainForm, StringComparison.Ordinal);   // ☁️ Step 38 — 단일 비행 서비스 이관
+        PlutoStartupSyncWiring.AssertHostDelegatesToSingleFlightStartupSync(RepoRoot());
     }
 
     // ── ② 🔁 능동 후회 리허설 — 회복 사전 → 챌린저 B · 시간 감쇠 · 오답 노트 차단 · 실측 후 소거 ──

@@ -111,7 +111,8 @@ public sealed class PlutoBidirectionalSyncAndFullContextTests : IDisposable
 
         // 결선 — 기동 조정(쓰기 반환 → 복원 순서)
         var mainForm = File.ReadAllText(Path.Combine(RepoRoot(), "PromptFlowStudio", "MainForm.cs"));
-        Assert.Contains("plutoStore.WriteBackNewerLocalToDrive(PromptFlowStudio.Services.Pluto.PlutoDriveHealthService.PlutoFiles); plutoStore.RestoreCoreHubsToLocal(PromptFlowStudio.Services.Pluto.PlutoDriveHealthService.PlutoFiles);", mainForm, StringComparison.Ordinal);
+        Assert.Contains("RunOnceAsync()", mainForm, StringComparison.Ordinal);   // ☁️ Step 38 — 기동 조정은 단일 비행 서비스로 이관(같은 순서)
+        PlutoStartupSyncWiring.AssertHostDelegatesToSingleFlightStartupSync(RepoRoot());
     }
 
     /// <summary>프로브 창 만료 → 재연결 감지까지 폴링(상한 10 s) — 고정 지연 대신 조건 대기(부하 무관 · 유휴 시 창 길이만큼만 대기).</summary>

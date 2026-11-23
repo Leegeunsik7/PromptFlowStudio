@@ -128,7 +128,8 @@ public sealed class PlutoSyncHardeningAndBackfillTests : IDisposable
         Assert.False(Directory.Exists(offLocal) && Directory.EnumerateFiles(offLocal).Any());
 
         var mainForm = File.ReadAllText(Path.Combine(RepoRoot(), "PromptFlowStudio", "MainForm.cs"));
-        Assert.Contains("plutoStore.BootstrapSyncManifest(PromptFlowStudio.Services.Pluto.PlutoDriveHealthService.PlutoFiles); plutoStore.WriteBackNewerLocalToDrive(", mainForm, StringComparison.Ordinal);
+        Assert.Contains("IPlutoStartupDriveSyncService>()?.RunOnceAsync()", mainForm, StringComparison.Ordinal);   // ☁️ Step 38 — 기준선 → 쓰기 반환 순서는 단일 비행 서비스가 보존
+        PlutoStartupSyncWiring.AssertHostDelegatesToSingleFlightStartupSync(RepoRoot());
     }
 
     // ── ② 🔒 Drive 데몬 일시 잠금 재시도 ──

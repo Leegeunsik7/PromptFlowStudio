@@ -20,6 +20,10 @@ public enum PlutoActivityKind
     BriefPostMortem = 4,
     /// <summary>유기적 복권(+8p) → 오답 노트 벌점 감쇠.</summary>
     OrganicRehabilitation = 5,
+    /// <summary>☁️ Step 38 — 기동 멀티 PC Drive 조정(쓰기 반환 · 즉시 재적재 · 미매칭 대기열 정리).</summary>
+    DriveSync = 6,
+    /// <summary>⚔️ Step 38 — 미해결 Drive 충돌(설정 화면 처리 필요).</summary>
+    DriveConflict = 7,
 }
 
 /// <summary>🛰️ 자율 활동 1건(메시지는 이미 경로 · 비밀값 가림 처리됨).</summary>
@@ -36,6 +40,8 @@ public sealed record PlutoActivityEntry(long Seq, DateTimeOffset AtUtc, PlutoAct
         PlutoActivityKind.BriefGrading => "🎯",
         PlutoActivityKind.BriefPostMortem => "🩻",
         PlutoActivityKind.OrganicRehabilitation => "🌱",
+        PlutoActivityKind.DriveSync => "☁️",
+        PlutoActivityKind.DriveConflict => "⚔️",
         _ => "•",
     };
 
@@ -66,6 +72,8 @@ public interface IPlutoAutonomousActivityFeedService
     bool RecordDownloadsIngest(PlutoDownloadsAutoIngestEvent? evt);
     /// <summary>기획 채점 스윕 — 채점 요약 · 사후 분석 · 유기적 복권. 반환 = 새로 기록한 수.</summary>
     int RecordBriefSweep(PlutoBriefSweepResult? sweep);
+    /// <summary>☁️ Step 38 — 기동 Drive 조정 결과(의미 있는 변화 · 새 미해결 충돌 집합만 기록 · 조용한 기동 → 0). 반환 = 새로 기록한 수.</summary>
+    int RecordStartupDriveSync(PlutoStartupDriveSyncReport? report) => 0;
 
     /// <summary>🧹 전부 비우기(영속).</summary>
     Task ClearAsync(CancellationToken ct = default);
@@ -177,6 +185,26 @@ public sealed class PlutoAutonomousActivityFeedService : IPlutoAutonomousActivit
             sb.Append(char.IsControl(ch) ? ' ' : ch);
         }
         return sb.ToString().Trim();
+    }
+
+    /// <summary>
+    /// 🔒 Step 38 — 비밀값만 가림(경로 · 길이 상한 · 제어 문자 처리 없음): API 키 · OAuth · 클라이언트 시크릿 · Bearer · <c>key=…</c> · 40자 이상 토큰형 → <c>***</c>.
+    /// 진단서의 예외 메시지처럼 경로 가림 규칙이 따로 있는 텍스트용. 시간 초과 → 생략 문구(원문 비노출).
+    /// </summary>
+    public static string RedactSecrets(string? text)
+    {
+        if (string.IsNullOrEmpty(text)) return string.Empty;
+        try
+        {
+            var s = GoogleKey.Replace(text, "AIza***");
+            s = OAuthAccess.Replace(s, "ya29.***");
+            s = OAuthRefresh.Replace(s, "1//***");
+            s = ClientSecret.Replace(s, "GOCSPX-***");
+            s = Bearer.Replace(s, "Bearer ***");
+            s = KeyValue.Replace(s, static m => m.Groups[1].Value + "=***");
+            return LongBlob.Replace(s, "***");
+        }
+        catch (RegexMatchTimeoutException) { return "‹가림 처리 실패 — 생략›"; }
     }
 
     /// <summary>경로 일치 구간 → <c>‹경로›</c> + 마지막 구분자 뒤(파일 이름 + 뒤따르는 문구)만.</summary>
@@ -301,6 +329,41 @@ public sealed class PlutoAutonomousActivityFeedService : IPlutoAutonomousActivit
             if (sweep.RehabilitatedKeys.Count > 3) keys.Append(" 외 ").Append((sweep.RehabilitatedKeys.Count - 3).ToString(inv)).Append("개");
             var msg = "유기적 복권(≥ +" + PlutoMistakeNotebookService.RehabilitationDeltaPoints.ToString("0", inv) + "pt) · 벌점 감쇠 " + sweep.RehabilitatedKeys.Count.ToString(inv) + "개 · " + keys;
             if (Record(PlutoActivityKind.OrganicRehabilitation, msg)) added++;
+        }
+        return added;
+    }
+
+    public int RecordStartupDriveSync(PlutoStartupDriveSyncReport? report)
+    {
+        if (report is null) return 0;
+        var inv = CultureInfo.InvariantCulture;
+        var added = 0;
+        // 🛡️ 미러 갱신만(이 PC 가 지난 세션 Drive 에 쓴 사본을 로컬로 내려받는 일상 동작)은 매 기동 발생 → 기록하지 않음
+        if (report.HasMeaningfulChange)
+        {
+            var msg = new StringBuilder("기동 Drive 조정");
+            if (report.PushedToDrive > 0) msg.Append(" · ☁️⬆️ 오프라인 학습분 쓰기 반환 ").Append(report.PushedToDrive.ToString(inv)).Append("건");
+            if (report.ReloadedHubs.Count > 0)
+            {
+                msg.Append(" · ♻️ 즉시 재적재 ");
+                for (var i = 0; i < report.ReloadedHubs.Count && i < 3; i++) msg.Append(i > 0 ? ", " : "").Append(report.ReloadedHubs[i]);
+                if (report.ReloadedHubs.Count > 3) msg.Append(" 외 ").Append((report.ReloadedHubs.Count - 3).ToString(inv)).Append("개");
+            }
+            if (report.NewConflictCopies > 0) msg.Append(" · ⚔️ 새 충돌 사본 ").Append(report.NewConflictCopies.ToString(inv)).Append("건");
+            if (report.Unmatched is { Changed: true } u)
+            {
+                var pruned = u.PrunedLinked + u.PrunedResolved;
+                if (pruned > 0) msg.Append(" · 📌 다른 PC 연결/처리분 대기열 정리 ").Append(pruned.ToString(inv)).Append("건");
+                if (u.MergedFromPeers > 0) msg.Append(" · 📌 대기열 병합 ").Append(u.MergedFromPeers.ToString(inv)).Append("건");
+            }
+            if (report.MirrorRefreshed > 0) msg.Append(" · ☁️⬇️ 미러 ").Append(report.MirrorRefreshed.ToString(inv)).Append("건");
+            if (Record(PlutoActivityKind.DriveSync, msg.ToString())) added++;
+        }
+        // ⚔️ 미해결 충돌 — 같은 충돌 집합(지문)은 보관 중 1회만(조용한 재시작마다 반복 경고 금지) · 집합이 바뀌면 다시 알림
+        if (report.UnresolvedConflicts > 0 && !string.IsNullOrEmpty(report.ConflictFingerprint))
+        {
+            var msg = "미해결 Drive 충돌 " + report.UnresolvedConflicts.ToString(inv) + "건 — 설정 › ☁️ Drive 백업에서 병합/복원/무시를 선택하세요";
+            if (Record(PlutoActivityKind.DriveConflict, msg, "drive-conflicts:" + report.ConflictFingerprint)) added++;
         }
         return added;
     }

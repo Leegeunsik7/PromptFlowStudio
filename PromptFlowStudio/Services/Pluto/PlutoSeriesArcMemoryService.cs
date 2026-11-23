@@ -142,6 +142,23 @@ public interface IPlutoSeriesArcMemoryService
 
     /// <summary>📖 용어 삭제(삭제 표식으로 기록 → PC 간 병합에서 되살아나지 않음).</summary>
     Task<bool> RemoveGlossaryEntryAsync(string? seriesThemeOrTitle, string? sourceTerm, CancellationToken ct = default) => Task.FromResult(false);
+
+    /// <summary>🩺 Step 38 — 용어집 요약(살아 있는 항목만 · 범위별 용어 수 상위 <paramref name="maxScopes"/>개).</summary>
+    PlutoGlossarySummary GetGlossarySummary(int maxScopes = PlutoGlossarySummary.DefaultMaxScopes) => PlutoGlossarySummary.Empty;
+}
+
+/// <summary>🩺 Step 38 — 범위(시리즈 테마 또는 전역 <c>*</c>) 1개의 보호 용어 수.</summary>
+public sealed record PlutoGlossaryScopeCount(string Scope, int TermCount);
+
+/// <summary>🩺 Step 38 — 시리즈 용어집 요약(진단서용 · 삭제 표식 제외).</summary>
+/// <param name="ActiveSeriesCount">살아 있는 용어가 1개 이상인 시리즈 범위 수(전역 제외).</param>
+/// <param name="GlobalTermCount">전역 <c>*</c> 범위의 살아 있는 용어 수.</param>
+/// <param name="TotalProtectedTerms">전 범위 살아 있는 용어 합계(전역 포함).</param>
+/// <param name="TopScopes">용어 수 내림차순 → 범위 이름 서수 · 상한 적용.</param>
+public sealed record PlutoGlossarySummary(int ActiveSeriesCount, int GlobalTermCount, int TotalProtectedTerms, IReadOnlyList<PlutoGlossaryScopeCount> TopScopes)
+{
+    public const int DefaultMaxScopes = 10;
+    public static readonly PlutoGlossarySummary Empty = new(0, 0, 0, Array.Empty<PlutoGlossaryScopeCount>());
 }
 
 /// <summary>
@@ -1175,6 +1192,29 @@ public sealed class PlutoSeriesArcMemoryService : IPlutoSeriesArcMemoryService, 
                 }
             list.RemoveAt(victim);
         }
+    }
+
+    public PlutoGlossarySummary GetGlossarySummary(int maxScopes = PlutoGlossarySummary.DefaultMaxScopes)
+    {
+        var scopes = new List<PlutoGlossaryScopeCount>();
+        int series = 0, global = 0, total = 0;
+        lock (_sync)
+        {
+            foreach (var kv in _glossary)
+            {
+                var live = 0;
+                foreach (var g in kv.Value) if (!g.Deleted) live++;
+                if (live == 0) continue;
+                total += live;
+                if (string.Equals(kv.Key, GlobalGlossaryScope, StringComparison.Ordinal)) global = live;
+                else series++;
+                scopes.Add(new PlutoGlossaryScopeCount(kv.Key, live));
+            }
+        }
+        scopes.Sort(static (a, b) => a.TermCount != b.TermCount ? b.TermCount.CompareTo(a.TermCount) : string.CompareOrdinal(a.Scope, b.Scope));
+        var cap = Math.Max(0, maxScopes);
+        if (scopes.Count > cap) scopes.RemoveRange(cap, scopes.Count - cap);
+        return new PlutoGlossarySummary(series, global, total, scopes);
     }
 
     public IReadOnlyList<PlutoGlossaryEntry> GetGlossary(string? seriesThemeOrTitle)

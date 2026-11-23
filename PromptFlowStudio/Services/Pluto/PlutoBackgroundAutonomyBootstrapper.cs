@@ -6,8 +6,14 @@ namespace PromptFlowStudio.Services.Pluto;
 public sealed record PlutoAutonomyBootReport(bool WatcherRunning, bool ApiAutoSyncArmed, bool BriefOutcomesStarted, bool FeedWired,
     string? WatcherSkipReason, string? ApiSkipReason, DateTimeOffset AtUtc)
 {
+    /// <summary>☁️ Step 38 — 감시 · 폴러 기동 전 멀티 PC 조정 결과(미수행/시간 초과 → null).</summary>
+    public PlutoStartupDriveSyncReport? StartupSync { get; init; }
+    /// <summary>☁️ 조정이 <see cref="PlutoBackgroundAutonomyBootstrapper.StartupSyncTimeout"/> 안에 끝나지 않아 기다리지 않고 진행함(결과는 끝나는 대로 피드 기록).</summary>
+    public bool StartupSyncTimedOut { get; init; }
+
     public string SummaryKorean
-        => "🚀 백그라운드 자율 기동 · 📥 Downloads 감시 " + (WatcherRunning ? "가동" : "대기(" + (WatcherSkipReason ?? "—") + ")")
+        => (StartupSync is { } ss ? ss.SummaryKorean + " · " : StartupSyncTimedOut ? "☁️ 기동 Drive 조정 지연(계속 진행) · " : "")
+         + "🚀 백그라운드 자율 기동 · 📥 Downloads 감시 " + (WatcherRunning ? "가동" : "대기(" + (WatcherSkipReason ?? "—") + ")")
          + " · ⏱️ API 주기 동기화 " + (ApiAutoSyncArmed ? "예약" : "대기(" + (ApiSkipReason ?? "—") + ")")
          + " · 🎯 기획 채점 " + (BriefOutcomesStarted ? "가동" : "없음")
          + " · 🛰️ 활동 피드 " + (FeedWired ? "연결" : "없음");
@@ -50,6 +56,15 @@ public sealed class PlutoBackgroundAutonomyBootstrapper : IPlutoBackgroundAutono
 
     /// <summary>기동 유예(테스트 = 0).</summary>
     public TimeSpan BootDelay { get; init; } = DefaultBootDelay;
+
+    /// <summary>☁️ Step 38 — 기동 조정 대기 상한(멈춘 Drive 마운트가 감시 · 폴러 기동을 무기한 막지 않도록).</summary>
+    public static readonly TimeSpan DefaultStartupSyncTimeout = TimeSpan.FromSeconds(45);
+
+    /// <summary>☁️ Step 38 — 감시 · 폴러 기동 <b>전</b> 실행할 멀티 PC Drive 조정 + 미매칭 대기열 조정(단일 비행 · 미설정 → 생략).</summary>
+    public IPlutoStartupDriveSyncService? StartupSync { get; init; }
+
+    /// <summary>☁️ 조정 대기 상한(시간 초과 → 기다리지 않고 기동 계속 · 늦게 끝난 결과도 피드에 기록).</summary>
+    public TimeSpan StartupSyncTimeout { get; init; } = DefaultStartupSyncTimeout;
 
     public PlutoBackgroundAutonomyBootstrapper(IYouTubeDownloadsAutoWatcherService? watcher, IPlutoYouTubeApiSyncService? api,
         IPlutoBriefOutcomeAttributionService? briefOutcomes, IPlutoAutonomousActivityFeedService? feed,
@@ -112,6 +127,30 @@ public sealed class PlutoBackgroundAutonomyBootstrapper : IPlutoBackgroundAutono
 
         var feedWired = WireFeedOnce();
 
+        // ☁️ Step 38 — 멀티 PC 콜드 부트 경합 차단: Drive 허브 조정 · 다른 PC 연결분 대기열 정리를 감시 · 폴러보다 먼저
+        // (오프라인 하네스 → 무접촉 · 저장소/대기열 해석조차 하지 않음)
+        PlutoStartupDriveSyncReport? sync = null;
+        var syncTimedOut = false;
+        if (StartupSync is { } ss && !OfflineHarness && !token.IsCancellationRequested)
+        {
+            Task<PlutoStartupDriveSyncReport>? run = null;
+            try
+            {
+                run = ss.RunOnceAsync();
+                sync = await run.WaitAsync(StartupSyncTimeout, _time, token).ConfigureAwait(false);
+                RecordStartupSync(sync);
+            }
+            catch (TimeoutException)
+            {
+                syncTimedOut = true;
+                // 🛡️ 멈춘 마운트에도 감시 · 폴러는 기동 — 조정이 늦게 끝나면 그때 피드에 기록(폐기 후엔 기록 안 함)
+                _ = run!.ContinueWith(t => { if (t.IsCompletedSuccessfully && !IsDisposed) RecordStartupSync(t.Result); },
+                    CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+            catch (Exception ex) { Log("Pluto.Boot.StartupSync", ex); }
+        }
+
         // 🎯 기획 채점 — 로컬 카탈로그만 읽음(네트워크 · Downloads 무접촉) → 이전 세션 미채점분 · 다른 PC 병합본 즉시 채점
         var briefStarted = false;
         if (!token.IsCancellationRequested && _brief is not null)
@@ -162,10 +201,19 @@ public sealed class PlutoBackgroundAutonomyBootstrapper : IPlutoBackgroundAutono
             catch (Exception ex) { Log("Pluto.Boot.YouTubeApi", ex); apiWhy = ex.GetType().Name; }
         }
 
-        var report = new PlutoAutonomyBootReport(watcherRunning, apiArmed, briefStarted, feedWired, watcherWhy, apiWhy, _time.GetUtcNow());
+        var report = new PlutoAutonomyBootReport(watcherRunning, apiArmed, briefStarted, feedWired, watcherWhy, apiWhy, _time.GetUtcNow())
+        { StartupSync = sync, StartupSyncTimedOut = syncTimedOut };
         LastReport = report;
         System.Diagnostics.Debug.WriteLine("[Pluto.Boot] " + report.SummaryKorean);
         return report;
+    }
+
+    private bool IsDisposed { get { lock (_sync) return _disposed; } }
+
+    private void RecordStartupSync(PlutoStartupDriveSyncReport? r)
+    {
+        try { _feed?.RecordStartupDriveSync(r); }
+        catch (Exception ex) { Log("Pluto.Feed.StartupSync", ex); }
     }
 
     // ── 🛰️ 활동 피드 브리지(호스트 수명 · 정확히 1회 구독) ──

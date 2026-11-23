@@ -39,6 +39,10 @@ public sealed record PlutoDiagnosticInputs(DateTime GeneratedAtUtc)
     public IReadOnlyList<PlutoParetoModalityStatus>? ParetoModalities { get; init; }
     public IReadOnlyList<PlutoMistakeRuleSnapshot>? MistakeRules { get; init; }
     public PlutoMistakeDecayStatus? MistakeDecay { get; init; }
+    /// <summary>📖 Step 38 — 시리즈 용어집 요약(null = 미연결).</summary>
+    public PlutoGlossarySummary? Glossary { get; init; }
+    /// <summary>🛰️ Step 38 — 최근 자율 활동(최신 순 · null = 미연결).</summary>
+    public IReadOnlyList<PlutoActivityEntry>? RecentActivity { get; init; }
     /// <summary>섹션 키 → 수집 실패 사유.</summary>
     public IReadOnlyDictionary<string, string>? Errors { get; init; }
 }
@@ -50,6 +54,13 @@ public sealed record PlutoDiagnosticInputs(DateTime GeneratedAtUtc)
 public sealed class PlutoSystemDiagnosticService : IPlutoSystemDiagnosticService
 {
     public const string SectionDrive = "drive", SectionRealized = "realized", SectionPareto = "pareto", SectionMistakes = "mistakes";
+    public const string SectionGlossary = "glossary", SectionActivity = "activity";
+    /// <summary>🛰️ Step 38 — 최근 자율 활동 표 최대 행.</summary>
+    public const int MaxActivityRows = 10;
+    /// <summary>📖 Step 38 — 용어집 범위 표 최대 행.</summary>
+    public const int MaxGlossaryScopeRows = 10;
+    public const string GlossaryHeading = "## 5. 📖 시리즈 용어집 요약";
+    public const string ActivityHeading = "## 6. 🛰️ 최근 자율 활동 피드";
     public const string Title = "# 🩺 Pluto 진단 스냅샷";
     public const string RedactedPathPrefix = "‹path›/";
     /// <summary>오답 노트 활성 가드 표 최대 행.</summary>
@@ -72,6 +83,11 @@ public sealed class PlutoSystemDiagnosticService : IPlutoSystemDiagnosticService
         _brain = brain;
         _utcNow = utcNow ?? (static () => DateTime.UtcNow);
     }
+
+    /// <summary>📖 Step 38 — 시리즈 용어집 원천(미설정 → 섹션 '미연결').</summary>
+    public IPlutoSeriesArcMemoryService? SeriesArc { get; init; }
+    /// <summary>🛰️ Step 38 — 자율 활동 피드 원천(미설정 → 섹션 '미연결').</summary>
+    public IPlutoAutonomousActivityFeedService? ActivityFeed { get; init; }
 
     public async Task<string> BuildSnapshotMarkdownAsync(CancellationToken ct = default)
     {
@@ -132,10 +148,29 @@ public sealed class PlutoSystemDiagnosticService : IPlutoSystemDiagnosticService
             catch (Exception ex) { errors[SectionMistakes] = ex.Message; }
         }
 
+        PlutoGlossarySummary? glossary = null;
+        if (SeriesArc is { } arc)
+        {
+            try
+            {
+                await arc.EnsureLoadedAsync(ct).ConfigureAwait(false);
+                glossary = arc.GetGlossarySummary(MaxGlossaryScopeRows);
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) { errors[SectionGlossary] = ex.Message; }
+        }
+
+        IReadOnlyList<PlutoActivityEntry>? activity = null;
+        if (ActivityFeed is { } feed)
+        {
+            try { activity = feed.GetRecent(MaxActivityRows); }
+            catch (Exception ex) { errors[SectionActivity] = ex.Message; }
+        }
+
         return BuildMarkdown(new PlutoDiagnosticInputs(_utcNow())
         {
             Drive = drive, Conflicts = conflicts, PendingConflictResolutions = pending, Realized = realized, HitRate = hitRate,
-            ParetoModalities = pareto, MistakeRules = rules, MistakeDecay = decay, Errors = errors,
+            ParetoModalities = pareto, MistakeRules = rules, MistakeDecay = decay, Glossary = glossary, RecentActivity = activity, Errors = errors,
         });
     }
 
@@ -243,8 +278,55 @@ public sealed class PlutoSystemDiagnosticService : IPlutoSystemDiagnosticService
                 sb.Append("| ").Append(Cell(rule.PatternKey)).Append(" | ").Append(rule.IsPostMortem ? "🩻 사후 분석" : "피드백").Append(" | ").Append(Cell(rule.FailureDimension)).Append(" | ")
                   .Append(rule.PenaltyWeight.ToString("0.00", Inv)).Append(" | ").Append(rule.HalfLifeDays.ToString("0", Inv)).Append(" | ").Append(rule.DaysUntilRelease.ToString("0.0", Inv)).Append(" |\n");
         }
+
+        // 5) 📖 시리즈 용어집 요약(Step 38)
+        sb.Append('\n').Append(GlossaryHeading).Append("\n\n");
+        AppendError(sb, input, SectionGlossary);
+        if (input.Glossary is { } g)
+        {
+            sb.Append("- 활성 시리즈 용어집 ").Append(g.ActiveSeriesCount.ToString(Inv)).Append("개 · 보호 용어 ").Append(g.TotalProtectedTerms.ToString(Inv))
+              .Append("개(전역 ").Append(g.GlobalTermCount.ToString(Inv)).Append("개 포함)\n");
+            if (g.TopScopes.Count > 0)
+            {
+                sb.Append("\n| 범위 | 보호 용어 |\n|---|---|\n");
+                var shown = 0;
+                foreach (var sc in g.TopScopes)
+                {
+                    if (sc is null) continue;
+                    if (shown++ >= MaxGlossaryScopeRows) break;
+                    var name = string.Equals(sc.Scope, PlutoSeriesArcMemoryService.GlobalGlossaryScope, StringComparison.Ordinal) ? "🌐 전역" : SafeCell(sc.Scope);
+                    sb.Append("| ").Append(name).Append(" | ").Append(sc.TermCount.ToString(Inv)).Append(" |\n");
+                }
+            }
+        }
+        else if (!HasError(input, SectionGlossary)) sb.Append("- 미연결\n");
+
+        // 6) 🛰️ 최근 자율 활동 피드(Step 38 · 블랙박스 비행 기록)
+        sb.Append('\n').Append(ActivityHeading).Append("\n\n");
+        AppendError(sb, input, SectionActivity);
+        if (input.RecentActivity is { } acts)
+        {
+            if (acts.Count == 0) sb.Append("- 기록 없음\n");
+            else
+            {
+                sb.Append("| 시각(UTC) | 종류 | 내용 |\n|---|---|---|\n");
+                var shown = 0;
+                foreach (var a in acts)
+                {
+                    if (a is null) continue;
+                    if (shown++ >= MaxActivityRows) break;
+                    // 🔒 재가림 — 피드 구현이 이미 가렸더라도 진단서는 공유 문서이므로 경로 · 비밀값 규칙을 한 번 더 적용
+                    sb.Append("| ").Append(a.AtUtc.UtcDateTime.ToString("yyyy-MM-dd HH:mm", Inv)).Append(" | ").Append(a.Icon).Append(' ').Append(a.Kind.ToString())
+                      .Append(" | ").Append(SafeCell(PlutoAutonomousActivityFeedService.Redact(a.MessageKorean))).Append(" |\n");
+                }
+            }
+        }
+        else if (!HasError(input, SectionActivity)) sb.Append("- 미연결\n");
         return sb.ToString();
     }
+
+    /// <summary>🔒 Step 38 — 비밀값 가림 → 경로 가림 → 표 이스케이프(사용자 입력 · 예외 메시지용).</summary>
+    public static string SafeCell(string? text) => Cell(PlutoAutonomousActivityFeedService.RedactSecrets(text));
 
     /// <summary>동반 동기화 소제목 헤더(테스트 · UI 공통).</summary>
     public const string CompanionHeading = "### 🔁 동반 동기화 파일(핵심 허브 9종 집계 밖)";
@@ -274,7 +356,7 @@ public sealed class PlutoSystemDiagnosticService : IPlutoSystemDiagnosticService
 
     private static void AppendError(StringBuilder sb, PlutoDiagnosticInputs input, string section)
     {
-        if (input.Errors is { } e && e.TryGetValue(section, out var msg)) sb.Append("- ⚠️ 수집 실패: ").Append(Cell(msg)).Append('\n');
+        if (input.Errors is { } e && e.TryGetValue(section, out var msg)) sb.Append("- ⚠️ 수집 실패: ").Append(SafeCell(msg)).Append('\n');   // 🔒 Step 38 — 예외 메시지의 토큰 · 키도 가림
     }
 
     private static string StatusText(PlutoDriveFileStatus s) => s switch

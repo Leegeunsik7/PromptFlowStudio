@@ -123,7 +123,8 @@ public sealed class PlutoEmpiricalBayesAndSeriesHardeningTests : IDisposable
 
         // 결선 — MainForm 기동 복원이 9종 목록을 그대로 사용 · 설정 화면 문구
         var mainForm = File.ReadAllText(Path.Combine(RepoRoot(), "PromptFlowStudio", "MainForm.cs"));
-        Assert.Contains("plutoStore.RestoreCoreHubsToLocal(PromptFlowStudio.Services.Pluto.PlutoDriveHealthService.PlutoFiles)", mainForm, StringComparison.Ordinal);
+        Assert.Contains("IPlutoStartupDriveSyncService>()?.RunOnceAsync()", mainForm, StringComparison.Ordinal);   // ☁️ Step 38 — 9종 목록 복원은 단일 비행 서비스가 수행
+        PlutoStartupSyncWiring.AssertHostDelegatesToSingleFlightStartupSync(RepoRoot());
         var settings = File.ReadAllText(Path.Combine(RepoRoot(), "PromptFlowStudio", "Blazor", "Pages", "Settings.razor"));
         Assert.Contains("Pluto 핵심 허브 9종", settings, StringComparison.Ordinal);
         Assert.DoesNotContain("허브 8종", settings, StringComparison.Ordinal);
