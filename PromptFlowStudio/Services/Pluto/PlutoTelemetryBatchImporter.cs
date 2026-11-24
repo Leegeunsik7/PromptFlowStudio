@@ -46,11 +46,21 @@ public sealed record PlutoTelemetryBatchImportResult(int TotalRows, int MatchedA
     /// <summary>원본 이름(ZIP 내부 항목 · 파일명).</summary>
     public string? SourceName { get; init; }
 
+    /// <summary>📊 Step 45 — YouTube Analytics API v2 정밀 지표(CTR · 유지율) 경로로 처리됨(학습 가능 · 대기열 미사용).</summary>
+    public bool IsYouTubeAnalyticsPrecision { get; init; }
+
+    /// <summary>🥇 Step 45 — Studio 실측 3초 유지(워터마크)를 Analytics 추정값 대신 이어 쓴 행 수.</summary>
+    public int StudioHookCarriedCount { get; init; }
+
     /// <summary>한국어 요약 1줄.</summary>
     public string SummaryKorean
     {
         get
         {
+            if (IsYouTubeAnalyticsPrecision)
+                return "✅ 학습 " + MatchedAndLearnedCount.ToString(CultureInfo.InvariantCulture) + " · 📈 성숙 " + MaturityDeltaCount.ToString(CultureInfo.InvariantCulture)
+                    + " · ⏭ 기반영 " + AlreadyRegisteredCount.ToString(CultureInfo.InvariantCulture) + (UnmatchedCount > 0 ? " · ❓ 미연결 " + UnmatchedCount.ToString(CultureInfo.InvariantCulture) : "")
+                    + (MistakeGuardsTriggered > 0 ? " · 🛡️ 오답 가드 " + MistakeGuardsTriggered.ToString(CultureInfo.InvariantCulture) : "");
             if (IsYouTubeApiSync) return ApiSummaryKorean();
             var s = "📥 " + TotalRows.ToString(CultureInfo.InvariantCulture) + "행 중 ✅ " + MatchedAndLearnedCount.ToString(CultureInfo.InvariantCulture)
                 + "건 학습 · ❓ 미매칭 " + UnmatchedCount.ToString(CultureInfo.InvariantCulture) + "건";
@@ -104,6 +114,13 @@ public interface IPlutoTelemetryBatchImporter
     /// </summary>
     Task<PlutoTelemetryBatchImportResult> ImportYouTubeApiRowsAsync(IReadOnlyList<YouTubeAnalyticsRow> rows, string platform = "YouTube Shorts", CancellationToken ct = default)
         => Task.FromResult(new PlutoTelemetryBatchImportResult(0, 0, 0, 0, Array.Empty<string>()) { IsYouTubeApiSync = true });
+
+    /// <summary>
+    /// 📊 Step 45 — YouTube Analytics API v2 정밀 행(CTR · 평균 조회율) 반영: 이미 YouTube ID 로 연결된 클립만(제목 추정 연결 없음) → 최초 학습 또는 성숙 증분
+    /// (Studio CSV/ZIP 과 같은 워터마크 게이트 · 멱등). 미연결 행은 대기열에 넣지 않는다(다음 동기화에 재조회). 기본 구현 = 미지원(0건 · 학습 없음).
+    /// </summary>
+    Task<PlutoTelemetryBatchImportResult> ImportYouTubeAnalyticsPrecisionRowsAsync(IReadOnlyList<YouTubeAnalyticsRow> rows, string platform = "YouTube Shorts", CancellationToken ct = default)
+        => Task.FromResult(new PlutoTelemetryBatchImportResult(0, 0, 0, 0, Array.Empty<string>()) { IsYouTubeAnalyticsPrecision = true });
 }
 
 /// <summary>📥 <see cref="IPlutoTelemetryBatchImporter"/> 순수 BCL 구현(따옴표 필드 · 콤마/탭/세미콜론 구분자 · BOM 허용).</summary>
@@ -587,6 +604,52 @@ public sealed class PlutoTelemetryBatchImporter : IPlutoTelemetryBatchImporter
             QueueRecoveredCount = recovered,
             IsYouTubeApiSync = true,
             SourceName = "YouTube Data API v3",
+        };
+    }
+
+    public async Task<PlutoTelemetryBatchImportResult> ImportYouTubeAnalyticsPrecisionRowsAsync(IReadOnlyList<YouTubeAnalyticsRow> rows, string platform = "YouTube Shorts", CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(rows);
+        ct.ThrowIfCancellationRequested();
+        var plat = string.IsNullOrWhiteSpace(platform) ? "YouTube Shorts" : platform.Trim();
+        var unmatched = new List<string>();
+        int learned = 0, matured = 0, dup = 0, guards = 0, carried = 0;
+        for (var i = 0; i < rows.Count; i++)
+        {
+            ct.ThrowIfCancellationRequested();
+            var row = rows[i];
+            var label = row.YouTubeVideoId ?? row.Title ?? "?";
+            // 🛡️ 플래그 없는 행(Data API 관측 · 0 자리표시)은 학습 경로에 절대 들어오지 않음
+            if (!row.HasPrecisionMetrics || row.YouTubeVideoId is not { } yt || !YouTubeStudioAnalyticsNormalizer.IsYouTubeVideoId(yt)) { unmatched.Add(label + " (정밀 지표 아님)"); continue; }
+            try
+            {
+                if (await _catalog.FindByYouTubeVideoIdAsync(yt, ct).ConfigureAwait(false) is not { } clip) { unmatched.Add(label + " (미연결)"); continue; }
+                // 🥇 Studio 우선 — v2 에는 3초 유지(Stayed to watch)가 없다. 워터마크(대개 Studio 실측)가 있으면 그 값을 이어 써서 추정값이 실측 기준을 덮지 않게 한다.
+                if (row.HookEstimated && clip.YouTubeWatermark is { HookPct: > 0 } wm)
+                {
+                    row = row with { Hook3sRetention = wm.HookPct };
+                    carried++;
+                }
+                var applied = await ApplyYouTubeRowAsync(_catalog, _loop, clip, row, plat, ct).ConfigureAwait(false);
+                if (applied.Kind == PlutoYouTubeRowApplyKind.Learned) learned++;
+                else if (applied.Kind == PlutoYouTubeRowApplyKind.Matured) matured++;
+                else dup++;
+                if (applied.GuardActivated) guards++;
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine("[Pluto.Analytics] row " + label + ": " + ex.Message);
+                unmatched.Add(label + " (오류)");   // 행 격리
+            }
+        }
+        return new PlutoTelemetryBatchImportResult(learned + matured + dup + unmatched.Count, learned, unmatched.Count, guards, unmatched.ToArray())
+        {
+            AlreadyRegisteredCount = dup,
+            MaturityDeltaCount = matured,
+            StudioHookCarriedCount = carried,
+            IsYouTubeAnalyticsPrecision = true,
+            SourceName = "YouTube Analytics API v2",
         };
     }
 }

@@ -120,3 +120,13 @@
 - `WindowContention`(`CiFrameBudget.cs`): 최선 창 재시도 게이트에서 **기준 초과 창 직후에만** 부하 배수를 표본해 최대값을 보관, 최종 판정 `max(창 최대 배수, 판정 시점 배수)`. 판정 시점 1 회 탐침은 "창 동안 경합 → 판정 직전 해소" 를 배수 1.0 으로 판정해 실패(LiveCommerce 기준 실행 실패 원인). 기준 상한(33.3 ms · 창 초과 6) 불변 · 유휴/기준 통과 창 탐침 0 회 · 상한 ×3. LiveCommerce 레이어 초과 창 게이트에 적용 · 재시도 루프는 기준 상한으로만 판단(기준 통과 창을 최대 5 창까지 탐색).
 - 측정(16 코어): 기준 `06d15ff` 경합 호스트(타 프로젝트 테스트 동시 실행) 13 m 21 s(801 s · 1424/1424 · A 177 / B 216 / ProcessGcMode 303 / Timing 279 s) → Step 44 1 차 8 m 7 s(487 s · 1426/1426 · 첫 실행 종료 코드 0 · A 158 / B 147 / ProcessGcMode 158 / Timing 166 s) → A/B 2 메서드(ContentSecurity · GenerativeVfx) A→B 재균형 후 최종 **7 m 35 s(455 s · 1426/1426 · 첫 실행 종료 코드 0)** · A 136 / B 144 s(꼬리 148 s) · ProcessGcMode 138 s · Timing 168 s · Pluto 451/451(24 s).
 - 병렬 꼬리 하한: 사슬 작업 합 ≈ 280 s ÷ 2 사슬 ≈ 140 s — 동시 중량 사슬 ≤ 2 규칙 아래 95–105 s 는 사슬 작업 자체를 줄이지 않는 한 불가(다음 후보: `CinematicDirector` 56 s · `BroadcastMcr` 48 s · `GarmentDynamics` 48 s 내부 반복 축소).
+
+## Pluto YouTube Analytics v2 정밀 지표 · FastProbe 벽시계 재분류 (Step 45)
+- 기능: `PlutoYouTubeApiSyncService` — YouTube Analytics API v2 `reports.query`(`dimensions=video` · `ids=channel==…`)로 영상별 CTR · 평균 시청 비율(유지율) 정밀 동기화. 요청 지표명은 공식 v2 `videoThumbnailImpressionsClickRate`(`AnalyticsMetrics`), 응답 파서는 `videoThumbnailImpressionsClickRate` · 레거시 `impressionsClickThroughRate` 열 모두 수용. 테스트 `PlutoYouTubeAnalyticsApiTests` 가 요청 URL 의 공식 지표명 포함 · 레거시명 미포함을 단언.
+- 자체 도입 안전장치 4:
+  1. **보고 지연 창** — 종료일 = 태평양 오늘 − `AnalyticsReportingLagDays`(2), 게시일이 종료일 이전(완전 집계일 ≥ 1)인 영상만 정밀 승격 → 집계 중 0/부분 CTR 이 `alreadyRegistered` 최초 기준선을 영구 오염시키는 것 차단.
+  2. **범위/권한 403 격리** — Analytics 403(`insufficientPermissions` · 채널 비소유)은 `AnalyticsScopeException` 으로 채널 단위 강등(Data API 동기화 유지), 자동 동기화 인증 정지로 번지지 않음 · 재승인(`yt-analytics.readonly`) 저장 시 범위 래치 즉시 해제.
+  3. **Studio 실측 우선 순서** — 정밀 지표는 관측 · 연결 · 대기열(Studio 실측) 회수 이후에만 실행 → 같은 영상의 Studio 행이 항상 먼저 기준선을 잡음.
+  4. **헤더 이름 매핑 스키마 검증** — 열 위치가 아닌 `columnHeaders` 이름으로 매핑(필수 열 누락 시 거부) · 형식 위반 행 · 잘못된 영상 ID 제외 · `rows` 없음 = 정상(데이터 없음).
+- 재분류: `EngineRoutingAndProjectExportTests.RenderEngine_UnprobedOfflineComfyUIWithDashScopeKey_FastProbesAndRoutesToCloudOnFirstClick` 는 `Stopwatch` 벽시계 상한(`FastProbeTimeout − 50` ~ 5000 ms) 단언 → 분류 기준 3 에 해당. 새 클래스 `EngineRoutingFastProbeTimingTests`(`[Collection("TimingSensitivePerformance")]`)로 이동(임계 5000 ms 불변). 나머지 메서드는 병렬 풀 유지, 공유 `CloudFake` 만 `internal` 로 노출.
+- 측정: Pluto 루프 458/458(34 s) · 전체 **1433/1433(10 m 32 s · 첫 실행 종료 코드 0)**.

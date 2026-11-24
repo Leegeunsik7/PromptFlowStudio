@@ -69,6 +69,59 @@ public sealed record PlutoYouTubeApiSyncResult(PlutoYouTubeApiSyncState State, s
     public int Retries { get; init; }
     public PlutoTelemetryBatchImportResult? Import { get; init; }
     public bool Succeeded => State is PlutoYouTubeApiSyncState.Synced or PlutoYouTubeApiSyncState.Partial;
+
+    // 📊 Step 45 — YouTube Analytics API v2 정밀 지표(CTR · 유지율)
+    /// <summary>이번 실행의 정밀 지표 경로 상태(호출하지 않았으면 API 키 관측 전용 · 꺼짐 · 미설정).</summary>
+    public PlutoYouTubeAnalyticsPrecisionMode AnalyticsMode { get; init; } = PlutoYouTubeAnalyticsPrecisionMode.NotConfigured;
+    /// <summary>Analytics v2 정밀 행 반영 결과(학습 · 성숙 · 기반영 · 미연결 · null = 반영 없음).</summary>
+    public PlutoTelemetryBatchImportResult? PrecisionImport { get; init; }
+    /// <summary>정밀 학습 경로로 승격한 행 수.</summary>
+    public int AnalyticsPromotedCount { get; init; }
+    /// <summary>🕒 보고 지연 창 · 0 지표 · 저조회로 이번에 승격 보류한 영상 수(관측 전용 유지 · 다음 동기화에 재조회).</summary>
+    public int AnalyticsDeferredCount { get; init; }
+    /// <summary>🔐 <c>yt-analytics.readonly</c> 범위 부족(403)으로 건너뛴 채널 수.</summary>
+    public int AnalyticsScopeMissingChannels { get; init; }
+    /// <summary>정밀 학습 직후 기획 채점 · 유기적 복권 스윕 결과(실행 안 함 → null).</summary>
+    public PlutoBriefSweepResult? BriefSweep { get; init; }
+}
+
+/// <summary>📊 Step 45 — YouTube Analytics API v2 정밀 지표(CTR · 유지율) 동기화 모드.</summary>
+public enum PlutoYouTubeAnalyticsPrecisionMode
+{
+    /// <summary>자격 증명 · 채널 미설정.</summary>
+    NotConfigured,
+    /// <summary>사용자가 정밀 지표 동기화를 끔(영속) · 킬 스위치 · 격리 환경.</summary>
+    Disabled,
+    /// <summary>API 키만 — Data API 관측 전용(<see cref="YouTubeAnalyticsRow.HasPrecisionMetrics"/> = false).</summary>
+    ApiKeyObserveOnly,
+    /// <summary>OAuth 는 있으나 <c>yt-analytics.readonly</c> 범위 없음(403) — 재승인 대기 · 관측 전용으로 강등.</summary>
+    AwaitingScope,
+    /// <summary>OAuth + 범위 확인 — CTR · 유지율 정밀 학습 활성.</summary>
+    Active,
+}
+
+/// <summary>📊 Step 45 — 설정 카드 배지용 정밀 지표 상태(비밀값 없음).</summary>
+public sealed record PlutoYouTubeAnalyticsPrecisionStatus(PlutoYouTubeAnalyticsPrecisionMode Mode, bool Enabled, int ScopeMissingChannels, int ChannelCount,
+    DateTimeOffset? ScopeRetryUtc, DateTimeOffset? LastPrecisionUtc, int LastPromotedCount)
+{
+    public string BadgeKorean => Mode switch
+    {
+        PlutoYouTubeAnalyticsPrecisionMode.Active => ScopeMissingChannels > 0
+            ? "📊 CTR · 유지율 정밀 동기화 활성(채널 " + (ChannelCount - ScopeMissingChannels).ToString(CultureInfo.InvariantCulture) + "/" + ChannelCount.ToString(CultureInfo.InvariantCulture) + " · 나머지 범위 대기)"
+            : "📊 CTR · 유지율 정밀 동기화 활성",
+        PlutoYouTubeAnalyticsPrecisionMode.AwaitingScope => "🔐 yt-analytics.readonly 범위 대기 — 관측 전용(재승인 후 저장)",
+        PlutoYouTubeAnalyticsPrecisionMode.ApiKeyObserveOnly => "👁 API 키 관측 전용(CTR · 유지율은 OAuth 또는 Studio 내보내기)",
+        PlutoYouTubeAnalyticsPrecisionMode.Disabled => "⏸ 정밀 지표 동기화 꺼짐",
+        _ => "⚙ 정밀 지표 미설정",
+    };
+
+    /// <summary>배지 색 등급(0 정상 · 3 대기/관측 · 2 꺼짐).</summary>
+    public int Severity => Mode switch
+    {
+        PlutoYouTubeAnalyticsPrecisionMode.Active => 0,
+        PlutoYouTubeAnalyticsPrecisionMode.Disabled => 2,
+        _ => 3,
+    };
 }
 
 /// <summary>🔄 설정 카드 표시용 상태(비밀값 없음).</summary>
@@ -176,6 +229,13 @@ public interface IPlutoYouTubeApiSyncService
     void StopAutoSync();
     Task SetAutoSyncEnabledAsync(bool enabled, CancellationToken ct = default);
     PlutoYouTubeApiAutoSyncStatus GetAutoSyncStatus();
+
+    // 📊 Step 45 — YouTube Analytics API v2 정밀 지표(CTR · 유지율)
+    /// <summary>정밀 지표 동기화 상태(설정 카드 배지). 기본 구현 = 미설정.</summary>
+    PlutoYouTubeAnalyticsPrecisionStatus GetAnalyticsPrecisionStatus()
+        => new(PlutoYouTubeAnalyticsPrecisionMode.NotConfigured, false, 0, 0, null, null, 0);
+    /// <summary>정밀 지표 동기화 사용(영속 · 기본 켬 — OAuth 일 때만 실제 호출). 끄면 Data API 관측만.</summary>
+    Task SetAnalyticsPrecisionEnabledAsync(bool enabled, CancellationToken ct = default) => Task.CompletedTask;
 }
 
 /// <summary>
@@ -215,6 +275,16 @@ public sealed class PlutoYouTubeApiSyncService : IPlutoYouTubeApiSyncService, ID
     /// <summary>타이머가 예정보다 이만큼 이상 일찍 발화하면(시계 변경 · 재예약 경합) 실행하지 않고 남은 시간만큼 재무장.</summary>
     public static readonly TimeSpan EarlyFireTolerance = TimeSpan.FromSeconds(1);
     public const int DefaultAutoSyncReserveUnits = 100;
+    // 📊 Step 45 — YouTube Analytics API v2
+    public const string AnalyticsReportsEndpoint = "https://youtubeanalytics.googleapis.com/v2/reports";
+    /// <summary>요청 지표 — CTR 은 공식 v2 지표명 <c>videoThumbnailImpressionsClickRate</c> 로 요청(응답 파서는 레거시 <c>impressionsClickThroughRate</c> 열도 계속 수용).</summary>
+    public const string AnalyticsMetrics = "views,estimatedMinutesWatched,averageViewPercentage,videoThumbnailImpressionsClickRate";
+    /// <summary>🕒 Analytics 보고 지연(일) — 종료일 = 태평양 오늘 − 이 값. 아직 집계 중인 날을 넣으면 CTR · 유지율이 0/부분값으로 와서 최초 기준선을 영구히 오염시킨다.</summary>
+    public const int AnalyticsReportingLagDays = 2;
+    /// <summary>조회 시작일 하한(게시일이 더 오래되면 이 기간으로 자름).</summary>
+    public const int AnalyticsMaxLookbackDays = 730;
+    /// <summary>🔐 범위 부족(403) 채널 재확인 간격 — 매 30분 자동 동기화가 같은 403 으로 쿼터를 태우지 않게. 자격 증명 재저장 시 즉시 해제.</summary>
+    public static readonly TimeSpan AnalyticsScopeRetryInterval = TimeSpan.FromHours(24);
 
     private static readonly byte[] Magic = "PFYT"u8.ToArray();
     private const byte SchemeDpapi = 1, SchemeLocalCipher = 2;
@@ -275,6 +345,9 @@ public sealed class PlutoYouTubeApiSyncService : IPlutoYouTubeApiSyncService, ID
     public int DailyUnitBudget { get; init; } = DefaultDailyUnitBudget;
 
     public string PlatformName { get; init; } = "YouTube Shorts";
+
+    /// <summary>📊 Step 45 — 정밀 학습 직후 기획 채점 · 유기적 복권 즉시 실행(null → 카탈로그 변경 구독에 맡김).</summary>
+    public IPlutoBriefOutcomeAttributionService? BriefOutcomes { get; init; }
 
     /// <summary>실제 HTTP 송신 시도 수(토큰 엔드포인트 포함 · 격리 검증용).</summary>
     public long NetworkAttemptCount => Interlocked.Read(ref _networkAttempts);
@@ -565,6 +638,8 @@ public sealed class PlutoYouTubeApiSyncService : IPlutoYouTubeApiSyncService, ID
             CancelAutoRunLocked();
             _state.AutoAuthLatched = false;
             _state.AutoConsecutiveFailures = 0;
+            _state.AnalyticsScopeMissing = null;   // 📊 Step 45 — 재승인(yt-analytics.readonly) 후 저장 → 범위 대기 즉시 해제
+            _state.AnalyticsScopeConfirmed = false;
             _state.AutoNextDueUtc = Now() + AutoSyncStartupGrace;
             DisarmLocked();
             PersistStateLocked();
@@ -647,6 +722,13 @@ public sealed class PlutoYouTubeApiSyncService : IPlutoYouTubeApiSyncService, ID
         public DateTimeOffset? AutoLastRunUtc { get; set; }
         public string? AutoLastSummaryKorean { get; set; }
         public bool AutoAuthLatched { get; set; }
+        // 📊 Step 45 — Analytics v2 정밀 지표
+        public bool? AnalyticsEnabled { get; set; }
+        /// <summary>채널 → 범위 부족(403) 재확인 시각.</summary>
+        public Dictionary<string, DateTimeOffset>? AnalyticsScopeMissing { get; set; }
+        public bool AnalyticsScopeConfirmed { get; set; }
+        public DateTimeOffset? AnalyticsLastPrecisionUtc { get; set; }
+        public int AnalyticsLastPromoted { get; set; }
     }
 
     private void EnsureStateLoadedLocked()
@@ -761,6 +843,8 @@ public sealed class PlutoYouTubeApiSyncService : IPlutoYouTubeApiSyncService, ID
     private sealed class BudgetExhaustedException : Exception { public BudgetExhaustedException() : base("budget") { } }
     /// <summary>인증 실패(리프레시 거부 · 401 반복 · 키 무효).</summary>
     private sealed class AuthFailedException : Exception { public AuthFailedException(string m) : base(m) { } }
+    /// <summary>📊 Step 45 — Analytics v2 범위(<c>yt-analytics.readonly</c>) · 채널 권한 부족.</summary>
+    private sealed class AnalyticsScopeException : Exception { public AnalyticsScopeException(string m) : base(m) { } }
 
     /// <summary>한 번의 동기화 실행 컨텍스트(요청 · 재시도 · unit 집계).</summary>
     private sealed class RunCounters
@@ -800,7 +884,8 @@ public sealed class PlutoYouTubeApiSyncService : IPlutoYouTubeApiSyncService, ID
         return d > MaxRetryAfter ? MaxRetryAfter : d;
     }
 
-    private async Task<JsonDocument> GetJsonAsync(string relative, RunCounters run, CancellationToken ct)
+    /// <param name="analyticsUrl">📊 Step 45 — true: <paramref name="relative"/> 는 Analytics v2 절대 URL · 쿼터 외 403 은 <see cref="AnalyticsScopeException"/>(인증 정지로 번지지 않음).</param>
+    private async Task<JsonDocument> GetJsonAsync(string relative, RunCounters run, CancellationToken ct, bool analyticsUrl = false)
     {
         var refreshedFor401 = false;
         for (var attempt = 1; ; attempt++)
@@ -808,7 +893,8 @@ public sealed class PlutoYouTubeApiSyncService : IPlutoYouTubeApiSyncService, ID
             ct.ThrowIfCancellationRequested();
             ChargeUnit(run);
             var creds = await EnsureAccessAsync(forceRefresh: false, ct).ConfigureAwait(false);
-            using var req = new HttpRequestMessage(HttpMethod.Get, ApiBase + relative);
+            if (analyticsUrl && !creds.HasOAuth) throw new AnalyticsScopeException("OAuth 없음");   // 🛡️ API 키는 Analytics v2 에 절대 싣지 않음
+            using var req = new HttpRequestMessage(HttpMethod.Get, analyticsUrl ? relative : ApiBase + relative);
             if (creds.HasOAuth) req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", creds.AccessToken);
             else req.Headers.TryAddWithoutValidation("X-Goog-Api-Key", creds.ApiKey);   // 🔐 URL 에 키를 싣지 않음(로그 · 예외 메시지 · 프록시 기록 누출 차단)
             req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
@@ -849,6 +935,9 @@ public sealed class PlutoYouTubeApiSyncService : IPlutoYouTubeApiSyncService, ID
                     attempt--;   // 토큰 갱신 재시도는 백오프 시도로 세지 않음
                     continue;
                 }
+                // 📊 Step 45 — Analytics 403(insufficientPermissions · forbidden · 채널 비소유) = 범위/권한 부족 → 채널 단위 강등(Data API 동기화 · 자동 동기화 인증 정지에 번지지 않음)
+                if (analyticsUrl && code == 403 && reason is not ("rateLimitExceeded" or "userRateLimitExceeded"))
+                    throw new AnalyticsScopeException("HTTP 403" + (reason.Length > 0 ? " " + reason : ""));
                 if (code is 401 || (code == 400 && reason == "keyInvalid") || (code == 403 && reason is "forbidden" or "accessNotConfigured" or "keyInvalid" or "ipRefererBlocked"))
                     throw new AuthFailedException("HTTP " + code.ToString(CultureInfo.InvariantCulture) + (reason.Length > 0 ? " " + reason : ""));
                 var retryable = code == 429 || code >= 500 || (code == 403 && reason is "rateLimitExceeded" or "userRateLimitExceeded");
@@ -985,6 +1074,7 @@ public sealed class PlutoYouTubeApiSyncService : IPlutoYouTubeApiSyncService, ID
             Exception? stop = null;
             var idLocale = new Dictionary<string, string?>(StringComparer.Ordinal);
             var order = new List<string>();
+            var idChannel = new Dictionary<string, string>(StringComparer.Ordinal);   // 📊 Step 45 — 영상 → 소유 채널(Analytics 채널별 조회)
             var owners = new HashSet<string>(StringComparer.Ordinal);
             foreach (var ch in creds.Channels) owners.Add(ch.ChannelId);
             try
@@ -996,7 +1086,7 @@ public sealed class PlutoYouTubeApiSyncService : IPlutoYouTubeApiSyncService, ID
                     using var doc = await GetJsonAsync("playlistItems?part=contentDetails&maxResults=" + MaxRecentUploadsPerChannel.ToString(CultureInfo.InvariantCulture)
                         + "&playlistId=" + Uri.EscapeDataString(playlist), run, ct).ConfigureAwait(false);
                     foreach (var vid in ParsePlaylistVideoIds(doc))
-                        if (idLocale.TryAdd(vid, ch.Locale)) order.Add(vid);
+                        if (idLocale.TryAdd(vid, ch.Locale)) { order.Add(vid); idChannel[vid] = ch.ChannelId; }
                     channelsDone++;
                 }
             }
@@ -1022,21 +1112,284 @@ public sealed class PlutoYouTubeApiSyncService : IPlutoYouTubeApiSyncService, ID
             if (rows.Count > 0 && _importer is not null)
                 import = await _importer.ImportYouTubeApiRowsAsync(rows, PlatformName, ct).ConfigureAwait(false);
 
+            // 📊 Step 45 — Analytics v2 정밀 지표: 관측 · 연결 · 대기열(Studio 실측) 회수가 끝난 '뒤'에만 실행 → 같은 영상의 Studio 행이 항상 먼저 기준선을 잡는다
+            var precision = new AnalyticsOutcome(AnalyticsModeFor(creds));
+            if (stop is null && precision.Mode == PlutoYouTubeAnalyticsPrecisionMode.Active && rows.Count > 0)
+            {
+                try { precision = await RunAnalyticsPrecisionAsync(creds, rows, idChannel, run, ct).ConfigureAwait(false); }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex) when (ex is QuotaExhaustedException or BudgetExhaustedException or AuthFailedException) { stop = ex; }   // 쿼터 · 예산 · 토큰 거부는 실행 전체 신호
+                catch (Exception ex) { precision = precision with { Error = Redact(ex.Message, LoadCredentials()) }; }   // [부분 구제] 스키마 위반 · 일시 오류 → 관측 결과 유지
+            }
+
             if (stop is not null)
             {
                 var partial = Classify(stop, run, import, channelsDone, rows.Count);
-                return Finish(partial, recordSync: rows.Count > 0);
+                return Finish(WithPrecision(partial, precision), recordSync: rows.Count > 0);
             }
             var summary = "🔄 YouTube API 동기화 — 채널 " + channelsDone.ToString(CultureInfo.InvariantCulture) + "개 · 영상 " + rows.Count.ToString(CultureInfo.InvariantCulture) + "건 · "
-                + run.Units.ToString(CultureInfo.InvariantCulture) + " unit" + (import is not null ? " · " + import.SummaryKorean : "");
-            return Finish(new PlutoYouTubeApiSyncResult(PlutoYouTubeApiSyncState.Synced, summary)
+                + run.Units.ToString(CultureInfo.InvariantCulture) + " unit" + (import is not null ? " · " + import.SummaryKorean : "") + precision.SummarySuffix();
+            return Finish(WithPrecision(new PlutoYouTubeApiSyncResult(PlutoYouTubeApiSyncState.Synced, summary)
             {
                 ChannelsSynced = channelsDone, VideosFetched = rows.Count, HttpRequests = run.Requests, QuotaUnitsUsed = run.Units, Retries = run.Retries, Import = import,
-            }, recordSync: true);
+            }, precision), recordSync: true);
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex) { return Finish(Classify(ex, run, null, channelsDone, rows.Count), recordSync: false); }
         finally { ReleaseGate(); }
+    }
+
+    // ── 📊 Step 45 — YouTube Analytics API v2 정밀 지표(CTR · 유지율) ──
+
+    /// <summary>Analytics v2 영상 1개 지표(<c>dimensions=video</c> 행).</summary>
+    public readonly record struct AnalyticsVideoMetrics(long Views, double EstimatedMinutesWatched, double AverageViewPercentage, double CtrPct);
+
+    /// <summary>한 번의 정밀 지표 실행 결과(내부).</summary>
+    private sealed record AnalyticsOutcome(PlutoYouTubeAnalyticsPrecisionMode Mode)
+    {
+        public PlutoTelemetryBatchImportResult? Import { get; init; }
+        public int Promoted { get; init; }
+        public int Deferred { get; init; }
+        public int ScopeMissing { get; init; }
+        public PlutoBriefSweepResult? Sweep { get; init; }
+        public string? Error { get; init; }
+
+        public string SummarySuffix()
+        {
+            var inv = CultureInfo.InvariantCulture;
+            if (Mode == PlutoYouTubeAnalyticsPrecisionMode.AwaitingScope) return " · 🔐 yt-analytics.readonly 범위 대기 — 관측 전용";
+            if (Mode != PlutoYouTubeAnalyticsPrecisionMode.Active) return "";
+            var s = " · 📊 정밀 " + Promoted.ToString(inv) + "건";
+            if (Import is { } pi) s += "(" + pi.SummaryKorean + ")";
+            if (Deferred > 0) s += " · 🕒 보고 지연 보류 " + Deferred.ToString(inv) + "건";
+            if (ScopeMissing > 0) s += " · 🔐 범위 대기 채널 " + ScopeMissing.ToString(inv) + "개";
+            if (Error is { Length: > 0 } e) s += " · ⚠ 정밀 지표 조회 실패(관측 유지): " + e;
+            return s;
+        }
+    }
+
+    private static PlutoYouTubeApiSyncResult WithPrecision(PlutoYouTubeApiSyncResult r, AnalyticsOutcome o) => r with
+    {
+        AnalyticsMode = o.Mode, PrecisionImport = o.Import, AnalyticsPromotedCount = o.Promoted, AnalyticsDeferredCount = o.Deferred,
+        AnalyticsScopeMissingChannels = o.ScopeMissing, BriefSweep = o.Sweep,
+    };
+
+    /// <summary>자격 증명 · 토글 · 범위 래치로 정한 정밀 지표 모드(호출 전 판정).</summary>
+    private PlutoYouTubeAnalyticsPrecisionMode AnalyticsModeFor(PlutoYouTubeApiCredentials? c)
+    {
+        if (c is null || !c.IsConfigured) return PlutoYouTubeAnalyticsPrecisionMode.NotConfigured;
+        if (KillSwitchOn() || !TransportAllowed) return PlutoYouTubeAnalyticsPrecisionMode.Disabled;
+        if (!c.HasOAuth) return PlutoYouTubeAnalyticsPrecisionMode.ApiKeyObserveOnly;
+        lock (_sync)
+        {
+            EnsureStateLoadedLocked();
+            if (_state.AnalyticsEnabled == false) return PlutoYouTubeAnalyticsPrecisionMode.Disabled;
+            return ScopeMissingCountLocked(c, Now()) >= c.Channels.Count ? PlutoYouTubeAnalyticsPrecisionMode.AwaitingScope : PlutoYouTubeAnalyticsPrecisionMode.Active;
+        }
+    }
+
+    private int ScopeMissingCountLocked(PlutoYouTubeApiCredentials c, DateTimeOffset now)
+    {
+        var n = 0;
+        if (_state.AnalyticsScopeMissing is { Count: > 0 } m)
+            foreach (var ch in c.Channels)
+                if (m.TryGetValue(ch.ChannelId, out var until) && until > now) n++;
+        return n;
+    }
+
+    /// <summary>🕒 조회 종료일(태평양 오늘 − <see cref="AnalyticsReportingLagDays"/>).</summary>
+    public static DateOnly AnalyticsEndDate(DateTimeOffset nowUtc)
+        => DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(nowUtc, Pacific()).Date).AddDays(-AnalyticsReportingLagDays);
+
+    private static DateOnly PacificDate(DateTimeOffset utc) => DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(utc, Pacific()).Date);
+
+    /// <summary>
+    /// 🕒 보고 지연 가드 — 게시일(태평양)이 종료일보다 앞서야(완전 집계된 날 ≥ 1) 정밀 승격 후보. 게시 시각 미상 · 너무 최근 → 관측 전용 유지.
+    /// 최초 반영은 클립당 1회(alreadyRegistered)라 집계 중 0/부분 CTR 로 잡힌 기준선은 영구 오답이 된다.
+    /// </summary>
+    public static bool IsAnalyticsReportMature(DateTimeOffset? publishedAtUtc, DateTimeOffset nowUtc)
+        => publishedAtUtc is { } p && PacificDate(p) < AnalyticsEndDate(nowUtc);
+
+    /// <summary>
+    /// Analytics v2 <c>reports.query</c> 응답 → 영상별 지표. 열 위치가 아닌 <c>columnHeaders</c> 이름으로 매핑(필수: video · views · averageViewPercentage · CTR).
+    /// <c>rows</c> 없음 = 데이터 없음(정상). 형식 위반 행 · 잘못된 영상 ID 는 제외.
+    /// </summary>
+    public static Dictionary<string, AnalyticsVideoMetrics> ParseAnalyticsReport(JsonDocument doc)
+    {
+        ArgumentNullException.ThrowIfNull(doc);
+        var root = doc.RootElement;
+        if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("columnHeaders", out var headers) || headers.ValueKind != JsonValueKind.Array)
+            throw new InvalidDataException("YouTube Analytics 응답 스키마 위반(columnHeaders 없음)");
+        int iVideo = -1, iViews = -1, iMinutes = -1, iAvg = -1, iCtr = -1, idx = 0;
+        foreach (var h in headers.EnumerateArray())
+        {
+            var name = h.ValueKind == JsonValueKind.Object && h.TryGetProperty("name", out var n) && n.ValueKind == JsonValueKind.String ? n.GetString() : null;
+            switch (name)
+            {
+                case "video": iVideo = idx; break;
+                case "views": iViews = idx; break;
+                case "estimatedMinutesWatched": iMinutes = idx; break;
+                case "averageViewPercentage": iAvg = idx; break;
+                case "impressionsClickThroughRate" or "videoThumbnailImpressionsClickRate": iCtr = idx; break;
+            }
+            idx++;
+        }
+        if (iVideo < 0 || iViews < 0 || iAvg < 0 || iCtr < 0)
+            throw new InvalidDataException("YouTube Analytics 응답 스키마 위반(video · views · averageViewPercentage · CTR 열 필요)");
+        var result = new Dictionary<string, AnalyticsVideoMetrics>(StringComparer.Ordinal);
+        if (!root.TryGetProperty("rows", out var rows) || rows.ValueKind == JsonValueKind.Null) return result;
+        if (rows.ValueKind != JsonValueKind.Array) throw new InvalidDataException("YouTube Analytics 응답 스키마 위반(rows 배열 아님)");
+        foreach (var r in rows.EnumerateArray())
+        {
+            if (r.ValueKind != JsonValueKind.Array || r.GetArrayLength() < idx) continue;
+            var id = r[iVideo].ValueKind == JsonValueKind.String ? r[iVideo].GetString() : null;
+            if (!YouTubeStudioAnalyticsNormalizer.IsYouTubeVideoId(id)) continue;
+            if (!Num(r[iViews], out var views) || !Num(r[iAvg], out var avg) || !Num(r[iCtr], out var ctr)) continue;
+            var minutes = iMinutes >= 0 && Num(r[iMinutes], out var mw) ? mw : 0.0;
+            result[id!] = new AnalyticsVideoMetrics((long)Math.Max(0, views), minutes, avg, ctr);
+        }
+        return result;
+
+        static bool Num(JsonElement e, out double v)
+        {
+            v = 0;
+            return e.ValueKind == JsonValueKind.Number && e.TryGetDouble(out v) && double.IsFinite(v);
+        }
+    }
+
+    /// <summary>
+    /// Data API 관측 행 + Analytics 지표 → 정밀 행(<see cref="YouTubeAnalyticsRow.HasPrecisionMetrics"/> = true). 조회 &lt; <see cref="YouTubeStudioAnalyticsNormalizer.MinViews"/> ·
+    /// 유지율/CTR 0(아직 집계 전 · 노출 없음) → false(관측 전용 유지). 유지율 100 % 초과(Shorts 반복) → Studio 와 같은 포화 곡선. 3초 유지(Stayed)는 v2 에 없어 완주율 기반 추정.
+    /// </summary>
+    public static bool TryBuildPrecisionRow(YouTubeAnalyticsRow observed, AnalyticsVideoMetrics m, out YouTubeAnalyticsRow row)
+    {
+        ArgumentNullException.ThrowIfNull(observed);
+        row = observed;
+        if (m.Views < YouTubeStudioAnalyticsNormalizer.MinViews) return false;
+        if (!(m.AverageViewPercentage > 0) || !(m.CtrPct > 0) || !double.IsFinite(m.AverageViewPercentage) || !double.IsFinite(m.CtrPct)) return false;
+        var completion = YouTubeStudioAnalyticsNormalizer.SaturateCompletion(m.AverageViewPercentage);
+        row = new YouTubeAnalyticsRow(observed.YouTubeVideoId, observed.Title, observed.PublishedAtUtc, m.Views,
+            PlutoTelemetryBatchImporter.EstimateHookFromCompletion(completion), true, completion, m.AverageViewPercentage, Math.Min(m.CtrPct, 100.0), false)
+        {
+            Likes = observed.Likes, Comments = observed.Comments, ExportLanguage = observed.ExportLanguage, HasPrecisionMetrics = true,
+        };
+        return true;
+    }
+
+    /// <summary>
+    /// 채널별 · 50개 묶음 <c>reports.query</c>(dimensions=video · 1 요청 = 1 unit 보수 집계) → 정밀 승격 → 기획 채점 · 유기적 복권 즉시 실행.
+    /// 🔐 채널 403 → 그 채널만 <see cref="AnalyticsScopeRetryInterval"/> 래치(다른 채널 · Data API 결과 유지).
+    /// </summary>
+    private async Task<AnalyticsOutcome> RunAnalyticsPrecisionAsync(PlutoYouTubeApiCredentials creds, List<YouTubeAnalyticsRow> rows, Dictionary<string, string> idChannel, RunCounters run, CancellationToken ct)
+    {
+        var inv = CultureInfo.InvariantCulture;
+        var now = Now();
+        var end = AnalyticsEndDate(now);
+        var floor = end.AddDays(-AnalyticsMaxLookbackDays);
+        var byId = new Dictionary<string, YouTubeAnalyticsRow>(StringComparer.Ordinal);
+        var perChannel = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+        var deferred = 0;
+        foreach (var r in rows)
+        {
+            if (r.YouTubeVideoId is not { } id || !idChannel.TryGetValue(id, out var ch) || byId.ContainsKey(id)) continue;
+            if (!IsAnalyticsReportMature(r.PublishedAtUtc, now)) { deferred++; continue; }
+            byId[id] = r;
+            if (!perChannel.TryGetValue(ch, out var list)) perChannel[ch] = list = new List<string>();
+            list.Add(id);
+        }
+
+        var promoted = new List<YouTubeAnalyticsRow>();
+        int scopeMissing = 0, queried = 0;
+        foreach (var ch in creds.Channels)
+        {
+            bool latched;
+            lock (_sync) latched = _state.AnalyticsScopeMissing is { } m && m.TryGetValue(ch.ChannelId, out var until) && until > now;
+            if (latched) { scopeMissing++; continue; }
+            if (!perChannel.TryGetValue(ch.ChannelId, out var ids)) continue;
+            for (var i = 0; i < ids.Count; i += MaxIdsPerRequest)
+            {
+                var batch = ids.GetRange(i, Math.Min(MaxIdsPerRequest, ids.Count - i));
+                var start = end;
+                foreach (var id in batch) { var d = PacificDate(byId[id].PublishedAtUtc!.Value); if (d < start) start = d; }
+                if (start < floor) start = floor;
+                var url = AnalyticsReportsEndpoint + "?ids=" + Uri.EscapeDataString("channel==" + ch.ChannelId)
+                    + "&startDate=" + start.ToString("yyyy-MM-dd", inv) + "&endDate=" + end.ToString("yyyy-MM-dd", inv)
+                    + "&metrics=" + Uri.EscapeDataString(AnalyticsMetrics) + "&dimensions=video"
+                    + "&filters=" + Uri.EscapeDataString("video==" + string.Join(",", batch)) + "&maxResults=" + MaxIdsPerRequest.ToString(inv);
+                Dictionary<string, AnalyticsVideoMetrics> metrics;
+                try
+                {
+                    using var doc = await GetJsonAsync(url, run, ct, analyticsUrl: true).ConfigureAwait(false);
+                    metrics = ParseAnalyticsReport(doc);
+                }
+                catch (AnalyticsScopeException)
+                {
+                    lock (_sync)
+                    {
+                        EnsureStateLoadedLocked();
+                        (_state.AnalyticsScopeMissing ??= new Dictionary<string, DateTimeOffset>(StringComparer.Ordinal))[ch.ChannelId] = now + AnalyticsScopeRetryInterval;
+                        PersistStateLocked();
+                    }
+                    scopeMissing++;
+                    break;   // 이 채널의 남은 묶음도 같은 403 → 쿼터 낭비 차단
+                }
+                queried++;
+                foreach (var id in batch)
+                    if (metrics.TryGetValue(id, out var mv) && TryBuildPrecisionRow(byId[id], mv, out var pr)) promoted.Add(pr);
+                    else deferred++;
+            }
+        }
+
+        PlutoTelemetryBatchImportResult? import = null;
+        PlutoBriefSweepResult? sweep = null;
+        if (promoted.Count > 0 && _importer is not null)
+        {
+            import = await _importer.ImportYouTubeAnalyticsPrecisionRowsAsync(promoted, PlatformName, ct).ConfigureAwait(false);
+            if (import.MatchedAndLearnedCount + import.MaturityDeltaCount > 0 && BriefOutcomes is { } briefs)
+            {
+                try { sweep = await briefs.EvaluatePendingBriefOutcomesAndRehabilitationAsync(ct).ConfigureAwait(false); }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.YouTubeAnalytics] brief sweep: " + ex.GetType().Name); }   // 채점 실패는 학습과 격리
+            }
+        }
+        lock (_sync)
+        {
+            EnsureStateLoadedLocked();
+            if (queried > 0) _state.AnalyticsScopeConfirmed = true;
+            if (promoted.Count > 0) { _state.AnalyticsLastPrecisionUtc = now; _state.AnalyticsLastPromoted = promoted.Count; }
+            PersistStateLocked();
+        }
+        var mode = scopeMissing >= creds.Channels.Count ? PlutoYouTubeAnalyticsPrecisionMode.AwaitingScope : PlutoYouTubeAnalyticsPrecisionMode.Active;
+        return new AnalyticsOutcome(mode) { Import = import, Promoted = promoted.Count, Deferred = deferred, ScopeMissing = scopeMissing, Sweep = sweep };
+    }
+
+    public PlutoYouTubeAnalyticsPrecisionStatus GetAnalyticsPrecisionStatus()
+    {
+        var c = LoadCredentials();
+        var mode = AnalyticsModeFor(c);
+        lock (_sync)
+        {
+            EnsureStateLoadedLocked();
+            var now = Now();
+            var missing = c is null ? 0 : ScopeMissingCountLocked(c, now);
+            DateTimeOffset? retry = null;
+            if (_state.AnalyticsScopeMissing is { Count: > 0 } m)
+                foreach (var v in m.Values) if (v > now && (retry is null || v < retry)) retry = v;
+            return new PlutoYouTubeAnalyticsPrecisionStatus(mode, _state.AnalyticsEnabled ?? true, missing, c?.Channels.Count ?? 0, retry, _state.AnalyticsLastPrecisionUtc, _state.AnalyticsLastPromoted);
+        }
+    }
+
+    public Task SetAnalyticsPrecisionEnabledAsync(bool enabled, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        lock (_sync)
+        {
+            EnsureStateLoadedLocked();
+            _state.AnalyticsEnabled = enabled;
+            PersistStateLocked();
+        }
+        RaiseChanged();
+        return Task.CompletedTask;
     }
 
     /// <summary>예외 → 상태(쿼터 소진은 태평양 자정까지 냉각 영속 · 비밀값 가림). 받은 행이 있으면 Partial.</summary>

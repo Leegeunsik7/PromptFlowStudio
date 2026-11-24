@@ -198,6 +198,15 @@ else
                 <button class="dh-btn" data-yt-api-auto="@(_ytAuto?.Enabled == true ? "on" : "off")" aria-pressed="@(_ytAuto?.Enabled == true ? "true" : "false")" disabled="@_ytApiBusy" @onclick="ToggleYouTubeApiAutoAsync" title="백그라운드에서 주기적으로 채널 통계를 동기화 — 수동 동기화와 겹치지 않음 · 수동 성공 시 다음 예정이 한 주기 뒤로 · quotaExceeded/예비 쿼터 미만이면 태평양 자정까지 정지 · 일시 오류는 지수 백오프">@(_ytAuto?.Enabled == true ? "[⏱️ API 주기 자동 동기화 ON]" : "[⏱️ API 주기 자동 동기화 OFF]")</button>
                 @if (_ytAuto is { } yau) { <span class="dh-sum" role="status" data-yt-api-auto-status="@(yau.Phase.ToString())">@(yau.StatusKorean)</span> }
             </div>
+            @* 📊 Step 45 — YouTube Analytics API v2 정밀 지표(CTR · 유지율) 상태 배지 · 토글 *@
+            @if (_ytPrecision is { } ypr)
+            {
+                <div class="dh-ytauto">
+                    <button class="dh-btn" data-yt-analytics-toggle="@(ypr.Enabled ? "on" : "off")" aria-pressed="@(ypr.Enabled ? "true" : "false")" disabled="@_ytApiBusy" @onclick="ToggleYouTubeAnalyticsPrecisionAsync" title="OAuth(yt-analytics.readonly)일 때 youtubeanalytics v2 reports.query 로 영상별 CTR · 평균 조회율을 받아 정밀 학습 · 성숙 증분 · 기획 채점에 반영 — API 키만이면 관측 전용 · 보고 지연 2일 창 · 403 채널은 24시간 재확인">@(ypr.Enabled ? "[📊 CTR · 유지율 정밀 동기화 ON]" : "[📊 CTR · 유지율 정밀 동기화 OFF]")</button>
+                    <span class="dh-badge s@(ypr.Severity.ToString(CultureInfo.InvariantCulture))" role="status" data-yt-analytics-mode="@(ypr.Mode.ToString())">@(ypr.BadgeKorean)</span>
+                    @if (ypr.LastPrecisionUtc is { } yprAt) { <span class="dh-sum" data-yt-analytics-last="1">마지막 정밀 반영 @(yprAt.ToLocalTime().ToString("MM-dd HH:mm", CultureInfo.InvariantCulture)) · @(ypr.LastPromotedCount.ToString(CultureInfo.InvariantCulture))건</span> }
+                </div>
+            }
             <div class="dh-ytapi">
                 <input type="password" autocomplete="off" data-yt-api-key="1" @bind="_ytApiKey" placeholder="API 키(읽기 전용 · 공개 통계)" />
                 <input type="text" autocomplete="off" data-yt-api-client-id="1" @bind="_ytClientId" placeholder="OAuth 클라이언트 ID(선택)" />
@@ -443,8 +452,19 @@ else
 
     private void RefreshYouTubeApiStatus()
     {
-        try { _ytApi = YouTubeApi.GetStatus(); _ytAuto = YouTubeApi.GetAutoSyncStatus(); }
-        catch (Exception ex) { Program.Log("Settings.YouTubeApiStatus", ex); _ytApi = null; _ytAuto = null; }
+        try { _ytApi = YouTubeApi.GetStatus(); _ytAuto = YouTubeApi.GetAutoSyncStatus(); _ytPrecision = YouTubeApi.GetAnalyticsPrecisionStatus(); }
+        catch (Exception ex) { Program.Log("Settings.YouTubeApiStatus", ex); _ytApi = null; _ytAuto = null; _ytPrecision = null; }
+    }
+
+    // ── 📊 Step 45 — Analytics v2 정밀 지표(CTR · 유지율) 배지 · 토글 ──
+    private PlutoYouTubeAnalyticsPrecisionStatus? _ytPrecision;
+
+    private async Task ToggleYouTubeAnalyticsPrecisionAsync()
+    {
+        if (_ytApiBusy) return;
+        try { await YouTubeApi.SetAnalyticsPrecisionEnabledAsync(_ytPrecision?.Enabled != true); }
+        catch (Exception ex) { Program.Log("Settings.YouTubeAnalyticsPrecision", ex); _ytApiToast = "⚠ 정밀 지표 전환 실패: " + ex.GetType().Name; }
+        RefreshYouTubeApiStatus();
     }
 
     // ── ⏱️ Step 36 — 주기 자동 동기화 토글 · 실시간 상태 ──

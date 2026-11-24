@@ -26,6 +26,8 @@ public enum PlutoActivityKind
     DriveConflict = 7,
     /// <summary>🎬 Step 40 — 전 언어 일괄 렌더/패키지 완료(로캘별 MP4 · 사이드카 결과).</summary>
     LocaleRender = 8,
+    /// <summary>📊 Step 45 — YouTube Analytics API v2 정밀 지표(CTR · 유지율) 학습 · 성숙 반영 / 범위 대기.</summary>
+    AnalyticsPrecision = 9,
 }
 
 /// <summary>🛰️ 자율 활동 1건(메시지는 이미 경로 · 비밀값 가림 처리됨).</summary>
@@ -45,6 +47,7 @@ public sealed record PlutoActivityEntry(long Seq, DateTimeOffset AtUtc, PlutoAct
         PlutoActivityKind.DriveSync => "☁️",
         PlutoActivityKind.DriveConflict => "⚔️",
         PlutoActivityKind.LocaleRender => "🎬",
+        PlutoActivityKind.AnalyticsPrecision => "📊",
         _ => "•",
     };
 
@@ -268,16 +271,37 @@ public sealed class PlutoAutonomousActivityFeedService : IPlutoAutonomousActivit
                 return Record(PlutoActivityKind.ApiPause, "API 동기화(" + mode + ") ⏸ " + why,
                     "api-pause:" + result.State.ToString() + ":" + PlutoYouTubeApiSyncService.QuotaDayKey(_time.GetUtcNow()));
         }
-        if (!result.Succeeded || result.Import is not { } imp) return false;
+        if (!result.Succeeded) return false;
+        var precisionAdded = RecordAnalyticsPrecision(result, mode);
+        if (result.Import is not { } imp) return precisionAdded;
         var linked = imp.NewlyLinkedCount;
         var recovered = imp.QueueRecoveredCount;
-        if (linked <= 0 && recovered <= 0) return false;   // 조회수 갱신만 → 기록하지 않음(30건 창을 소음으로 밀어내지 않음)
+        if (linked <= 0 && recovered <= 0) return precisionAdded;   // 조회수 갱신만 → 기록하지 않음(30건 창을 소음으로 밀어내지 않음)
         var msg = "API 동기화(" + mode + ")";
         if (linked > 0) msg += " · 📺 새 연결 " + linked.ToString(inv) + "건";
         if (recovered > 0) msg += " · 📌→✅ 미매칭 대기열 회수 " + recovered.ToString(inv) + "건";
         msg += " · 👁 관측 " + imp.ApiObservedCount.ToString(inv) + "건";
         if (result.State == PlutoYouTubeApiSyncState.Partial) msg += " · [부분 구제]";
-        return Record(PlutoActivityKind.ApiSync, msg);
+        return Record(PlutoActivityKind.ApiSync, msg) || precisionAdded;
+    }
+
+    /// <summary>
+    /// 📊 Step 45 — Analytics v2 정밀 학습(학습 · 성숙 증분 &gt; 0)만 기록 · 같은 날 범위 대기(403)는 1건만(30분 주기 자동 동기화가 피드를 덮지 않게).
+    /// 기반영(멱등 재조회)만 있었던 실행은 기록하지 않는다.
+    /// </summary>
+    private bool RecordAnalyticsPrecision(PlutoYouTubeApiSyncResult result, string mode)
+    {
+        var inv = CultureInfo.InvariantCulture;
+        var day = PlutoYouTubeApiSyncService.QuotaDayKey(_time.GetUtcNow());
+        if (result.AnalyticsMode == PlutoYouTubeAnalyticsPrecisionMode.AwaitingScope || result.AnalyticsScopeMissingChannels > 0)
+            Record(PlutoActivityKind.AnalyticsPrecision, "Analytics 정밀 지표(" + mode + ") 🔐 yt-analytics.readonly 범위 대기 채널 " + result.AnalyticsScopeMissingChannels.ToString(inv)
+                + "개 — 관측 전용으로 강등(재승인 후 자격 증명 저장)", "analytics-scope:" + day + ":" + result.AnalyticsScopeMissingChannels.ToString(inv));
+        if (result.PrecisionImport is not { } pi || pi.MatchedAndLearnedCount + pi.MaturityDeltaCount <= 0) return false;
+        var msg = "Analytics 정밀 지표(" + mode + ") 📊 CTR · 유지율 ✅ 학습 " + pi.MatchedAndLearnedCount.ToString(inv) + "건 · 📈 성숙 " + pi.MaturityDeltaCount.ToString(inv) + "건";
+        if (pi.StudioHookCarriedCount > 0) msg += " · 🥇 Studio 실측 3초 유지 승계 " + pi.StudioHookCarriedCount.ToString(inv) + "건";
+        if (result.BriefSweep is { } sw && sw.EvaluatedCount > 0) msg += " · 🎯 기획 채점 " + sw.EvaluatedCount.ToString(inv) + "건";
+        if (result.AnalyticsDeferredCount > 0) msg += " · 🕒 보고 지연 보류 " + result.AnalyticsDeferredCount.ToString(inv) + "건";
+        return Record(PlutoActivityKind.AnalyticsPrecision, msg);
     }
 
     public bool RecordDownloadsIngest(PlutoDownloadsAutoIngestEvent? evt)
