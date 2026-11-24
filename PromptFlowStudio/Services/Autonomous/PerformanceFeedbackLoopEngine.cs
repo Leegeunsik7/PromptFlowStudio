@@ -49,6 +49,8 @@ public sealed class PerformanceFeedbackLoopEngine
     public const int MaxQueue = 64;
     public const int MaxPromptLength = 800;
     public static readonly TimeSpan AiDeadline = TimeSpan.FromSeconds(10);
+    /// <summary>인스턴스 AI 마감(기본 <see cref="AiDeadline"/>) — 다른 LLM 엔진의 <c>LlmDeadlineMs</c> 와 같은 주입점. 테스트는 무응답 페이크로 10 s 벽시계 대기 대신 짧은 마감을 주입.</summary>
+    public TimeSpan TuneDeadline { get; init; } = AiDeadline;
 
     /// <summary>카메라 무빙 사전(정규 라벨, 동의어…) — 첫 원소가 라벨이자 치환 토큰.</summary>
     public static readonly string[][] CameraLexicon =
@@ -503,7 +505,7 @@ public sealed class PerformanceFeedbackLoopEngine
                 try
                 {
                     using var d = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                    d.CancelAfter(AiDeadline);
+                    d.CancelAfter(TuneDeadline);
                     var r = await _generate!(BuildTuningInstruction(v, dx, top), d.Token).ConfigureAwait(false);
                     ai = r.Ok && TryParseTuned(r.Text, v.Prompt, out after, out rationale);
                 }

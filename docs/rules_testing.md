@@ -75,3 +75,16 @@
   - 멱등성 감사: `PFS_ALLOC_FORCE_ALL_WINDOWS=1` 로 해당 클래스를 돌리면 0 B 조기 반환 없이 항상 4 창 실행 → 재시도에 깨지는 후속 단언을 단독 실행에서도 드러낸다(변경 시 1회 권장).
 - 실 프로세스 생성(`cmd.exe` 등) 단언은 `ProcessEnvironment` 컬렉션 + 유효 대상만 유한 재시도(3회 · 100/200 ms) — 검증(`ValidateExternalTarget`) 통과를 먼저 단언하고 무효 대상 `false` 단언에는 재시도 금지.
 - 플라이휠 자가진단은 10 단계 — Stage 10 은 고유 마스터 ID(프로세스 전역 일괄 단일 비행 슬롯 충돌 방지) · 주입 렌더러/디스크 탐침/시계/오프라인 번역기 · 카탈로그는 산출물 폴더 밖.
+
+## 전체 스위트 벽시계 프로파일링 (Step 42)
+- 측정법: `--logger "trx;LogFileName=…"` → `UnitTestResult` 의 `endTime − duration` 으로 테스트별 구간 복원 → 30 s 창 동시성 · 컬렉션별 시작/끝. 정지 의심 테스트는 testhost `TotalProcessorTime` 1 s 표본과 겹쳐 "코어 사용량 = CPU 초 / 벽시계 초"(≈ 0 이면 대기 정지).
+- 구조(16 코어 실측): 벽시계 = 병렬 구간(가장 긴 컬렉션 사슬) + 비병렬 컬렉션 합(`ProcessGcMode` + `TimingSensitivePerformance` + `ProcessEnvironment`). 경량 병렬 테스트는 ≈ 35 s 에 끝나고 비병렬 구간 ≈ 800 s 는 단일 코어 계산(코어 ≈ 0.9–1.0).
+- 기준 `b524f21` 15 m 48 s(948 s) → Step 42 14 m 47 s(888 s) · 1422/1422 1 회차:
+  | 핫스팟 | 원인 | 조치 | 전 → 후 |
+  |---|---|---|---|
+  | 병렬 구간 꼬리 | `TitanHeavyCompute` 단일 직렬 사슬 15 클래스(≈ 140 s) — 35 s 이후 1/16 코어만 일함 | 측정 기반 균형 2 사슬(`TitanHeavyCompute` ≈ 71 s / `TitanHeavyComputeB` ≈ 69 s) · 둘 다 벽시계 게이트 없음 | 142.5 → 87.9 s |
+  | 모달 크롤러(비병렬) | 모달마다 무조건 `Collect+WaitForPendingFinalizers+Collect` 175 회(전역 정지 · 단독 85 s 중 ≈ 32 s) + 워커 3 고정 | 작업 집합 ≥ 4 GB 일 때만 3 단 회수 · 워커 `Clamp(코어/2, 3, 6)` — 디스패치 4,140±10 · 정상률 100 % · waitsHit 10–14 동일 | 80.6 → 48.9 s(단독 85 → 29 s) |
+  | 무응답 AI 마감 대기 | `PerformanceFeedbackLoopEngine.AiDeadline` 실 10 s 를 비병렬 구간에서 0.01 코어로 대기 | 인스턴스 `TuneDeadline`(init · 기본 = `AiDeadline`) 주입 300 ms · 기본 10 s 별도 단언 · 마감 발동 하한(≥ 250 ms) 추가 | 10.1 → 0.4 s |
+- 배제된 가설(실측): ① "50 회 업로드" 테스트(`PlutoYouTubeApiSyncTests` 예산 50 건)는 0.08 s · Step 41 이전 커밋 — 원인 아님. ② Step 41 `SteadyStateAllocation` 재시도 창: 전체 실행 중 재시도 9 건 · 추가 비용 ≈ 0 ms. ③ 실시간 페이싱: `BroadcastMcrStudioRunner.Step()` 은 대기 없음(Sleep 은 라이브 루프 전용) — 비병렬 대형 시뮬은 순수 계산.
+- 49 m 급 급등의 실측 단서: 같은 코드가 12 m 27 s / 15 m 48 s 로 갈림 — 비병렬 구간이 단일 코어 계산이라 호스트 경합(측정 시 상주 `BMSFile2Agent` ≈ 1 코어 · 타 프로젝트 `PlutoCore.E2E` ≈ 0.85 코어 · VS Code)에 선형 민감. 전체 실행 전 타 테스트/빌드 프로세스 동시 실행 금지.
+- 규칙: 새 무거운 순수 계산 클래스는 짧은 쪽 `TitanHeavyCompute*` 사슬에 배치(사슬 합 균형) · 무응답 페이크로 제품 마감을 기다리지 말고 인스턴스 마감 주입점 사용 · 반복 루프 안 무조건 강제 GC 금지(임계 조건부).

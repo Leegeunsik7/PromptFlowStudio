@@ -4785,12 +4785,15 @@ public class TitanReleaseTests
         Assert.NotNull(rev2); Assert.False(rev2!.Ai);
         Assert.Contains("aerial drone shot", rev2.After); Assert.Contains("golden hour light", rev2.After);
         Assert.DoesNotContain("static", rev2.After);
-        var slow = new Auto.PerformanceFeedbackLoopEngine(async (p, ct) => { await Task.Delay(Timeout.Infinite, ct); return new GeminiResult(false, null, ""); }, () => true, () => null, null);
+        // Step 42: 무응답 AI 마감 — 실 10 s 벽시계 대기(비병렬 구간 0.01 코어 정지) 대신 인스턴스 마감 주입 · 기본값은 별도 단언
+        Assert.Equal(TimeSpan.FromSeconds(10), Auto.PerformanceFeedbackLoopEngine.AiDeadline);
+        Assert.Equal(Auto.PerformanceFeedbackLoopEngine.AiDeadline, fb.TuneDeadline);
+        var slow = new Auto.PerformanceFeedbackLoopEngine(async (p, ct) => { await Task.Delay(Timeout.Infinite, ct); return new GeminiResult(false, null, ""); }, () => true, () => null, null) { TuneDeadline = TimeSpan.FromMilliseconds(300) };
         slow.ImportCsv(csv);
         var sw = Stopwatch.StartNew();
         var rev3 = await slow.TuneAsync(slow.Records.First(r => r.VideoId == "v3"));
         Assert.False(rev3!.Ai);
-        Assert.True(sw.Elapsed < Auto.PerformanceFeedbackLoopEngine.AiDeadline + TimeSpan.FromSeconds(3));
+        Assert.True(sw.Elapsed >= TimeSpan.FromMilliseconds(250) && sw.Elapsed < slow.TuneDeadline + TimeSpan.FromSeconds(3), "마감 " + sw.ElapsedMilliseconds + " ms");
         Assert.Equal(1, fb.ApplyYouTubeStats("{\"items\":[{\"id\":\"v3\",\"statistics\":{\"viewCount\":\"1500\",\"likeCount\":\"30\"}},{\"id\":\"zz\",\"statistics\":{\"viewCount\":\"9\"}}]}"));
         Assert.Equal(1500, fb.Records.First(r => r.VideoId == "v3").Views);
         Assert.Equal(0, fb.ApplyYouTubeStats("{bad"));
@@ -24939,7 +24942,7 @@ public sealed class StereoXrIsolatedTests
 
 /// <summary>v17.23.0 AI 6DoF 공간 음향 &amp; 광선 추적 — BVH/커널 비트 동일 · RT60 · HRTF ITD/ILD · 도플러 · 회절 · 위상 가드 · 러너 무할당.</summary>
 [Trait("Category", "Integration")]
-[Collection("TitanHeavyCompute")]   // Step 35: CPU 집약 엔진 스위트 — 서로 직렬(동시 1 개) · 경량 테스트와는 병렬
+[Collection("TitanHeavyComputeB")]   // Step 35: CPU 집약 엔진 스위트 — 서로 직렬(동시 1 개) · 경량 테스트와는 병렬
 public sealed class SpatialAcousticsIsolatedTests
 {
     [Fact]
@@ -25161,7 +25164,7 @@ public sealed class SpatialAcousticsIsolatedTests
 
 /// <summary>v17.24.0 AI 6DoF 공간 햅틱 &amp; 역각 피드백 — SIMD 커널 비트 동일 · 갓-오브젝트 프록시 · 켈빈-보이트 · 진동 텍스처/맥동 · POPC 가드 · 러너 무할당.</summary>
 [Trait("Category", "FastUnit")]
-[Collection("TitanHeavyCompute")]   // Step 35: CPU 집약 엔진 스위트 — 서로 직렬(동시 1 개) · 경량 테스트와는 병렬
+[Collection("TitanHeavyComputeB")]   // Step 35: CPU 집약 엔진 스위트 — 서로 직렬(동시 1 개) · 경량 테스트와는 병렬
 public sealed class SpatialHapticsIsolatedTests
 {
     [Fact]
@@ -25569,7 +25572,7 @@ public sealed class ContinuumPhysicsIsolatedTests
 
 /// <summary>v17.27.0 AI 생성형 월드 확장 &amp; 4D 인페인팅 — 해시 그리드 MLP SIMD 비트 동일 · 프롬프트 스타일 · 예측 생성 · 고정 메모리 예산 · 알파-디졸브 · 심도 유도 인페인팅 · 러너 무할당.</summary>
 [Trait("Category", "Integration")]
-[Collection("TitanHeavyCompute")]   // Step 35: CPU 집약 엔진 스위트 — 서로 직렬(동시 1 개) · 경량 테스트와는 병렬
+[Collection("TitanHeavyComputeB")]   // Step 35: CPU 집약 엔진 스위트 — 서로 직렬(동시 1 개) · 경량 테스트와는 병렬
 public sealed class WorldExpansionIsolatedTests
 {
     [Fact]
@@ -26107,7 +26110,7 @@ public sealed class LiveDubbingIsolatedTests
 
 /// <summary>v17.33.0: AI 뉴럴 모션 매칭 &amp; 지형 적응 생체역학 — 가속 검색 정확성 · 궤적 예측 · 관성 블렌딩 · 지형 IK/ZMP · 풋스케이팅/과신전 가드 · 무할당.</summary>
 [Trait("Category", "FastUnit")]
-[Collection("TitanHeavyCompute")]   // Step 35: CPU 집약 엔진 스위트 — 서로 직렬(동시 1 개) · 경량 테스트와는 병렬
+[Collection("TitanHeavyComputeB")]   // Step 35: CPU 집약 엔진 스위트 — 서로 직렬(동시 1 개) · 경량 테스트와는 병렬
 public sealed class MotionMatchingIsolatedTests
 {
     private static MM.NeuralMotionMatchingStudioRunner Run(int frames, Action<MM.NeuralMotionMatchingStudioRunner>? setup = null)
@@ -26191,7 +26194,7 @@ public sealed class MotionMatchingIsolatedTests
 
 /// <summary>v17.34.0: AI 헤드리스 시각 QA &amp; ZMP 디버깅 — 소프트웨어 래스터 · 실 Blazor 헤드리스 캡처 · SSIM/픽셀 회귀 · 레이아웃 붕괴/팝핑 판독 · 계단 ZMP 교정 · 무할당.</summary>
 [Trait("Category", "Integration")]
-[Collection("TitanHeavyCompute")]   // Step 35: CPU 집약 엔진 스위트 — 서로 직렬(동시 1 개) · 경량 테스트와는 병렬
+[Collection("TitanHeavyComputeB")]   // Step 35: CPU 집약 엔진 스위트 — 서로 직렬(동시 1 개) · 경량 테스트와는 병렬
 public sealed class VisualQaIsolatedTests
 {
     [Fact]
@@ -26294,7 +26297,7 @@ public sealed class VisualQaIsolatedTests
 
 /// <summary>v17.35.0: AI 접촉 로코모션 &amp; 계단 보행 — 볼류메트릭 스캔 · 4보 발 배치 · 계단 합성(포착 스텝 · 속도 정합) · 접지 창 LIPM/DCM ZMP 95%+ · 각운동량 · 무할당.</summary>
 [Trait("Category", "FastUnit")]
-[Collection("TitanHeavyCompute")]   // Step 35: CPU 집약 엔진 스위트 — 서로 직렬(동시 1 개) · 경량 테스트와는 병렬
+[Collection("TitanHeavyComputeB")]   // Step 35: CPU 집약 엔진 스위트 — 서로 직렬(동시 1 개) · 경량 테스트와는 병렬
 public sealed class ContactLocomotionIsolatedTests
 {
     [Fact]
@@ -27761,7 +27764,7 @@ public sealed class InstagramViralReelsRemixIsolatedTests
 }
 
 [Trait("Category", "FastUnit")]
-[Collection("TitanHeavyCompute")]   // Step 35: CPU 집약 엔진 스위트 — 서로 직렬(동시 1 개) · 경량 테스트와는 병렬
+[Collection("TitanHeavyComputeB")]   // Step 35: CPU 집약 엔진 스위트 — 서로 직렬(동시 1 개) · 경량 테스트와는 병렬
 public sealed class MetaGraphApiBridgeIsolatedTests
 {
     private static int RunUntil(Gb.GraphApiBridgeStudioRunner run, Func<bool> done, int max)
@@ -28110,7 +28113,7 @@ public sealed class VerticalVideoTranscodeIsolatedTests
 }
 
 [Trait("Category", "Integration")]
-[Collection("TitanHeavyCompute")]   // Step 35: CPU 집약 엔진 스위트 — 서로 직렬(동시 1 개) · 경량 테스트와는 병렬
+[Collection("TitanHeavyComputeB")]   // Step 35: CPU 집약 엔진 스위트 — 서로 직렬(동시 1 개) · 경량 테스트와는 병렬
 public sealed class ViralLoopAutomationIsolatedTests
 {
     [Fact]
@@ -28481,7 +28484,7 @@ public sealed class MotionTypographyIsolatedTests
 }
 
 [Trait("Category", "Integration")]
-[Collection("TitanHeavyCompute")]   // Step 35: CPU 집약 엔진 스위트 — 서로 직렬(동시 1 개) · 경량 테스트와는 병렬
+[Collection("TitanHeavyComputeB")]   // Step 35: CPU 집약 엔진 스위트 — 서로 직렬(동시 1 개) · 경량 테스트와는 병렬
 public sealed class BeatSyncAudioDuckingIsolatedTests
 {
     [Fact]
@@ -28608,7 +28611,7 @@ public sealed class BeatSyncAudioDuckingIsolatedTests
 }
 
 [Trait("Category", "Integration")]
-[Collection("TitanHeavyCompute")]   // Step 35: CPU 집약 엔진 스위트 — 서로 직렬(동시 1 개) · 경량 테스트와는 병렬
+[Collection("TitanHeavyComputeB")]   // Step 35: CPU 집약 엔진 스위트 — 서로 직렬(동시 1 개) · 경량 테스트와는 병렬
 public sealed class RhythmActionMvIsolatedTests
 {
     [Fact]

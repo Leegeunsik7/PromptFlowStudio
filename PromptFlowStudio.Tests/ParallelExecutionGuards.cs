@@ -8,6 +8,14 @@ namespace PromptFlowStudio.Tests;
 [CollectionDefinition("TitanHeavyCompute")]
 public sealed class TitanHeavyComputeCollection { }
 
+/// <summary>Step 42 — 무거운 엔진 스위트 2 번째 직렬 사슬. 단일 사슬(15 클래스 ≈ 140 s)이 병렬 구간의 꼬리였다:
+///   경량 병렬 테스트는 ≈ 35 s 에 끝나고 나머지 ≈ 105 s 동안 16 코어 중 1 슬롯만 일함(TRX 타임라인 동시성 1.00).
+///   측정 시간 기준 균형 분할 — A(<c>TitanHeavyCompute</c>): Continuum · Microclimate · VerticalVideo · SystemWide · UiExhaustive ≈ 71 s /
+///   B(이 컬렉션): ViralLoop · BeatSync · WorldExpansion · RhythmMv · SpatialAcoustics · VisualQa · 경량 4 ≈ 69 s.
+///   두 사슬 모두 벽시계 게이트 없음(순수 계산 단언) → 동시 최대 2 개. 각 사슬 내부는 여전히 직렬.</summary>
+[CollectionDefinition("TitanHeavyComputeB")]
+public sealed class TitanHeavyComputeBCollection { }
+
 /// <summary>Step 35 — 컬렉션 병렬 실행 시 스레드 풀 기아 방지. 기본 최소 스레드(= 코어 수)로는 동기 대기를 섞는 테스트 4 개가
 ///   동시에 돌 때 풀 확장(초당 ~1–2 스레드) 지연이 async 연속을 수백 ms~수십 s 밀어 타임아웃 · 프로브 창 레이스를 만든다.
 ///   최소치를 코어 × 2 로 올려 즉시 투입(상한은 런타임 기본값 그대로 · 테스트 프로세스 한정).

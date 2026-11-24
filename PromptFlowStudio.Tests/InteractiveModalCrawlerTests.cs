@@ -1,4 +1,4 @@
-#pragma warning disable BL0006 // RenderTree 프레임 직접 순회는 크롤러의 본질(외부 bUnit 없이 BCL Renderer 로 실 이벤트 디스패치)
+﻿#pragma warning disable BL0006 // RenderTree 프레임 직접 순회는 크롤러의 본질(외부 bUnit 없이 BCL Renderer 로 실 이벤트 디스패치)
 using System.Globalization;
 using System.Reflection;
 using System.Text;
@@ -77,7 +77,9 @@ public class InteractiveModalCrawlerTests
                 }
                 var ws = Environment.WorkingSet / (1024 * 1024);
                 lock (gate) { if (ws > peakMb) { peakMb = ws; peakKey = t.Entry.Key; } }
-                GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();   // 폐기 Runner 의 LOH 가우시안/프레임 버퍼를 gen2 지연 없이 즉시 회수(톱니 피크 제거)
+                // Step 42: 모달마다 무조건 Collect+WaitForPendingFinalizers+Collect(175 × 전역 정지) = 단독 85 s 중 ≈ 32 s 실측(워커 전원 정지).
+                //   무조건 회수를 꺼도 피크는 1.8 → 2.3 GB 수준 → 작업 집합이 상한을 넘을 때만 같은 3 단 회수(톱니 피크 상한은 유지).
+                if (ws >= ForcedCollectWorkingSetMb) { GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect(); }   // 폐기 Runner 의 LOH 가우시안/프레임 버퍼 즉시 회수
             }
         }
         var workers = new Task[Math.Min(CrawlWorkers, Math.Max(1, selected.Count))];
@@ -127,7 +129,11 @@ public class InteractiveModalCrawlerTests
 
     // 모달 단위 전용 루트(25 모달 공유 시 실측 피크 1.7 GB · 120 스레드) → Runner 동시 생존 ≤ CrawlWorkers.
     // 워커 3: 단일 모달 피크 ≈ 1 GB 기준 동시 ≤ 3 GB · 4 코어 미만 머신에서도 dispatcher 대기 기아 없음.
-    private const int CrawlWorkers = 3;
+    // Step 42: 크롤러는 비병렬(ProcessGcMode) 구간에서 단독 실행 → 코어/2(3..6) 워커. 16 코어 실측 6 워커: 85 s → 29 s ·
+    //   디스패치 4,140±10 · 정상률 100 % · waitsHit 10–14(3 워커와 동일 범위) — 판정 규칙/대기/상한 무변경.
+    private static readonly int CrawlWorkers = Math.Clamp(Environment.ProcessorCount / 2, 3, 6);
+    /// <summary>강제 3 단 회수 트리거(작업 집합 MB) — 무조건 회수 제거 후에도 폭주 피크를 이 선에서 되접는다.</summary>
+    private const long ForcedCollectWorkingSetMb = 4096;
 
     private static ServiceProvider BuildRoot(System.Windows.Forms.Control owner)
     {
