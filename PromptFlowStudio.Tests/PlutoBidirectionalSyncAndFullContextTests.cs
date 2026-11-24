@@ -126,7 +126,7 @@ public sealed class PlutoBidirectionalSyncAndFullContextTests : IDisposable
     public async Task WriteBack_OnReconnect_PushesFilesStrandedInLocalFallbackDuringOutage()
     {
         var (drive, local) = Dirs("reconnect");
-        var storage = new PlutoDriveStorageManager(drive, local) { ProbeWindow = TimeSpan.FromSeconds(2) };   // Step 35: 다운 창은 MarkPrimaryDown 직후 로컬 폴백 쓰기(디스크 경합 시 수백 ms)까지 덮어야 "직후 다운" 단언이 결정론 → 2 s 창 + 재연결은 폴링
+        var storage = new PlutoDriveStorageManager(drive, local) { ProbeWindow = TimeSpan.FromSeconds(5) };   // Step 35: 다운 창은 MarkPrimaryDown 직후 로컬 폴백 쓰기(디스크 경합 시 수백 ms)까지 덮어야 "직후 다운" 단언이 결정론 → 창 + 재연결은 폴링. Step 43: 2 s 창이 병렬 구간 CPU 경합 중 잠금 쓰기 지연으로 단언 전 만료(IsCloudSynced=true 실측) → 5 s(재연결 폴링 상한 10 s 안 · 비동기 대기)
         Assert.True(await storage.WriteAllTextAtomicAsync("mem.json", "{\"v\":1}"));
         var target = Path.Combine(drive, "mem.json");
 

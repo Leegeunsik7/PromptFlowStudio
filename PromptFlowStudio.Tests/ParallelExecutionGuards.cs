@@ -16,6 +16,11 @@ public sealed class TitanHeavyComputeCollection { }
 [CollectionDefinition("TitanHeavyComputeB")]
 public sealed class TitanHeavyComputeBCollection { }
 
+// Step 43 — 비병렬 컬렉션(ProcessGcMode · TimingSensitivePerformance) 감사 이관분은 A/B 두 사슬에만 배치한다(측정 시간 균형 A ≈ 131 s / B ≈ 140 s).
+//   3 번째 사슬(TitanHeavyComputeC)은 실측 후 폐기: xUnit 동기화 컨텍스트 슬롯(maxParallelThreads 4)을 동기 CPU 중량 테스트 4 개
+//   (A · B · C · 단독 BroadcastMcr)가 모두 점유하자 경량 async 테스트의 연속이 ≈ 45 s 정지 → 소켓/마감 타임아웃 5 건(VisionIntelligence ·
+//   LocalVlmHttpClient · ServiceLifecycle · WanEngine · MediaFoundation 수명). 규칙: 동시 중량 사슬 ≤ 2(경량 연속용 슬롯 ≥ 2 확보).
+
 /// <summary>Step 35 — 컬렉션 병렬 실행 시 스레드 풀 기아 방지. 기본 최소 스레드(= 코어 수)로는 동기 대기를 섞는 테스트 4 개가
 ///   동시에 돌 때 풀 확장(초당 ~1–2 스레드) 지연이 async 연속을 수백 ms~수십 s 밀어 타임아웃 · 프로브 창 레이스를 만든다.
 ///   최소치를 코어 × 2 로 올려 즉시 투입(상한은 런타임 기본값 그대로 · 테스트 프로세스 한정).

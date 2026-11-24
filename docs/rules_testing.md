@@ -88,3 +88,23 @@
 - 배제된 가설(실측): ① "50 회 업로드" 테스트(`PlutoYouTubeApiSyncTests` 예산 50 건)는 0.08 s · Step 41 이전 커밋 — 원인 아님. ② Step 41 `SteadyStateAllocation` 재시도 창: 전체 실행 중 재시도 9 건 · 추가 비용 ≈ 0 ms. ③ 실시간 페이싱: `BroadcastMcrStudioRunner.Step()` 은 대기 없음(Sleep 은 라이브 루프 전용) — 비병렬 대형 시뮬은 순수 계산.
 - 49 m 급 급등의 실측 단서: 같은 코드가 12 m 27 s / 15 m 48 s 로 갈림 — 비병렬 구간이 단일 코어 계산이라 호스트 경합(측정 시 상주 `BMSFile2Agent` ≈ 1 코어 · 타 프로젝트 `PlutoCore.E2E` ≈ 0.85 코어 · VS Code)에 선형 민감. 전체 실행 전 타 테스트/빌드 프로세스 동시 실행 금지.
 - 규칙: 새 무거운 순수 계산 클래스는 짧은 쪽 `TitanHeavyCompute*` 사슬에 배치(사슬 합 균형) · 무응답 페이크로 제품 마감을 기다리지 말고 인스턴스 마감 주입점 사용 · 반복 루프 안 무조건 강제 GC 금지(임계 조건부).
+
+## 비병렬 컬렉션 감사 · 안전 이관 (Step 43)
+- 분류 기준(클래스 단위 · 하나라도 해당하면 비병렬 유지):
+  1. `GCSettings.LatencyMode` · `TryStartNoGCRegion` · `ZeroGcRegionScope` 프로세스 모드 변경 → `ProcessGcMode`
+  2. 프로세스 전역 GC 지표 **단언**(`GC.CollectionCount` · `GetTotalAllocatedBytes` · `GetTotalMemory` 증가분 · `GetGCMemoryInfo`) → `ProcessGcMode` (정리용 `GC.Collect()` 호출만은 해당 없음)
+  3. 실 벽시계 게이트 — 테스트 `Stopwatch` 또는 엔진 내부 실측 `Last*Us` · `Max*Us` · `LastTickMs` · `TickMsSeries` 를 임계와 비교(`CiFrameBudget` 확장 여부 무관) → `TimingSensitivePerformance`. 단언이 가상 시계(`_now` · 샘플 클록 · 프레임 수) 파생이면 해당 없음 — 엔진 소스에서 산출식 확인 필수.
+  4. 단발(재시도 없는) `GetAllocatedBytesForCurrentThread` 창 — 병렬 구간 JIT 부하로 계층 승격 1 회성 바이트 노출 위험 → 비병렬 유지 또는 `SteadyStateAllocation.MaxWindows` 반복 최솟값으로 전환 후 이관
+  5. 환경변수 · 정적 가변 상태 · 프로덕션 DI 그래프 마운트(모달 크롤러) · 실 프로세스 생성 → 해당 직렬 컬렉션
+- 이관 조건: 위 0 건 + `Step()` 단일 스레드(라이브 루프 `Start()` 미호출) → 중량이면 `TitanHeavyCompute`/`TitanHeavyComputeB` 사슬(측정 시간 균형), 경량이면 표준 병렬.
+- **동시 중량 사슬 ≤ 2** (실측): 3 번째 사슬 `TitanHeavyComputeC` + 단독 `BroadcastMcr` 로 동기 CPU 테스트 4 개가 xUnit 동기화 컨텍스트 슬롯(`maxParallelThreads` 4)을 전부 점유 → 경량 async 연속 ≈ 45 s 정지 · 타임아웃 5 건(VisionIntelligence · LocalVlmHttpClient · ServiceLifecycle · WanEngine · MediaFoundation 수명). C 사슬 폐기 · A/B 재균형(≈ 116 / 138 s).
+- 게이트 분리 패턴: 단일 테스트가 "긴 결정론 시뮬 + 마지막 벽시계 예산" 이면 공용 시나리오 구동기로 분리 — 결정론 단언은 사슬, 동일 워크로드 + 동일 임계 게이트는 `TimingSensitivePerformance`(`CinematicDirectorScenario` · `BroadcastMcrFrameBudgetIsolatedTests`).
+- 이관(16 클래스 + 분리 2): ProcessGcMode → GarmentDynamics · FluidWetness · SkinOptics · StrandHair · CognitiveCinematography · MassiveCrowd · InCameraVfx · TemporalDeflicker · SemanticMatting · BroadcastArGraphics · AnatomicalTissue · MarkerlessMocap / TimingSensitive → MasterPipelineRealRunner(E2E < 60 s 조대 상한 · 실측 14–18 s) · LiveDubbing(샘플 클록 지연) · CinematicDirector · BroadcastMcr(결정론분).
+- 감사 발견 위해 요소(유지 · 강화):
+  - `ProcessGcMode` 로 오분류된 비확장 µs 벽시계 게이트: GaussianAvatar `LastRasterUs < 1500` · FacialPerformance `solveUs < 4000`/`perHopUs < 1000` · AcesColorScience `cdlUs < 1000` · DexterousHand `LastGuardUs < 1000` · NeuralVoice 청크 실시간 비율 · Gaussian* 프레임 게이트 → 비병렬 유지.
+  - AvatarActing 드레인 `LastDrainUs < 1,900 µs` 단발 게이트 — 기준 실행 7,628 µs 실패 → 임계 그대로 동일 백로그 재구성 최대 4 창 최선값.
+  - BroadcastMcr 60 프레임 단발 무할당 창 → 이관 전 최대 4 창 반복 최솟값. BroadcastMasterControl 단발 창 2 개 → 비병렬 유지.
+  - `RenderQueueWorkerTests.ProcessRunner_KillsProcessTree_OnCancellation` 실 `cmd.exe` 기동 실패(-1) 1 회 재현 → 기동 실패만 유한 재시도(3 회 · 100/200 ms) · `-2`/10 s 단언 그대로.
+  - `PlutoBidirectionalSyncAndFullContextTests.WriteBack_OnReconnect…` 비확장 2 s 다운 창 — 병렬 구간 경합 중 잠금 쓰기 지연으로 "직후 다운" 단언 전 창 만료(1 회 실측) → 5 s 창(재연결은 기존 폴링 · 10 s 상한 · 단언 동일).
+  - LiveCommerce 레이어 초과 창 게이트는 호스트 경합 민감(기준 실행 실패 · 비병렬 · 최선 5 창 기존) — 변경 없음, 타 프로세스 동시 실행 금지 재확인.
+- 측정(동일 세션 · 16 코어): 기준 `225c7bd` 경합 호스트 14 m 14 s(857 s · 실패 2) / 유휴 호스트 8 m 40 s(523 s · 실패 1) → Step 43 시도 8 m 6 s(488 s · 1424/1424) · 공식 검증 9 m 44 s(588 s · 1424/1424 · 종료 코드 0). 비병렬 구간 472 → 342–432 s — 단일 코어 구간 축소로 호스트 경합 민감도 감소. 벽시계는 호스트 부하에 따라 ±100 s 변동 · 병렬 구간 꼬리는 B 사슬 ≈ 140–150 s(다음 후보: A/B 재균형).

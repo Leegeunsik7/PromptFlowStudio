@@ -421,10 +421,23 @@ public class RenderQueueWorkerTests
     public async Task ProcessRunner_KillsProcessTree_OnCancellation()
     {
         if (!OperatingSystem.IsWindows()) return;
-        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
+        // Step 43 감사: 실 프로세스 생성 — 전체 스위트에서 일시적 기동 실패(-1) 1 회 재현(HEAD 기준 실행).
+        //   rules_testing "실 프로세스 생성 = 유효 대상만 유한 재시도(3 회 · 100/200 ms)" 적용 — 기동 실패(-1)만 재시도 · 취소(-2) · 10 s 상한 단언 그대로.
         var sw = System.Diagnostics.Stopwatch.StartNew();
-        var r = await PromptFlowStudio.Services.Engines.ProcessRunner.RunAsync("cmd.exe", new[] { "/c", "ping", "-n", "30", "127.0.0.1" }, ct: cts.Token);
+        var r = await RunPing();
+        for (var attempt = 1; attempt < 3 && r.ExitCode == -1; attempt++)
+        {
+            await Task.Delay(100 * attempt);
+            sw.Restart();
+            r = await RunPing();
+        }
         Assert.Equal(-2, r.ExitCode);                       // 취소됨
         Assert.True(sw.Elapsed < TimeSpan.FromSeconds(10)); // 30초 핑 트리 즉시 종료
+
+        static async Task<PromptFlowStudio.Services.Engines.ProcessResult> RunPing()
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
+            return await PromptFlowStudio.Services.Engines.ProcessRunner.RunAsync("cmd.exe", new[] { "/c", "ping", "-n", "30", "127.0.0.1" }, ct: cts.Token);
+        }
     }
 }
