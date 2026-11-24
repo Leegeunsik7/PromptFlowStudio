@@ -441,6 +441,78 @@ public sealed class PlutoParetoAndRegretRehearsalTests : IDisposable
         Assert.True(7L <= CiFrameBudget.Custom(CiFrameBudget.WindowOverrunTolerance, () => 1.2));     // 경합 ×1.2 → 창 초과 허용 7.2
     }
 
+    [Fact]
+    public void TitanReleaseChainSplit_StaysFreeOfSerialOnlyHazards_AndKeepsAtMostTwoHeavyChains()
+    {
+        // Step 44 — 비병렬 TitanReleaseTests 에서 A/B 사슬로 분리한 클래스는 병렬 구간과 겹친다 → 직렬 전용 위해 요소 재유입 차단
+        var src = File.ReadAllText(Path.Combine(RepoRoot(), "PromptFlowStudio.Tests", "TitanReleaseTests.cs"));
+        var a = src.IndexOf("public sealed class TitanReleaseChainATests", StringComparison.Ordinal);
+        var b = src.IndexOf("public sealed class TitanReleaseChainBTests", StringComparison.Ordinal);
+        var end = src.IndexOf("internal sealed class CommerceStubHandler", StringComparison.Ordinal);
+        Assert.True(a > 0 && b > a && end > b);
+        var serial = src.Substring(0, a);
+        foreach (var (name, body) in new[] { ("A", src.Substring(a, b - a)), ("B", src.Substring(b, end - b)) })
+        {
+            foreach (var banned in new[]
+            {
+                "SetEnvironmentVariable", "Process.Start", "ProcessStartInfo", "RunBundle(", "RunSign(", "RunProcess(",               // 프로세스 전역 · 실 프로세스
+                "GC.CollectionCount", "GC.GetTotalAllocatedBytes", "GC.GetTotalMemory", "GC.GetGCMemoryInfo",                     // 프로세스 GC 지표 단언
+                "LatencyMode", "TryStartNoGCRegion", "ZeroGcRegionScope",                                                       // 프로세스 GC 모드
+                "GetAllocatedBytesForCurrentThread", "Stopwatch", "CiFrameBudget", "LastTickMs", "TickMsSeries",                  // 단발 무할당 창 · 실 벽시계 게이트
+            })
+                Assert.False(body.Contains(banned, StringComparison.Ordinal), "사슬 " + name + " 에 직렬 전용 요소 " + banned);
+            Assert.True(CountOf(body, "SteadyStateAllocation.MinBytes(") >= 10, "사슬 " + name + " 무할당 단언은 재시도 창만");
+            foreach (var line in body.Split('\n'))
+                if (line.Contains("GetTempPath()", StringComparison.Ordinal))
+                    Assert.True(line.Contains("Guid.NewGuid()", StringComparison.Ordinal), "사슬 " + name + " 임시 경로 GUID 격리: " + line.Trim());
+        }
+        // 정적 가변 프로브(DomProbeComponent)는 유일 사용처와 함께 A 사슬로 — 직렬 클래스에서 참조 0 · 공유 헬퍼는 internal 로만 노출
+        Assert.Equal(0, CountOf(serial, "DomProbeComponent"));
+        Assert.Contains("internal sealed class CrewTestProvider", serial, StringComparison.Ordinal);
+        Assert.Contains("internal static byte[] SineWav(", serial, StringComparison.Ordinal);
+        // 배치 · 동시 중량 사슬 ≤ 2(3 번째 사슬 C 는 실측 폐기 — async 연속 기아)
+        static string? CollectionOf(Type t) => t.GetCustomAttributesData().FirstOrDefault(d => d.AttributeType == typeof(CollectionAttribute))?.ConstructorArguments[0].Value as string;
+        Assert.Equal("TitanHeavyCompute", CollectionOf(typeof(TitanReleaseChainATests)));
+        Assert.Equal("TitanHeavyComputeB", CollectionOf(typeof(TitanReleaseChainBTests)));
+        Assert.Equal("ProcessGcMode", CollectionOf(typeof(TitanReleaseTests)));
+        var heavy = typeof(TitanReleaseTests).Assembly.GetTypes()
+            .SelectMany(t => t.GetCustomAttributesData().Where(d => d.AttributeType == typeof(CollectionDefinitionAttribute)))
+            .Select(d => d.ConstructorArguments[0].Value as string)
+            .Where(n => n is not null && n.StartsWith("TitanHeavy", StringComparison.Ordinal))
+            .OrderBy(n => n, StringComparer.Ordinal).ToArray();
+        Assert.Equal(new[] { "TitanHeavyCompute", "TitanHeavyComputeB" }, heavy);
+    }
+
+    [Fact]
+    public void CiFrameBudget_WindowContention_KeepsPeakWindowFactor_AndStaysExactWhenIdle()
+    {
+        // Step 44 — 창 동안 경합(×2) → 판정 시점 유휴(×1)여도 창 최대 배수로 판정 · 기준 통과 창은 탐침 0회
+        var probes = 0; var now = 1.0;
+        var load = new WindowContention(() => { probes++; return now; });
+        load.Observe(false);
+        Assert.Equal(0, probes);
+        Assert.True(12.0 < load.Budget(CiFrameBudget.BaseMs) && 6L <= load.Budget(CiFrameBudget.WindowOverrunTolerance));
+        Assert.Equal(0, probes);                                                                      // 정상 경로 비용 0
+        Assert.False(40.0 < load.Budget(CiFrameBudget.BaseMs));                                      // 유휴 — 기준 33.3 그대로
+        Assert.False(7L <= load.Budget(CiFrameBudget.WindowOverrunTolerance));
+        Assert.Equal(1.0, load.PeakFactor);
+
+        now = 2.0; load.Observe(true);                                                                // 기준 초과 창 직후 표본(경합 중)
+        now = 1.0;                                                                                     // 판정 시점엔 경합 해소
+        Assert.Equal(2.0, load.PeakFactor);
+        Assert.Equal(1, load.Samples);
+        Assert.True(40.0 < load.Budget(CiFrameBudget.BaseMs) && 12L <= load.Budget(CiFrameBudget.WindowOverrunTolerance));
+        Assert.False(70.0 < load.Budget(CiFrameBudget.BaseMs));                                      // ×2 초과 회귀는 그대로 실패
+        Assert.False(13L <= load.Budget(CiFrameBudget.WindowOverrunTolerance));
+        now = 9.0; load.Observe(true);
+        Assert.Equal(CiFrameBudget.MaxContentionFactor, load.PeakFactor);                             // 상한 ×3
+        Assert.False(100.0 < load.Budget(CiFrameBudget.BaseMs));
+        var idle = new WindowContention(() => 1.10);                                                  // 유휴 폭 이하 → 정확히 1.0
+        idle.Observe(true);
+        Assert.Equal(1.0, idle.PeakFactor);
+        Assert.Throws<ArgumentNullException>(() => new WindowContention(null!));
+    }
+
     // ── ⑤ ⚡ 자율 추가 — 회로 차단 수동 탐침/해제 + 상태 통지 + Workspace 표면화 ──
 
     [Fact]

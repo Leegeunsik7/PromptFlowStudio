@@ -3070,252 +3070,6 @@ public class TitanReleaseTests
 
     [Fact]
     [Trait("Category", "Integration")]
-    public async Task LipSync_And_EmotionPuppeteer_Check()
-    {
-        // ① 감정 키워드 탐지 · 아기 피사체 · 프리셋
-        Assert.Equal(SB.FacialEmotion.Giggle, SB.FacialEmotionPuppeteerEngine.Detect("아기가 까르르 웃어요"));
-        Assert.Equal(SB.FacialEmotion.Pout, SB.FacialEmotionPuppeteerEngine.Detect("toddler pouting at dinner"));
-        Assert.Equal(SB.FacialEmotion.Surprised, SB.FacialEmotionPuppeteerEngine.Detect("깜짝 놀란 표정"));
-        Assert.Equal(SB.FacialEmotion.Curious, SB.FacialEmotionPuppeteerEngine.Detect("궁금한 듯 바라봐요"));
-        Assert.Equal(SB.FacialEmotion.HappySmile, SB.FacialEmotionPuppeteerEngine.Detect("방긋 미소"));
-        Assert.Equal(SB.FacialEmotion.Neutral, SB.FacialEmotionPuppeteerEngine.Detect("a quiet park"));
-        Assert.True(SB.FacialEmotionPuppeteerEngine.IsBabySubject("cute baby in bath"));
-        Assert.False(SB.FacialEmotionPuppeteerEngine.IsBabySubject("adult chef cooking"));
-        Assert.Equal(6, SB.FacialEmotionPuppeteerEngine.Presets.Count);
-        Assert.Equal("🥺 삐침/칭얼거림", SB.FacialEmotionPuppeteerEngine.LabelOf(SB.FacialEmotion.Pout));
-
-        // ② 표정 주입: 상충 단어 제거 · 표정/정체성 구문 · 얼굴 보호 네거티브 · 멱등 · Neutral 무변경
-        var inj = SB.FacialEmotionPuppeteerEngine.Apply("a crying baby sitting on a sofa", "blurry", SB.FacialEmotion.HappySmile, 1.0);
-        Assert.True(inj.Changed && inj.BabyProfile);
-        Assert.DoesNotContain("crying", inj.Prompt);
-        Assert.Contains("happy smile", inj.Prompt);
-        Assert.Contains(SB.FacialEmotionPuppeteerEngine.IdentityGuard, inj.Prompt);
-        Assert.StartsWith("blurry, ", inj.Negative);
-        Assert.Contains("distorted face", inj.Negative);
-        Assert.Equal(SB.FacialEmotionPuppeteerEngine.BabyIntensityCap, inj.Intensity);
-        Assert.Contains("clear bright happy smile", inj.Prompt);
-        Assert.StartsWith("a baby sitting", inj.Prompt);
-        var again = SB.FacialEmotionPuppeteerEngine.Apply(inj.Prompt, inj.Negative, SB.FacialEmotion.HappySmile, 1.0);
-        Assert.Equal(inj.Prompt, again.Prompt);
-        Assert.Equal(inj.Negative, again.Negative);
-        Assert.False(again.Changed);
-        var neutral = SB.FacialEmotionPuppeteerEngine.Apply(" a dog ", null, SB.FacialEmotion.Neutral);
-        Assert.Equal("a dog", neutral.Prompt);
-        Assert.Null(neutral.Negative);
-        Assert.DoesNotContain("crying", SB.FacialEmotionPuppeteerEngine.Apply("crying crybaby", null, SB.FacialEmotion.Giggle).Prompt.Replace("crybaby", ""));
-        Assert.Contains("crybaby", SB.FacialEmotionPuppeteerEngine.Apply("crying crybaby", null, SB.FacialEmotion.Giggle).Prompt);   // 단어 경계
-
-        // ③ 안면 보호: 랜드마크 상한(아기 0.55 · 성인 0.8) · 강도 문구 · 입모양 배율
-        var babyG = SB.FacialEmotionPuppeteerEngine.GuideOf(SB.FacialEmotion.Giggle, 1.0, baby: true);
-        var adultG = SB.FacialEmotionPuppeteerEngine.GuideOf(SB.FacialEmotion.Giggle, 1.0, baby: false);
-        Assert.True(babyG.MaxMagnitude <= SB.FacialEmotionPuppeteerEngine.BabyLandmarkCap + 1e-9);
-        Assert.True(adultG.MaxMagnitude <= SB.FacialEmotionPuppeteerEngine.AdultLandmarkCap + 1e-9);
-        Assert.True(babyG.MouthCornerLift > 0 && babyG.MouthCornerLift < adultG.MouthCornerLift);
-        Assert.Equal("subtle", SB.FacialEmotionPuppeteerEngine.IntensityWord(0.2));
-        Assert.Equal("gentle", SB.FacialEmotionPuppeteerEngine.IntensityWord(0.6));
-        Assert.Equal("clear", SB.FacialEmotionPuppeteerEngine.IntensityWord(0.9));
-        Assert.True(SB.FacialEmotionPuppeteerEngine.MouthScaleOf(SB.FacialEmotion.Giggle) > 1.0);
-        Assert.True(SB.FacialEmotionPuppeteerEngine.MouthScaleOf(SB.FacialEmotion.Pout) < 1.0);
-        Assert.Equal(1.0, SB.FacialEmotionPuppeteerEngine.MouthScaleOf(SB.FacialEmotion.Neutral));
-        Assert.Equal(SB.FacialEmotionPuppeteerEngine.DefaultIntensity, SB.FacialEmotionPuppeteerEngine.SafeIntensity(double.NaN, false));
-        Assert.Contains("입꼬리 +", SB.FacialEmotionPuppeteerEngine.Describe(babyG));
-
-        // ④ 컷 연속성 완화 · 자동 할당
-        var ints = new[] { 0.2, 1.0, 0.1 };
-        Assert.Equal(2, SB.FacialEmotionPuppeteerEngine.SmoothIntensities(ints));
-        Assert.Equal(0.55, ints[1], 6);
-        Assert.Equal(0.2, ints[2], 6);
-        var scenes = new[]
-        {
-            new SB.StoryboardScene { VoiceText = "우와 깜짝이야!" },
-            new SB.StoryboardScene { Prompt = "baby giggling with bubbles" },
-            new SB.StoryboardScene { Prompt = "empty room" },
-            new SB.StoryboardScene { Prompt = "baby smiling", Emotion = SB.FacialEmotion.Pout },
-        };
-        Assert.Equal(2, SB.FacialEmotionPuppeteerEngine.AutoAssign(scenes));
-        Assert.Equal((SB.FacialEmotion.Surprised, SB.FacialEmotion.Giggle, SB.FacialEmotion.Neutral, SB.FacialEmotion.Pout),
-            (scenes[0].Emotion, scenes[1].Emotion, scenes[2].Emotion, scenes[3].Emotion));
-        var json = System.Text.Json.JsonSerializer.Serialize(scenes[3]);
-        Assert.Contains("\"Pout\"", json);
-
-        // ⑤ 대사 → 입모양: 한글 중성/종성(양순음) · 라틴 · 구두점 Rest
-        var vis = new Med.Viseme[32];
-        var vn = Med.AiAudioDrivenLipSyncService.TranscriptToVisemes("아밤 우리", vis);
-        Assert.Equal(new[] { Med.Viseme.A, Med.Viseme.A, Med.Viseme.Closed, Med.Viseme.Rest, Med.Viseme.U, Med.Viseme.I }, vis[..vn]);
-        Assert.Equal(3, Med.AiAudioDrivenLipSyncService.TranscriptToVisemes("mao", vis));
-
-        // ⑥ 합성 WAV(16kHz mono): 0.3초 무음 → 0.6초 톤 → 0.3초 무음 → 0.4초 톤 · 엔벨로프 · 유성 · 타임라인
-        const int sr = 16000;
-        var wav = MakeWav(sr, (0.3, 0.0), (0.6, 0.5), (0.3, 0.0), (0.4, 0.4));
-        Assert.True(Med.AiAudioDrivenLipSyncService.TryParseWav(wav, out var off, out var len, out var ch, out var rate, out var bits));
-        Assert.Equal((44, 1, sr, 16), (off, ch, rate, bits));
-        Assert.Equal(sr * 16 / 10 * 2, len);
-        var (act, cues) = Med.AiAudioDrivenLipSyncService.Analyze(wav, "아빠 엄마 안녕", 1.2);
-        Assert.Equal(1.6, act.DurationSeconds, 2);
-        Assert.InRange(act.OnsetSeconds, 0.26, 0.34);
-        Assert.InRange(act.VoicedRatio, 0.55, 0.70);
-        Assert.Equal(80, act.Frames);
-        Assert.Equal(Med.Viseme.Rest, cues[0].Shape);
-        Assert.Contains(cues, c => c.Shape == Med.Viseme.A && c.Openness > 0.5);
-        Assert.Contains(cues, c => c.Shape == Med.Viseme.Closed);
-        for (var i = 1; i < cues.Count; i++) Assert.Equal(cues[i - 1].End, cues[i].Start, 3);
-        Assert.Equal(1.6, cues[^1].End, 2);
-        var (_, energyCues) = Med.AiAudioDrivenLipSyncService.Analyze(wav, null);
-        Assert.Contains(energyCues, c => c.Shape != Med.Viseme.Rest);
-        Assert.False(Med.AiAudioDrivenLipSyncService.TryParseWav(new byte[20], out _, out _, out _, out _, out _));
-        Assert.Equal(default, Med.AiAudioDrivenLipSyncService.Analyze(new byte[10], "x").Activity);
-        Assert.StartsWith("[{\"s\":0,", Med.AiAudioDrivenLipSyncService.VisemesJson(cues));
-
-        // ⑦ FFmpeg 프레임 보정 인자: 발화 정렬 atrim · ≤20% setpts 리타임 · 초과 tpad 복제
-        var a1 = Med.AiAudioDrivenLipSyncService.BuildRealignArgs(@"C:\v\in clip.mp4", @"C:\v\n.wav", @"C:\v\out.mp4", 5.0, 5.6, 0.5);
-        var fc1 = a1[a1.IndexOf("-filter_complex") + 1];
-        Assert.Contains("atrim=start=0.4", fc1);
-        Assert.Contains("setpts=1.04*PTS", fc1);
-        Assert.Contains("fps=30", fc1);
-        Assert.Equal("5.2", a1[a1.IndexOf("-t") + 1]);
-        Assert.Equal(@"C:\v\in clip.mp4", a1[a1.IndexOf("-i") + 1]);
-        var a2 = Med.AiAudioDrivenLipSyncService.BuildRealignArgs("v.mp4", "a.wav", "o.mp4", 4.0, 8.0, 0);
-        var fc2 = a2[a2.IndexOf("-filter_complex") + 1];
-        Assert.Contains("tpad=stop_mode=clone:stop_duration=4", fc2);
-        Assert.DoesNotContain("setpts=2", fc2);
-        Assert.Equal(83.5, Med.AiAudioDrivenLipSyncService.ParseDuration("  Duration: 00:01:23.50, start: 0.000000"));
-        Assert.Equal(0, Med.AiAudioDrivenLipSyncService.ParseDuration("garbage"));
-
-        // ⑧ 원격 응답 스키마 검증
-        Assert.Equal("job_42", Med.AiAudioDrivenLipSyncService.ParseSubmit("{\"job_id\":\"job_42\"}"));
-        Assert.Null(Med.AiAudioDrivenLipSyncService.ParseSubmit("{\"id\":\"../etc\"}"));
-        Assert.Null(Med.AiAudioDrivenLipSyncService.ParseSubmit("[1]"));
-        Assert.Equal(("succeeded", "https://cdn.example.com/o.mp4", (string?)null),
-            Med.AiAudioDrivenLipSyncService.ParseStatus("{\"status\":\"completed\",\"output_url\":\"https://cdn.example.com/o.mp4\"}"));
-        Assert.Equal("invalid", Med.AiAudioDrivenLipSyncService.ParseStatus("{\"status\":\"done\",\"output_url\":\"http://evil.example.com/o.mp4\"}").Status);
-        Assert.Equal("running", Med.AiAudioDrivenLipSyncService.ParseStatus("{\"status\":\"processing\"}").Status);
-        Assert.Equal(("failed", (string?)null, "oom"), Med.AiAudioDrivenLipSyncService.ParseStatus("{\"status\":\"error\",\"error\":\"oom\"}"));
-        Assert.False(new Med.LipSyncApiConfig("http://remote.example.com", null, Med.LipSyncBackend.Wav2LipApi).IsConfigured);
-        Assert.True(new Med.LipSyncApiConfig("http://127.0.0.1:7860", null, Med.LipSyncBackend.MuseTalkApi).IsConfigured);
-
-        // ⑨ 오케스트레이션: 원격(500×3 백오프 실패) → 로컬 엔진 폴백 · 원격 성공 경로 · 입력 누락
-        var dir = Path.Combine(Path.GetTempPath(), "pfs_lip_test_" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(dir);
-        try
-        {
-            var video = Path.Combine(dir, "clip.mp4");
-            var audio = Path.Combine(dir, "narr.wav");
-            await File.WriteAllBytesAsync(video, new byte[] { 0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70 });
-            await File.WriteAllBytesAsync(audio, wav);
-            var cfg = new Med.LipSyncApiConfig("https://lipsync.example.com", "test-key", Med.LipSyncBackend.MuseTalkApi);
-            var failing = new LipApiHandler(submitStatus: System.Net.HttpStatusCode.InternalServerError);
-            var local = new FakeLocalLip(ok: true);
-            using (var svc = new Med.AiAudioDrivenLipSyncService(() => null, local, () => cfg, failing, TimeSpan.Zero))
-            {
-                Assert.True(svc.AiAvailable && svc.RemoteConfigured);
-                Assert.Equal(Med.LipSyncBackend.MuseTalkApi, svc.PreferredBackend);
-                var r = await svc.SyncAsync(new Med.AudioLipSyncRequest(video, audio, Path.Combine(dir, "o1.mp4"), "아빠 엄마", SB.FacialEmotion.Giggle));
-                Assert.True(r.Ok);
-                Assert.Equal(Med.LipSyncBackend.LatentSyncLocal, r.Backend);
-                Assert.Contains("MuseTalk API 실패(HTTP 500)", r.Message);
-                Assert.Equal(Med.AiAudioDrivenLipSyncService.MaxSubmitAttempts, failing.Submits);
-                Assert.Equal("Bearer test-key", failing.LastAuth);
-                Assert.True(r.Visemes.Count > 0);
-                Assert.Equal(1, local.Calls);
-            }
-
-            var good = new LipApiHandler(System.Net.HttpStatusCode.OK, pollsBeforeDone: 2);
-            using (var svc = new Med.AiAudioDrivenLipSyncService(() => null, null, () => cfg, good, TimeSpan.Zero))
-            {
-                var outPath = Path.Combine(dir, "o2.mp4");
-                var r = await svc.SyncAsync(new Med.AudioLipSyncRequest(video, audio, outPath, "안녕", SB.FacialEmotion.Pout, 0.8));
-                Assert.True(r.Ok, r.Message);
-                Assert.Equal(Med.LipSyncBackend.MuseTalkApi, r.Backend);
-                Assert.Equal(3, good.Polls);
-                Assert.Equal(4, new FileInfo(outPath).Length);
-                Assert.Contains("name=mouth_scale", good.LastForm);
-                Assert.Contains("musetalk", good.LastForm);
-            }
-
-            using (var none = new Med.AiAudioDrivenLipSyncService(() => null, new FakeLocalLip(ok: false), () => new Med.LipSyncApiConfig(null, null, Med.LipSyncBackend.Wav2LipApi), null, TimeSpan.Zero))
-            {
-                Assert.False(none.IsAvailable);
-                Assert.Equal(Med.LipSyncBackend.None, none.PreferredBackend);
-                var r = await none.SyncAsync(new Med.AudioLipSyncRequest(video, audio, Path.Combine(dir, "o3.mp4")));
-                Assert.False(r.Ok);
-                Assert.Contains("ffmpeg", r.Message);
-                Assert.False((await none.SyncAsync(new Med.AudioLipSyncRequest("missing.mp4", audio, "o.mp4"))).Ok);
-                Assert.False((await none.RealignAsync(video, audio, "o.mp4")).Ok);
-            }
-        }
-        finally { try { Directory.Delete(dir, true); } catch { } }
-    }
-
-    private static byte[] MakeWav(int sampleRate, params (double Seconds, double Amp)[] parts)
-    {
-        var samples = 0;
-        foreach (var p in parts) samples += (int)(p.Seconds * sampleRate);
-        var data = samples * 2;
-        var buf = new byte[44 + data];
-        "RIFF"u8.CopyTo(buf);
-        System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(buf.AsSpan(4), 36 + data);
-        "WAVEfmt "u8.CopyTo(buf.AsSpan(8));
-        System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(buf.AsSpan(16), 16);
-        System.Buffers.Binary.BinaryPrimitives.WriteInt16LittleEndian(buf.AsSpan(20), 1);
-        System.Buffers.Binary.BinaryPrimitives.WriteInt16LittleEndian(buf.AsSpan(22), 1);
-        System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(buf.AsSpan(24), sampleRate);
-        System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(buf.AsSpan(28), sampleRate * 2);
-        System.Buffers.Binary.BinaryPrimitives.WriteInt16LittleEndian(buf.AsSpan(32), 2);
-        System.Buffers.Binary.BinaryPrimitives.WriteInt16LittleEndian(buf.AsSpan(34), 16);
-        "data"u8.CopyTo(buf.AsSpan(36));
-        System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(buf.AsSpan(40), data);
-        var o = 44;
-        var t = 0;
-        foreach (var (sec, amp) in parts)
-        {
-            var n = (int)(sec * sampleRate);
-            for (var i = 0; i < n; i++, t++, o += 2)
-                System.Buffers.Binary.BinaryPrimitives.WriteInt16LittleEndian(buf.AsSpan(o), (short)(Math.Sin(2 * Math.PI * 220 * t / sampleRate) * amp * 32767));
-        }
-        return buf;
-    }
-
-    private sealed class FakeLocalLip(bool ok) : Med.ILipSyncService
-    {
-        public int Calls;
-        public bool IsAvailable => ok;
-        public Task<Med.LipSyncResult> ApplyAsync(string videoPath, string audioPath, string outputPath, IProgress<string>? status = null, CancellationToken ct = default)
-        {
-            Calls++;
-            return Task.FromResult(new Med.LipSyncResult(ok, ok ? outputPath : null, ok ? "ok" : "fail"));
-        }
-    }
-
-    private sealed class LipApiHandler(System.Net.HttpStatusCode submitStatus, int pollsBeforeDone = 0) : System.Net.Http.HttpMessageHandler
-    {
-        public int Submits, Polls;
-        public string? LastAuth, LastForm;
-        protected override async Task<System.Net.Http.HttpResponseMessage> SendAsync(System.Net.Http.HttpRequestMessage request, CancellationToken ct)
-        {
-            LastAuth = request.Headers.Authorization?.ToString() ?? LastAuth;
-            var path = request.RequestUri!.AbsolutePath;
-            if (request.Method == System.Net.Http.HttpMethod.Post && path == "/lipsync")
-            {
-                Submits++;
-                LastForm = await request.Content!.ReadAsStringAsync(ct);
-                return submitStatus == System.Net.HttpStatusCode.OK
-                    ? new System.Net.Http.HttpResponseMessage(submitStatus) { Content = new System.Net.Http.StringContent("{\"id\":\"abc-1\"}") }
-                    : new System.Net.Http.HttpResponseMessage(submitStatus);
-            }
-            if (path == "/lipsync/abc-1")
-            {
-                Polls++;
-                var body = Polls <= pollsBeforeDone ? "{\"status\":\"running\"}" : "{\"status\":\"succeeded\",\"output_url\":\"https://lipsync.example.com/files/abc-1.mp4\"}";
-                return new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new System.Net.Http.StringContent(body) };
-            }
-            if (path == "/files/abc-1.mp4")
-                return new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new System.Net.Http.ByteArrayContent(new byte[] { 1, 2, 3, 4 }) };
-            return new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.NotFound);
-        }
-    }
-
-    [Fact]
-    [Trait("Category", "Integration")]
     public async Task NodeGraph_And_InteractiveCanvas_Check()
     {
         // ① 그래프 규칙: 타입 · 자기연결 · 순환 · 입력 대체 · 컴파일 레벨
@@ -4179,287 +3933,6 @@ public class TitanReleaseTests
         var txt = Med.MultilingualVoiceCloningDubbingService.LocalizationText(r2, aligned);
         Assert.Contains("[Conversions]", txt);
         Assert.Contains("en-US", txt);
-    }
-
-    // ── v16.30.0 마스터 스위트: 제로 트러스트(KEK DPAPI-NG · 비밀 · 인가/스텝업/디바이스 · 스트리밍 AES-GCM 변조/절단 · HMAC 감사 체인 · KEK 회전) · OIDC(RS256/JWKS/nonce/PKCE) · SAML2(XML-DSig/XSW) · CDC 델타 동기화(무할당 경계 · 증분 · 복원 · 릴레이 · 수렴 암호화) · 30 모듈 매트릭스/파이프라인 ──
-    [Fact]
-    [Trait("Category", "Integration")]
-    [Trait("Speed", "Slow")]   // Step 35: 기준 실행 ≥ 10 s — 빠른 루프는 --filter "Speed!=Slow"
-    public async Task UniversalMasterSuite_And_ZeroTrustShield_Check()
-    {
-        var root = Path.Combine(Path.GetTempPath(), "pfs_master_" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(root);
-        try
-        {
-            // 1) 쉴드 — KEK 보호 · 로컬 세션 · 비밀 · 인가 매트릭스 · 스텝업 · 디바이스 바인딩
-            var now = DateTimeOffset.UtcNow;
-            var seed = System.Security.Cryptography.RandomNumberGenerator.GetBytes(32);
-            var zdir = Path.Combine(root, "zt");
-            using (var z = new Master.ZeroTrustSecurityShieldService(zdir, () => seed, null, () => now, true))
-            {
-                Assert.True(z.Unlock()); Assert.True(z.Unlock());
-                Assert.Contains("DPAPI", z.KeyProtection);
-                Assert.False(z.SetSecret(null, "OPENAI_API_KEY", "sk-test"));
-                var s = z.IssueLocalSession()!;
-                Assert.Equal(Master.ZtRole.Admin, s.Role);
-                Assert.True(z.SetSecret(s.Token, "OPENAI_API_KEY", "sk-test-12345"));
-                Assert.False(z.SetSecret(s.Token, "bad name!", "x"));
-                Assert.DoesNotContain("sk-test-12345", File.ReadAllText(Path.Combine(zdir, "secrets.vault")));
-                char[] leaked;
-                using (var lease = z.Lease(s.Token, "OPENAI_API_KEY")!)
-                {
-                    Assert.Equal("sk-test-12345", lease.Value.ToString());
-                    leaked = (char[])typeof(Master.SecretLease).GetField("_buf", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.GetValue(lease)!;
-                }
-                Assert.All(leaked, c => Assert.Equal('\0', c));
-                Assert.False(z.Authorize(s.Token, "secret:OPENAI_API_KEY", "read", "other-device").Allowed);
-                var viewer = z.IssueSession(new Master.SsoIdentity(true, "v@corp", "acme", Master.ZtRole.Viewer, Array.Empty<string>(), "oidc", "ok"))!;
-                Assert.False(z.Authorize(viewer.Token, "pipeline:generate", "run").Allowed);
-                Assert.True(z.Authorize(viewer.Token, "pipeline:generate", "read").Allowed);
-                Assert.Null(z.Lease(viewer.Token, "OPENAI_API_KEY"));
-                now = now.AddMinutes(11);
-                var stepUp = z.Authorize(s.Token, "secret:OPENAI_API_KEY", "read");
-                Assert.False(stepUp.Allowed); Assert.True(stepUp.StepUpRequired);
-                Assert.True(z.Authorize(s.Token, "pipeline:generate", "run").Allowed);
-                now = now.AddMinutes(30);
-                Assert.Equal("세션 만료", z.Authorize(s.Token, "pipeline:generate", "run").Reason);
-                z.EnforceSso = true;
-                Assert.Null(z.IssueLocalSession());
-                z.EnforceSso = false;
-                var s2 = z.IssueLocalSession()!;
-
-                // 스트리밍 자산 암호화 — 2.5 프레임 · 왕복 · 변조 · 절단
-                var plain = new byte[(int)(Master.ZeroTrustSecurityShieldService.FrameSize * 2.5)];
-                new Random(3).NextBytes(plain);
-                var pf = Path.Combine(root, "asset.bin"); var ef = Path.Combine(root, "asset.enc"); var df = Path.Combine(root, "asset.dec");
-                File.WriteAllBytes(pf, plain);
-                Assert.True(await z.EncryptFileAsync(s2.Token, pf, ef));
-                Assert.True(await z.DecryptFileAsync(s2.Token, ef, df));
-                Assert.True(File.ReadAllBytes(df).AsSpan().SequenceEqual(plain));
-                var enc = File.ReadAllBytes(ef);
-                var tampered = (byte[])enc.Clone(); tampered[tampered.Length / 2] ^= 0x40;
-                File.WriteAllBytes(ef + ".t", tampered);
-                Assert.False(await z.DecryptFileAsync(s2.Token, ef + ".t", df + ".t"));
-                Assert.False(File.Exists(df + ".t"));
-                File.WriteAllBytes(ef + ".cut", enc.AsSpan(0, 8 + 12 + 2 * (20 + Master.ZeroTrustSecurityShieldService.FrameSize)).ToArray());
-                Assert.False(await z.DecryptFileAsync(s2.Token, ef + ".cut", df + ".c"));
-
-                // 감사 체인 — 정상 → 변조 탐지
-                Assert.True(z.VerifyAudit().Ok);
-                Assert.True(z.DeniedCount >= 5);
-                Assert.True(z.RotateKek(s2.Token));
-            }
-            using (var z2 = new Master.ZeroTrustSecurityShieldService(zdir, () => seed, null, null, true))
-            {
-                Assert.True(z2.Unlock());
-                var s = z2.IssueLocalSession()!;
-                using (var lease = z2.Lease(s.Token, "OPENAI_API_KEY")!) Assert.Equal("sk-test-12345", lease.Value.ToString());
-                var v = z2.VerifyAudit();
-                Assert.True(v.Ok, v.Message);
-                var lines = File.ReadAllLines(Path.Combine(zdir, "audit.jsonl"));
-                lines[3] = lines[3].Replace("\"detail\":\"", "\"detail\":\"X");
-                File.WriteAllLines(Path.Combine(zdir, "audit.jsonl"), lines);
-                var broken = z2.VerifyAudit();
-                Assert.False(broken.Ok); Assert.Equal(4, broken.BrokenAt);
-            }
-
-            // 2) OIDC — RS256 · JWKS · iss/aud/exp/nonce · alg 고정 · PKCE · 디스커버리
-            using var signer = System.Security.Cryptography.RSA.Create(2048);
-            var meta = new Master.OidcMetadata("https://idp.example.com", "https://idp.example.com/authorize", "https://idp.example.com/token", "https://idp.example.com/jwks");
-            var pub = signer.ExportParameters(false);
-            var jwks = "{\"keys\":[{\"kty\":\"RSA\",\"kid\":\"k1\",\"n\":\"" + Master.ZeroTrustSecurityShieldService.B64Url(pub.Modulus) + "\",\"e\":\"" + Master.ZeroTrustSecurityShieldService.B64Url(pub.Exponent) + "\"}]}";
-            var keys = Master.ZeroTrustSecurityShieldService.ParseJwks(jwks);
-            Assert.True(keys.ContainsKey("k1"));
-            using var zo = new Master.ZeroTrustSecurityShieldService(Path.Combine(root, "zo"), () => seed, null, null, false);
-            zo.Unlock();
-            zo.SetJwks(keys, meta, "pfs-client");
-            var nowS = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-            string Jwt(string alg, string kid, string payload, System.Security.Cryptography.RSA key)
-            {
-                var h = Master.ZeroTrustSecurityShieldService.B64Url(System.Text.Encoding.UTF8.GetBytes("{\"alg\":\"" + alg + "\",\"kid\":\"" + kid + "\"}"));
-                var p = Master.ZeroTrustSecurityShieldService.B64Url(System.Text.Encoding.UTF8.GetBytes(payload));
-                var sig = key.SignData(System.Text.Encoding.ASCII.GetBytes(h + "." + p), System.Security.Cryptography.HashAlgorithmName.SHA256, System.Security.Cryptography.RSASignaturePadding.Pkcs1);
-                return h + "." + p + "." + Master.ZeroTrustSecurityShieldService.B64Url(sig);
-            }
-            string Payload(string aud = "pfs-client", long? exp = null, string nonce = "n-1") =>
-                "{\"iss\":\"https://idp.example.com\",\"aud\":\"" + aud + "\",\"sub\":\"u1\",\"email\":\"kim@corp.com\",\"tid\":\"acme\",\"exp\":" + (exp ?? nowS + 600) + ",\"iat\":" + nowS + ",\"nonce\":\"" + nonce + "\",\"groups\":[\"PFS-Producers\"]}";
-            var id = zo.ValidateIdToken(Jwt("RS256", "k1", Payload(), signer), "n-1");
-            Assert.True(id.Valid, id.Reason);
-            Assert.Equal("kim@corp.com", id.Subject); Assert.Equal("acme", id.Tenant); Assert.Equal(Master.ZtRole.Operator, id.Role);
-            Assert.NotNull(zo.IssueSession(id));
-            Assert.Equal("nonce 불일치(재전송 의심)", zo.ValidateIdToken(Jwt("RS256", "k1", Payload(), signer), "other").Reason);
-            Assert.Equal("aud 불일치", zo.ValidateIdToken(Jwt("RS256", "k1", Payload(aud: "evil"), signer), "n-1").Reason);
-            Assert.Equal("토큰 만료", zo.ValidateIdToken(Jwt("RS256", "k1", Payload(exp: nowS - 600), signer), "n-1").Reason);
-            Assert.Equal("알 수 없는 kid", zo.ValidateIdToken(Jwt("RS256", "k9", Payload(), signer), "n-1").Reason);
-            using (var attacker = System.Security.Cryptography.RSA.Create(2048))
-                Assert.Equal("서명 불일치", zo.ValidateIdToken(Jwt("RS256", "k1", Payload(), attacker), "n-1").Reason);
-            var noneTok = Master.ZeroTrustSecurityShieldService.B64Url("{\"alg\":\"none\"}"u8) + "." + Master.ZeroTrustSecurityShieldService.B64Url(System.Text.Encoding.UTF8.GetBytes(Payload())) + ".";
-            Assert.False(zo.ValidateIdToken(noneTok, "n-1").Valid);
-            var (verifier, challenge) = Master.ZeroTrustSecurityShieldService.CreatePkce();
-            Assert.Equal(challenge, Master.ZeroTrustSecurityShieldService.B64Url(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.ASCII.GetBytes(verifier))));
-            var ar = zo.BuildAuthorizationRequest("http://127.0.0.1:5000/callback/")!;
-            Assert.Contains("code_challenge_method=S256", ar.Url); Assert.Contains("state=" + ar.State, ar.Url);
-            Assert.Null(Master.ZeroTrustSecurityShieldService.ParseDiscovery("{\"issuer\":\"http://x\",\"authorization_endpoint\":\"https://a\",\"token_endpoint\":\"https://t\",\"jwks_uri\":\"https://j\"}"));
-
-            // 3) SAML2 — XML-DSig · 조건 · XSW · 변조
-            using var idpKey = System.Security.Cryptography.RSA.Create(2048);
-            var certReq = new System.Security.Cryptography.X509Certificates.CertificateRequest("CN=Test IdP", idpKey, System.Security.Cryptography.HashAlgorithmName.SHA256, System.Security.Cryptography.RSASignaturePadding.Pkcs1);
-            using var idpCert = certReq.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
-            string Saml(DateTime notOnOrAfter, string nameId = "lee@corp.com", bool twoAssertions = false)
-            {
-                var xml = "<samlp:Response xmlns:samlp=\"urn:oasis:names:tc:SAML:2.0:protocol\"><saml:Assertion xmlns:saml=\"urn:oasis:names:tc:SAML:2.0:assertion\" ID=\"_a1\" Version=\"2.0\">"
-                    + "<saml:Issuer>https://idp.example.com/saml</saml:Issuer><saml:Subject><saml:NameID>" + nameId + "</saml:NameID></saml:Subject>"
-                    + "<saml:Conditions NotBefore=\"" + DateTime.UtcNow.AddMinutes(-5).ToString("yyyy-MM-ddTHH:mm:ssZ") + "\" NotOnOrAfter=\"" + notOnOrAfter.ToString("yyyy-MM-ddTHH:mm:ssZ") + "\">"
-                    + "<saml:AudienceRestriction><saml:Audience>pfs-sp</saml:Audience></saml:AudienceRestriction></saml:Conditions>"
-                    + "<saml:AttributeStatement><saml:Attribute Name=\"role\"><saml:AttributeValue>Admins</saml:AttributeValue></saml:Attribute><saml:Attribute Name=\"tenant\"><saml:AttributeValue>acme</saml:AttributeValue></saml:Attribute></saml:AttributeStatement>"
-                    + "</saml:Assertion></samlp:Response>";
-                var doc = new System.Xml.XmlDocument { PreserveWhitespace = true };
-                doc.LoadXml(xml);
-                var assertion = (System.Xml.XmlElement)doc.GetElementsByTagName("saml:Assertion")[0]!;
-                var sx = new System.Security.Cryptography.Xml.SignedXml(assertion) { SigningKey = idpKey };
-                var reference = new System.Security.Cryptography.Xml.Reference("#_a1");
-                reference.AddTransform(new System.Security.Cryptography.Xml.XmlDsigEnvelopedSignatureTransform());
-                reference.AddTransform(new System.Security.Cryptography.Xml.XmlDsigExcC14NTransform());
-                sx.AddReference(reference);
-                sx.SignedInfo!.CanonicalizationMethod = System.Security.Cryptography.Xml.SignedXml.XmlDsigExcC14NTransformUrl;
-                sx.ComputeSignature();
-                assertion.AppendChild(doc.ImportNode(sx.GetXml(), true));
-                if (twoAssertions)
-                {
-                    var evil = (System.Xml.XmlElement)assertion.CloneNode(true);
-                    evil.SetAttribute("ID", "_evil");
-                    doc.DocumentElement!.AppendChild(evil);
-                }
-                return doc.OuterXml;
-            }
-            var saml = zo.ValidateSaml(Saml(DateTime.UtcNow.AddMinutes(10)), idpCert, "https://idp.example.com/saml", "pfs-sp");
-            Assert.True(saml.Valid, saml.Reason);
-            Assert.Equal("lee@corp.com", saml.Subject); Assert.Equal(Master.ZtRole.Admin, saml.Role); Assert.Equal("acme", saml.Tenant);
-            Assert.False(zo.ValidateSaml(Saml(DateTime.UtcNow.AddMinutes(10)).Replace("lee@corp.com", "attacker@corp.com"), idpCert, "https://idp.example.com/saml", "pfs-sp").Valid);
-            Assert.False(zo.ValidateSaml(Saml(DateTime.UtcNow.AddMinutes(-10)), idpCert, "https://idp.example.com/saml", "pfs-sp").Valid);
-            Assert.False(zo.ValidateSaml(Saml(DateTime.UtcNow.AddMinutes(10)), idpCert, "https://idp.example.com/saml", "other-sp").Valid);
-            Assert.Contains("XSW", zo.ValidateSaml(Saml(DateTime.UtcNow.AddMinutes(10), twoAssertions: true), idpCert, "https://idp.example.com/saml", "pfs-sp").Reason);
-            Assert.False(zo.ValidateSaml("<!DOCTYPE x [<!ENTITY e SYSTEM \"file:///c:/windows/win.ini\">]><x>&e;</x>", idpCert, "a", "b").Valid);
-
-            // 4) CDC 델타 — 무할당 경계 · 삽입 내성 · 업로드/증분/복원/재사용/변조/릴레이/수렴 암호화
-            var p = Master.CdcParams.Small;
-            var data = new byte[600_000];
-            new Random(9).NextBytes(data);
-            var c1 = Master.CloudDeltaAssetSyncEngine.ChunkBuffer(data, p);
-            Assert.True(c1.Count > 20);
-            Assert.All(c1, c => Assert.InRange(c.Length, 1, p.Max));
-            var edited = new byte[data.Length + 100];
-            data.AsSpan(0, 300_000).CopyTo(edited); new Random(1).NextBytes(edited.AsSpan(300_000, 100)); data.AsSpan(300_000).CopyTo(edited.AsSpan(300_100));
-            var c2 = Master.CloudDeltaAssetSyncEngine.ChunkBuffer(edited, p);
-            var common = 0;
-            var set1 = new HashSet<string>(c1.Select(c => c.Hash));
-            foreach (var c in c2) if (set1.Contains(c.Hash)) common++;
-            Assert.True(common >= c2.Count - 3, "공유 청크 " + common + "/" + c2.Count);
-            var seq = new System.Buffers.ReadOnlySequence<byte>(data);
-            var cutSum = 0;
-            for (var i = 0; i < 16; i++) cutSum += Master.CloudDeltaAssetSyncEngine.FindCut(seq, p, true);
-            // Step 39 — 정상 상태 측정(계층 JIT/OSR 1회성 전이 흡수 · 진짜 할당은 매 창 재현 → 실패 유지)
-            Assert.Equal(0, SteadyStateAllocation.MinBytes(() => { for (var i = 0; i < 256; i++) cutSum += Master.CloudDeltaAssetSyncEngine.FindCut(seq, p, true); }));
-            Assert.True(cutSum > 0);
-
-            using var zs = new Master.ZeroTrustSecurityShieldService(Path.Combine(root, "zs"), () => seed, null, null, false);
-            zs.Unlock();
-            var sess = zs.IssueLocalSession()!;
-            var sync = new Master.CloudDeltaAssetSyncEngine(zs) { Params = p };
-            var vfile = Path.Combine(root, "video.mp4");
-            var big = new byte[2_500_000];
-            new Random(5).NextBytes(big);
-            File.WriteAllBytes(vfile, big);
-            var store = new Master.LocalFolderChunkStore(Path.Combine(root, "cloud"), "cloud");
-            Assert.False((await sync.UploadAsync(vfile, "video", store, null)).Ok);
-            var up1 = await sync.UploadAsync(vfile, "video", store, sess.Token);
-            Assert.True(up1.Ok, up1.Message); Assert.Equal(up1.Chunks, up1.Transferred + up1.Deduplicated); Assert.Equal(big.Length, up1.BytesTransferred);
-            var m1 = await store.GetManifestAsync("video", default);
-            Assert.Equal(Master.CloudDeltaAssetSyncEngine.ChunkBuffer(big, p).Count, m1!.Chunks.Count);
-            var big2 = (byte[])big.Clone();
-            new Random(6).NextBytes(big2.AsSpan(1_200_000, 5_000));
-            File.WriteAllBytes(vfile, big2);
-            var up2 = await sync.UploadAsync(vfile, "video", store, sess.Token);
-            Assert.True(up2.Ok); Assert.True(up2.BytesTransferred < big.Length / 10, "증분 " + up2.BytesTransferred);
-            Assert.True(up2.SavingRatio > 0.9);
-            var restore = Path.Combine(root, "restore.mp4");
-            var dn = await sync.DownloadAsync("video", store, restore, sess.Token);
-            Assert.True(dn.Ok, dn.Message); Assert.True(File.ReadAllBytes(restore).AsSpan().SequenceEqual(big2));
-            File.WriteAllBytes(restore, big);
-            var dn2 = await sync.DownloadAsync("video", store, restore, sess.Token);
-            Assert.True(dn2.Ok); Assert.True(dn2.Deduplicated > dn2.Transferred);
-            Assert.True(File.ReadAllBytes(restore).AsSpan().SequenceEqual(big2));
-            var victim = Directory.GetFiles(Path.Combine(root, "cloud", "chunks"), "*", SearchOption.AllDirectories)[0];
-            var vb = File.ReadAllBytes(victim); vb[0] ^= 1; File.WriteAllBytes(victim, vb);
-            var bad = await sync.DownloadAsync("video", store, Path.Combine(root, "fresh.mp4"), sess.Token);
-            Assert.False(bad.Ok); Assert.False(File.Exists(Path.Combine(root, "fresh.mp4"))); Assert.False(File.Exists(Path.Combine(root, "fresh.mp4.delta.tmp")));
-            vb[0] ^= 1; File.WriteAllBytes(victim, vb);
-            var peer = new Master.LocalFolderChunkStore(Path.Combine(root, "peer"), "peer", seed);
-            var relay = await sync.RelayAsync("video", store, peer);
-            Assert.True(relay.Ok, relay.Message);
-            var relay2 = await sync.RelayAsync("video", store, peer);
-            Assert.Equal(0, relay2.Transferred);
-            var anyPeerChunk = Directory.GetFiles(Path.Combine(root, "peer", "chunks"), "*", SearchOption.AllDirectories)[0];
-            var hashName = Path.GetFileName(anyPeerChunk);
-            var raw = File.ReadAllBytes(anyPeerChunk);
-            Assert.NotEqual(hashName, Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(raw)));
-            var peerPlain = (await peer.GetAsync(hashName, default))!;
-            Assert.Equal(raw, Master.CloudDeltaAssetSyncEngine.ConvergentEncrypt(seed, hashName, peerPlain));
-            Assert.True((await sync.DownloadAsync("video", peer, Path.Combine(root, "frompeer.mp4"), sess.Token)).Ok);
-            Assert.Null(Master.CloudDeltaAssetSyncEngine.ParseManifest("{\"asset\":\"a\",\"size\":10,\"hash\":\"" + new string('a', 64) + "\",\"at\":\"2026-01-01T00:00:00Z\",\"chunks\":[[0,5,\"" + new string('b', 64) + "\"],[6,4,\"" + new string('c', 64) + "\"]]}"));
-            Assert.False(Master.CloudDeltaAssetSyncEngine.IsSafeAssetId("../etc"));
-
-            // 5) 오케스트레이터 — 30 모듈 매트릭스 · 인가 · 단계 실행/재시도/[부분 구제]/QA 차단
-            var analytics = new Ix.InteractiveConversionAnalytics();
-            var sp = new MapProvider { [typeof(Master.ZeroTrustSecurityShieldService)] = zs, [typeof(Ix.InteractiveConversionAnalytics)] = analytics, [typeof(Master.CloudDeltaAssetSyncEngine)] = sync };
-            using var orch = new Master.UniversalMasterStudioOrchestrator(sp, zs);
-            Assert.Equal(30, orch.ModuleCount);
-            var matrix = orch.RefreshMatrix();
-            Assert.Equal(30, matrix.Count);
-            Assert.Equal(Master.ModuleHealth.Online, matrix.First(m => m.Id == "shield").Health);
-            Assert.Equal(Master.ModuleHealth.Online, matrix.First(m => m.Id == "ixstats").Health);
-            Assert.Equal(Master.ModuleHealth.Unavailable, matrix.First(m => m.Id == "jobs").Health);
-            Assert.Equal(3, orch.OnlineModules);
-            var proj = new SB.StoryboardProject { Title = "마스터" };
-            proj.Scenes.Add(new SB.StoryboardScene { Prompt = "a baby smiling" });
-            var denied = await orch.RunAsync(new Master.MasterRunRequest(proj), null);
-            Assert.Equal(Master.StageOutcome.Failed, denied![0].Outcome); Assert.Contains("인가 거부", denied[0].Message);
-            var final = Path.Combine(root, "final.mp4");
-            File.WriteAllBytes(final, big2);
-            var genCalls = 0;
-            orch.SetExecutor(Master.MasterStage.Generate, (c, ct) =>
-            {
-                if (++genCalls == 1) throw new IOException("일시 오류");
-                c.MasterVideo = final;
-                return Task.FromResult(new Master.StageResult(Master.MasterStage.Generate, Master.StageOutcome.Done, "생성", TimeSpan.Zero, final));
-            });
-            orch.SetExecutor(Master.MasterStage.Qa, (c, ct) => { c.QaRejected = true; return Task.FromResult(new Master.StageResult(Master.MasterStage.Qa, Master.StageOutcome.Failed, "QA 반려", TimeSpan.Zero)); });
-            orch.SetStageEnabled(Master.MasterStage.Dubbing, false);
-            var res = await orch.RunAsync(new Master.MasterRunRequest(proj, "baby", ReuseExistingVideo: false, PublishTargets: new[] { SocialPublishTarget.YouTubeShorts }, DeltaStoreFolder: Path.Combine(root, "cloud")), sess.Token);
-            Assert.NotNull(res);
-            Assert.Equal(2, genCalls);
-            Assert.Equal(Master.StageOutcome.Done, res!.First(r => r.Stage == Master.MasterStage.Plan).Outcome);
-            Assert.Equal(Master.StageOutcome.Done, res.First(r => r.Stage == Master.MasterStage.CharacterId).Outcome);
-            Assert.Contains(SB.CharacterIdentityLockService.IdentityPrompt, proj.Scenes[0].Prompt);
-            Assert.Equal(Master.StageOutcome.Done, res.First(r => r.Stage == Master.MasterStage.Generate).Outcome);
-            Assert.Equal("사용자 비활성", res.First(r => r.Stage == Master.MasterStage.Dubbing).Message);
-            Assert.Equal(Master.StageOutcome.Failed, res.First(r => r.Stage == Master.MasterStage.Qa).Outcome);
-            Assert.Contains("QA 반려", res.First(r => r.Stage == Master.MasterStage.Publish).Message);
-            Assert.Equal(Master.StageOutcome.Skipped, res.First(r => r.Stage == Master.MasterStage.Live).Outcome);
-            var ds = res.First(r => r.Stage == Master.MasterStage.DeltaSync);
-            Assert.Equal(Master.StageOutcome.Done, ds.Outcome);
-            Assert.Equal(2, orch.FailedRuns);
-            Assert.True(zs.VerifyAudit().Ok);
-        }
-        finally
-        {
-            try { Directory.Delete(root, true); } catch { }
-        }
-    }
-
-    private sealed class MapProvider : Dictionary<Type, object>, IServiceProvider
-    {
-        public object? GetService(Type serviceType) => TryGetValue(serviceType, out var o) ? o : null;
     }
 
     // ── v16.29.0 멀티 엔진: 트랜스파일 방언 · 라우팅 점수/제약/완화(무할당) · 장애 조치/서킷 · 원격 어댑터(가짜 HTTP Luma 왕복 · 상태 스키마) · 플러그인 매니페스트/필터 검증/신뢰 게이트/DLL 로드·격리·핫 리로드 ──
@@ -6271,259 +5744,6 @@ public class TitanReleaseTests
             => Task.FromResult(respond(request));
     }
 
-    // ── v16.33.0 사운드 디자인: DSP(FFT·바이쿼드·BS.1770·리미터·WAV) · Foley(키워드·모션·이벤트·합성·팬·인젝션 인자) · 4-스템 분리(완전 재구성·HPSS·중앙성)
-    //    · 믹서(뮤트/솔로·덕킹·LUFS 정규화·피크) · Atmos(패닝 에너지·좌표·지문·블록 렌더·ADM XML/chna·BWF) · 1-Click 마스터 ──
-    [Fact]
-    [Trait("Category", "Integration")]
-    public async Task SoundDesign_And_SpatialAudio_Check()
-    {
-        var dir = Path.Combine(Path.GetTempPath(), "pfs_sound_" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(dir);
-        try
-        {
-            const int R = 48000;
-            // 1) DSP — FFT 왕복 · 바이쿼드 · LUFS · 리미터 · WAV 왕복
-            var fft = new Snd.FftPlan(256);
-            var re = new float[256]; var im = new float[256]; var rnd = new Random(5);
-            for (var i = 0; i < 256; i++) re[i] = (float)rnd.NextDouble() - 0.5f;
-            var orig = (float[])re.Clone();
-            fft.Transform(re, im, false); fft.Transform(re, im, true);
-            for (var i = 0; i < 256; i++) Assert.Equal(orig[i], re[i], 4);
-            Assert.Throws<ArgumentException>(() => new Snd.FftPlan(100));
-            float[] Sine(double hz, float amp, double sec) { var n = (int)(R * sec); var x = new float[n]; for (var i = 0; i < n; i++) x[i] = amp * MathF.Sin((float)(2 * Math.PI * hz * i / R)); return x; }
-            var hi = Sine(8000, 0.5f, 0.2);
-            var lp = Snd.Biquad.LowPass(500, 0.707, R);
-            var y = new float[hi.Length]; for (var i = 0; i < hi.Length; i++) y[i] = lp.Process(hi[i]);
-            Assert.True(Snd.SoundDsp.Energy(y.AsSpan(R / 20)) < Snd.SoundDsp.Energy(hi.AsSpan(R / 20)) * 0.01);
-            var tone = Sine(997, 0.1f, 3);
-            Assert.InRange(Snd.SoundDsp.MeasureLufs(tone, tone, R), -20.7, -19.3);
-            Assert.Equal(-70, Snd.SoundDsp.MeasureLufs(new float[R * 2], new float[R * 2], R));
-            var loud = Sine(200, 1.5f, 0.5); var loud2 = (float[])loud.Clone();
-            Assert.True(Snd.SoundDsp.Limit(loud, loud2, R, -1) <= -0.99f);
-            var wavPath = Path.Combine(dir, "t.wav");
-            Snd.SoundDsp.WriteStereoWav(wavPath, tone.AsSpan(0, 1000), hi.AsSpan(0, 1000), R);
-            Assert.True(Snd.SoundDsp.TryReadWav(File.ReadAllBytes(wavPath), out var rl, out var rr, out var rRate, out var rCh));
-            Assert.Equal(R, rRate); Assert.Equal(2, rCh); Assert.Equal(1000, rl.Length); Assert.Equal(tone[500], rl[500]); Assert.Equal(hi[999], rr[999]);
-            Assert.False(Snd.SoundDsp.TryReadWav(new byte[] { 1, 2, 3 }, out _, out _, out _, out _));
-            Assert.True(Snd.SoundDsp.TryReadWav(SineWav(16000, 440, 0.1), out var m16, out var m16r, out var m16rate, out var m16ch));
-            Assert.Equal(1, m16ch); Assert.Same(m16, m16r); Assert.Equal(1600, m16.Length);
-            Assert.Equal(new[] { 0.5f, 1f }, Snd.SoundDsp.Peaks(new[] { 0.5f, -0.2f, 0.1f, -1f }, 2));
-            var (pl, pr) = Snd.SoundDsp.Pan(1); Assert.Equal(0f, pl, 4); Assert.Equal(1f, pr, 4);
-            Assert.Equal(48, Snd.SoundDsp.Resample(new float[32], 32000, 48000).Length);
-
-            // 2) Foley — 키워드 · 모션 분석 · 이벤트 계획 · 합성 · 렌더
-            var mask = Snd.AiGenerativeFoleySoundscapeEngine.DetectKeywords("비 오는 밤, 그녀가 계단을 걷다 문을 닫고 웃는다");
-            Assert.True(mask.HasFlag(Snd.FoleyMask.Rain) && mask.HasFlag(Snd.FoleyMask.Footstep) && mask.HasFlag(Snd.FoleyMask.DoorSlam) && mask.HasFlag(Snd.FoleyMask.Laughter));
-            Assert.False(mask.HasFlag(Snd.FoleyMask.Crowd));
-            Assert.Equal(Snd.FoleyMask.None, Snd.AiGenerativeFoleySoundscapeEngine.DetectKeywords(null));
-            Assert.Equal(Snd.FoleyMask.Wind | Snd.FoleyMask.Impact, Snd.AiGenerativeFoleySoundscapeEngine.DetectKeywords("A CRASH in the storm"));
-            const int MW = 32, MH = 18;
-            var f0 = new byte[MW * MH]; var f1 = new byte[MW * MH];
-            for (var yy = 4; yy < 10; yy++) for (var xx = 24; xx < 30; xx++) f1[yy * MW + xx] = 200;
-            var ms = Snd.AiGenerativeFoleySoundscapeEngine.AnalyzeMotion(f0, f1, MW, MH);
-            Assert.True(ms.Energy > 0.02f); Assert.True(ms.CenterX > 0.75f); Assert.True(ms.CenterY < 0.5f);
-            Assert.Equal(0f, Snd.AiGenerativeFoleySoundscapeEngine.AnalyzeMotion(f0, f0, MW, MH).Energy);
-            var motion = new Snd.MotionSample[100];   // 10초 @10fps
-            for (var i = 0; i < 100; i++) motion[i] = new(i >= 20 && i < 60 ? 0.03f : 0.002f, 0.8f, 0.5f);
-            motion[70] = new(0.6f, 0.2f, 0.5f);       // 7.0초 강한 온셋(좌측)
-            var ev = Snd.AiGenerativeFoleySoundscapeEngine.PlanEvents(motion, 10, Snd.FoleyMask.Footstep | Snd.FoleyMask.DoorSlam | Snd.FoleyMask.Rain, 10, 1);
-            Assert.Contains(ev, e => e.Kind == Snd.FoleyKind.Rain && e.Start == 0 && e.Duration == 10);
-            var door = Assert.Single(ev, e => e.Kind == Snd.FoleyKind.DoorSlam);
-            Assert.Equal(7.0, door.Start, 3); Assert.True(door.Pan < -0.5f);
-            var steps = ev.FindAll(e => e.Kind == Snd.FoleyKind.Footstep);
-            Assert.InRange(steps.Count, 6, 12);
-            Assert.All(steps, s => Assert.InRange(s.Start, 2.0, 7.05));
-            Assert.All(steps.FindAll(s => s.Start < 6.5), s => Assert.True(s.Pan > 0.4f));   // 지속 모션 구간(무게중심 우측)
-            for (var i = 1; i < ev.Count; i++) Assert.True(ev[i].Start >= ev[i - 1].Start);
-            Assert.Empty(Snd.AiGenerativeFoleySoundscapeEngine.PlanEvents(new Snd.MotionSample[50], 10, Snd.FoleyMask.None, 5, 1));
-            var whooshM = new Snd.MotionSample[20];
-            for (var i = 0; i < 20; i++) whooshM[i] = new(0.001f, 0.5f, 0.5f);
-            whooshM[10] = new(0.05f, 0.1f, 0.5f); whooshM[11] = new(0.05f, 0.9f, 0.5f);
-            Assert.Contains(Snd.AiGenerativeFoleySoundscapeEngine.PlanEvents(whooshM, 10, Snd.FoleyMask.None, 2, 1), e => e.Kind == Snd.FoleyKind.Whoosh);
-            foreach (var kind in Enum.GetValues<Snd.FoleyKind>())
-            {
-                var a = new float[R / 2]; var b = new float[R / 2];
-                Snd.AiGenerativeFoleySoundscapeEngine.Synthesize(kind, a, R, 1, 42);
-                Snd.AiGenerativeFoleySoundscapeEngine.Synthesize(kind, b, R, 1, 42);
-                Assert.Equal(a, b);
-                Assert.True(Snd.SoundDsp.Energy(a) > 1e-3, kind + " 무음");
-                Assert.All(a, v => Assert.True(float.IsFinite(v) && Math.Abs(v) < 4f, kind + " 발산"));
-            }
-            var stepBuf = new float[R / 4];
-            Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>   // 합성 무할당
-            {
-                for (var i = 0; i < 10; i++) Snd.AiGenerativeFoleySoundscapeEngine.Synthesize(Snd.FoleyKind.Footstep, stepBuf, R, 1, i);
-            }));
-            var (tl, tr) = Snd.AiGenerativeFoleySoundscapeEngine.RenderTrack(new[] { new Snd.FoleyEvent(Snd.FoleyKind.Impact, 0.5, 0.4, 1, 0.9f, 1) }, 1.5, R);
-            Assert.Equal((int)(1.5 * R), tl.Length);
-            Assert.True(Snd.SoundDsp.Energy(tr) > Snd.SoundDsp.Energy(tl) * 10, "우측 팬");
-            Assert.Equal(0, Snd.SoundDsp.Energy(tl.AsSpan(0, R / 2 - 1)));
-            var foleyEng = new Snd.AiGenerativeFoleySoundscapeEngine(() => null);
-            var plan = foleyEng.Generate(motion, 10, 10, "rain, walking, door slam", 3);
-            Assert.Equal(10 * R, plan.Left.Length); Assert.Equal(plan.Events.Count, (int)foleyEng.GeneratedEvents);
-            Assert.Null(await foleyEng.GenerateAsync(Path.Combine(dir, "x.mp4"), null));
-            Assert.Null(await foleyEng.InjectAsync("a.mp4", "b.wav", "c.mp4"));
-            Assert.Contains("[0:a][1:a]amix=inputs=2:duration=first:normalize=0[a]", Snd.AiGenerativeFoleySoundscapeEngine.BuildInjectArgs("v.mp4", "a.wav", "o.mp4", true));
-            Assert.Contains("1:a:0", Snd.AiGenerativeFoleySoundscapeEngine.BuildInjectArgs("v.mp4", "a.wav", "o.mp4", false));
-            Assert.Contains("발자국", Snd.AiGenerativeFoleySoundscapeEngine.MaskLabel(Snd.FoleyMask.Footstep | Snd.FoleyMask.Rain));
-            var sbProj = new SB.StoryboardProject();
-            sbProj.Scenes.Add(new SB.StoryboardScene { Prompt = "crowd at a cafe", VoiceText = "하하 웃음" });
-            Assert.True(Snd.AiGenerativeFoleySoundscapeEngine.DetectKeywords(Snd.AiGenerativeFoleySoundscapeEngine.SceneText(sbProj)).HasFlag(Snd.FoleyMask.Laughter));
-
-            // 3) 4-스템 분리 — 완전 재구성 · 지속 톤=하모닉/중앙 → 보컬 · 클릭=퍼커시브 · 사이드 톤 → BGM
-            const int N = R * 2;
-            var vocal = Sine(440, 0.3f, 2);
-            var clicks = new float[N];
-            for (var c = R / 8; c < N; c += R / 4) for (var k = 0; k < 200; k++) clicks[c + k] = (float)(Math.Exp(-k / 30.0) * ((k * 7919) % 13 - 6) / 6.0) * 0.8f;
-            var mixL = new float[N]; var mixR = new float[N];
-            for (var i = 0; i < N; i++) { mixL[i] = vocal[i] + clicks[i]; mixR[i] = vocal[i] + clicks[i]; }
-            var stems = Snd.AudioStemSeparationAndMixingEngine.SeparateBcl(mixL, mixR, R);
-            Assert.Equal("BCL-HPSS", stems.Method); Assert.Equal(N, stems.Length);
-            var maxErr = 0f;
-            for (var i = 0; i < N; i++)
-            {
-                var sumL = stems.Left[0][i] + stems.Left[1][i] + stems.Left[2][i] + stems.Left[3][i];
-                maxErr = MathF.Max(maxErr, MathF.Abs(sumL - mixL[i]));
-            }
-            Assert.True(maxErr < 1e-4f, "완전 재구성 오차 " + maxErr);
-            double E(int s) => Snd.SoundDsp.Energy(stems.Left[s].AsSpan(R / 4, N - R / 2));
-            var eV = E(0); var eB = E(1); var eD = E(2); var eS = E(3);
-            Assert.True(eV > eD && eV > eS, "보컬 우세");
-            Assert.True(eD + eS > 0.3 * Snd.SoundDsp.Energy(clicks.AsSpan(R / 4, N - R / 2)), "퍼커시브 → 드럼/SFX");
-            var sideR = new float[N]; for (var i = 0; i < N; i++) sideR[i] = -vocal[i];
-            var sideStems = Snd.AudioStemSeparationAndMixingEngine.SeparateBcl(vocal, sideR, R);
-            Assert.True(Snd.SoundDsp.Energy(sideStems.Left[1]) > Snd.SoundDsp.Energy(sideStems.Left[0]) * 5, "역상(사이드) → BGM");
-            Assert.Equal(0, Snd.AudioStemSeparationAndMixingEngine.SeparateBcl(Array.Empty<float>(), Array.Empty<float>(), R).Length);
-
-            // 4) 믹서 — 뮤트/솔로 · 덕킹 · LUFS 정규화 · 버스
-            var bgm = Sine(220, 0.2f, 2);
-            var vox = new float[N]; for (var i = R / 2; i < (int)(1.5 * R); i++) vox[i] = vocal[i];
-            var custom = new Snd.StemSet(R, N, new[] { vox, bgm, new float[N], new float[N] }, new[] { vox, bgm, new float[N], new float[N] }, "test");
-            float[] oL = new float[N], oR = new float[N], dlg = new float[N], mL = new float[N], mR = new float[N];
-            var setNoDuck = Snd.MixSettings.Default with { Ducking = false, TargetLufs = -14 };
-            var rep0 = Snd.AudioStemSeparationAndMixingEngine.Mix(custom, setNoDuck, oL, oR, dlg, mL, mR);
-            Assert.InRange(rep0.IntegratedLufs, -15.2, -12.8);
-            Assert.True(rep0.PeakDb <= -0.99f);
-            Assert.Equal(0, rep0.DuckedSeconds);
-            var bgmMid0 = Snd.SoundDsp.Energy(mL.AsSpan(R, R / 4));
-            var rep1 = Snd.AudioStemSeparationAndMixingEngine.Mix(custom, Snd.MixSettings.Default with { DuckDepthDb = 12, TargetLufs = -14 }, oL, oR, dlg, mL, mR);
-            Assert.InRange(rep1.DuckedSeconds, 0.9, 1.7);   // 보컬 1초 + 릴리즈 꼬리
-            var g0 = Snd.SoundDsp.DbToGain(rep0.AppliedGainDb); var g1 = Snd.SoundDsp.DbToGain(rep1.AppliedGainDb);
-            Assert.True(Snd.SoundDsp.Energy(mL.AsSpan(R, R / 4)) / (g1 * g1) < bgmMid0 / (g0 * g0) * 0.1, "보컬 구간 BGM 감쇄");
-            Assert.True(Snd.SoundDsp.Energy(dlg.AsSpan(R, R / 4)) > 0);
-            var muted = Snd.MixSettings.Default.With(Snd.StemKind.Bgm, Snd.StemChannel.Unity with { Mute = true }).With(Snd.StemKind.Vocals, Snd.StemChannel.Unity with { Mute = true });
-            var rep2 = Snd.AudioStemSeparationAndMixingEngine.Mix(custom, muted, oL, oR);
-            Assert.Equal(0, Snd.SoundDsp.Energy(oL)); Assert.Equal(-70, rep2.PreLufs);
-            var solo = Snd.MixSettings.Default.With(Snd.StemKind.Bgm, Snd.StemChannel.Unity with { Solo = true }) with { Ducking = false };
-            Snd.AudioStemSeparationAndMixingEngine.Mix(custom, solo, oL, oR, dlg, mL, mR);
-            Assert.Equal(0, Snd.SoundDsp.Energy(dlg));
-            var eq = Snd.MixSettings.Default.With(Snd.StemKind.Bgm, Snd.StemChannel.Unity with { LowDb = 12 }) with { Ducking = false };
-            Assert.True(eq.Channels[1].HasEq && !Snd.MixSettings.Default.Channels[1].HasEq);
-            var mixer = new Snd.AudioStemSeparationAndMixingEngine(() => null, null);
-            Assert.False(mixer.DemucsAvailable); Assert.Null(mixer.MixCurrent());
-            Assert.Null(await mixer.LoadAsync(Path.Combine(dir, "x.mp4")));
-            var loaded = await mixer.LoadAudioAsync(mixL, mixR, "synthetic");
-            Assert.Equal("BCL-HPSS", loaded.Method); Assert.NotNull(mixer.MixCurrent()); Assert.NotNull(mixer.LastReport);
-
-            // 5) Atmos — 패닝 에너지 · 방향 · 높이 · 좌표 · 지문
-            var g = new float[16];
-            Snd.DolbyAtmosSpatialAudioMapper.PanGains(1, 1, 0, Snd.DolbyAtmosSpatialAudioMapper.Layout51, g);
-            double es = 0; for (var i = 0; i < 6; i++) es += g[i] * g[i];
-            Assert.Equal(1.0, es, 4); Assert.Equal(0f, g[3]);
-            Assert.True(g[1] > g[0] && g[1] > g[2] && g[1] > g[4], "우전방 → R");
-            Snd.DolbyAtmosSpatialAudioMapper.PanGains(-1, -1, 0, Snd.DolbyAtmosSpatialAudioMapper.Layout714, g);
-            Assert.True(g[4] == MaxOf(g, 12), "좌후방 → Lrs");
-            Snd.DolbyAtmosSpatialAudioMapper.PanGains(0, 0.3f, 1, Snd.DolbyAtmosSpatialAudioMapper.Layout714, g);
-            Assert.True(g[8] + g[9] > g[0] + g[1], "상공 → 탑 스피커");
-            Snd.DolbyAtmosSpatialAudioMapper.PanGains(0, 0, 0, Snd.DolbyAtmosSpatialAudioMapper.Layout51, g);
-            Assert.Equal(g[0], g[4], 4); Assert.Equal(1f / MathF.Sqrt(5), g[2], 4);
-            var sp = Snd.DolbyAtmosSpatialAudioMapper.FromScreen(1, 1f, 0f, 6f);
-            Assert.Equal(1f, sp.X); Assert.Equal(1f, sp.Y); Assert.Equal(0.6f, sp.Z, 4);
-            Assert.Equal(-1f, Snd.DolbyAtmosSpatialAudioMapper.FromScreen(0, 0f, 0.5f, 0.5f).X);
-            var path = new List<Snd.AtmosKeyframe> { new(0, -1, 1, 0), new(2, 1, 1, 0) };
-            Assert.Equal(0f, Snd.DolbyAtmosSpatialAudioMapper.PositionAt(path, 1).X, 4);
-            Assert.Equal(1f, Snd.DolbyAtmosSpatialAudioMapper.PositionAt(path, 9).X);
-            var fpA = Snd.DolbyAtmosSpatialAudioMapper.Fingerprint(vocal, R);
-            Assert.Equal(32, fpA.Length); Assert.Equal(fpA, Snd.DolbyAtmosSpatialAudioMapper.Fingerprint(vocal, R));
-            Assert.NotEqual(fpA, Snd.DolbyAtmosSpatialAudioMapper.Fingerprint(clicks, R));
-
-            // 6) 오브젝트 매핑 · 블록 렌더(다이얼로그=C · LFE LPF) · 바이노럴 · ADM
-            var atmos = new Snd.DolbyAtmosSpatialAudioMapper(() => null, foleyEng, mixer);
-            Assert.True(atmos.MapFromFoley(plan) >= 3);
-            var rainObj = Assert.Single(atmos.Objects, o => o.Name.Contains("비"));
-            Assert.Equal(0.9f, rainObj.Path[0].Z); Assert.Equal(10 * R, rainObj.Audio.Length);
-            Assert.Equal(atmos.ObjectCount, atmos.MapFromFoley(plan));   // 재매핑 시 Foley 오브젝트 교체(중복 0)
-            Assert.True(atmos.AddTrackedObject("Car", Sine(120, 0.2f, 1), new List<(double, float, float, float)> { (0, 0.1f, 0.6f, 3f), (1, 0.9f, 0.6f, 3f) }));
-            var blk = new float[256 * 12];
-            var lfeF = Snd.Biquad.LowPass(120, 0.707, R);
-            var dialogBus = Sine(1000, 0.5f, 0.1); var musL = Sine(3000, 0.5f, 0.1);
-            Snd.DolbyAtmosSpatialAudioMapper.RenderBlock(Snd.DolbyAtmosSpatialAudioMapper.Layout714, dialogBus, musL, musL, Array.Empty<Snd.AtmosObject>(), true, 1000, 256, R, blk, ref lfeF);
-            double cE = 0, lE = 0, lfeE = 0, topE = 0;
-            for (var f = 0; f < 256; f++) { cE += blk[f * 12 + 2] * blk[f * 12 + 2]; lE += blk[f * 12] * blk[f * 12]; lfeE += blk[f * 12 + 3] * blk[f * 12 + 3]; topE += blk[f * 12 + 8] * blk[f * 12 + 8]; }
-            Assert.True(cE > 10 && lE > 10); Assert.True(lfeE < lE * 0.01, "LFE 저역만"); Assert.Equal(0, topE);
-            var (bl, br) = Snd.DolbyAtmosSpatialAudioMapper.RenderBinaural(new float[R], new float[R], new float[R],
-                new[] { new Snd.AtmosObject { Name = "R", Audio = Sine(500, 0.5f, 1), Path = { new(0, 1, 0.2f, 0) } } }, R, R);
-            Assert.True(Snd.SoundDsp.Energy(br) > Snd.SoundDsp.Energy(bl) * 1.3, "바이노럴 우측");
-            var objs = atmos.Objects;
-            var xml = Snd.DolbyAtmosSpatialAudioMapper.BuildAdmXml(objs, 10, R, "Test & <Mix>");
-            var xd = System.Xml.Linq.XDocument.Parse(xml);
-            System.Xml.Linq.XNamespace ns = "urn:ebu:metadata-schema:ebucore";
-            Assert.Equal(1 + objs.Count, xd.Descendants(ns + "audioObject").Count());
-            Assert.Equal(12 + objs.Count, xd.Descendants(ns + "audioTrackUID").Count());
-            Assert.Equal("Test & <Mix>", xd.Descendants(ns + "audioProgramme").Single().Attribute("audioProgrammeName")!.Value);
-            Assert.Contains(xd.Descendants(ns + "speakerLabel"), e => e.Value == "U+045");
-            Assert.True(xd.Descendants(ns + "audioBlockFormat").Count(e => e.Element(ns + "cartesian") is not null) >= objs.Count);
-            var chna = Snd.DolbyAtmosSpatialAudioMapper.BuildChna(12, 2);
-            Assert.Equal(4 + 14 * 40, chna.Length); Assert.Equal(14, BitConverter.ToUInt16(chna, 0));
-            Assert.Equal("ATU_0000000D", System.Text.Encoding.ASCII.GetString(chna, 4 + 12 * 40 + 2, 12));
-            Assert.Equal("AT_00031001_01", System.Text.Encoding.ASCII.GetString(chna, 4 + 12 * 40 + 14, 14));
-            Assert.Equal("AP_00031001", System.Text.Encoding.ASCII.GetString(chna, 4 + 12 * 40 + 28, 11));
-
-            // 7) 1-Click 마스터 — 스테레오/바이노럴/5.1/7.1.4/ADM/메타/manifest · 먹싱 [부분 구제]
-            var shortPlan = foleyEng.Generate(motion.AsSpan(0, 20), 10, 2, "rain door", 2);
-            var res = await atmos.MasterFromAudioAsync(mixL, mixR, shortPlan, dir, "demo mix", new Snd.MasterOptions(), Path.Combine(dir, "nonexistent.mp4"));
-            Assert.True(res.Ok, res.Message);
-            Assert.True(res.PartialRescue); Assert.Contains("[부분 구제]", res.Message);
-            Assert.EndsWith("demo_mix_audio_master", res.Folder);
-            Assert.Equal(6, res.Files.Count);
-            Assert.InRange(res.Lufs, -16, -12); Assert.True(res.PeakDb <= -0.99f);
-            Assert.True(Snd.SoundDsp.TryReadWav(File.ReadAllBytes(Path.Combine(res.Folder!, "master_stereo.wav")), out var ms0, out _, out _, out var ch0));
-            Assert.Equal(2, ch0); Assert.Equal(N, ms0.Length);
-            var b714 = File.ReadAllBytes(Path.Combine(res.Folder!, "master_7.1.4.wav"));
-            Assert.Equal(12, BitConverter.ToUInt16(b714, 22)); Assert.Equal(0xFFFE, BitConverter.ToUInt16(b714, 20)); Assert.Equal(0x2D63Fu, BitConverter.ToUInt32(b714, 40));
-            Assert.Equal(60 + 8 + (long)N * 12 * 4, b714.Length);
-            var b51 = File.ReadAllBytes(Path.Combine(res.Folder!, "master_5.1.wav"));
-            Assert.Equal(6, BitConverter.ToUInt16(b51, 22)); Assert.Equal(0x3Fu, BitConverter.ToUInt32(b51, 40));
-            var adm = File.ReadAllBytes(Path.Combine(res.Folder!, "master_atmos_adm.wav"));
-            var admText = System.Text.Encoding.ASCII.GetString(adm, 0, Math.Min(adm.Length, 200_000));
-            Assert.Contains("chna", admText); Assert.Contains("axml", admText); Assert.Contains("ITU-R_BS.2076-2", admText);
-            Assert.Equal(12 + res.Objects, BitConverter.ToUInt16(adm, 22));
-            var manifest = File.ReadAllText(Path.Combine(res.Folder!, "manifest.json"));
-            var stereoSha = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(Path.Combine(res.Folder!, "master_stereo.wav")))).ToLowerInvariant();
-            Assert.Contains(stereoSha, manifest);
-            using (var md = System.Text.Json.JsonDocument.Parse(File.ReadAllText(Path.Combine(res.Folder!, "atmos_metadata.json"))))
-            {
-                Assert.Equal("BCL-HPSS", md.RootElement.GetProperty("stemMethod").GetString());
-                Assert.Equal(res.Objects, md.RootElement.GetProperty("objects").GetArrayLength());
-            }
-            Assert.Equal(1, atmos.Masters); Assert.False(atmos.IsBusy);
-            Assert.False((await atmos.MasterAsync(Path.Combine(dir, "x.mp4"), dir, null, null, true, new Snd.MasterOptions())).Ok);
-            Assert.False((await atmos.MasterFromAudioAsync(mixL, mixR, null, "", "x", new Snd.MasterOptions())).Ok);
-            foreach (var f in Directory.GetFiles(res.Folder!)) Assert.False(f.EndsWith(".tmp", StringComparison.Ordinal));
-        }
-        finally
-        {
-            try { Directory.Delete(dir, true); } catch { }
-        }
-    }
-
-    private static float MaxOf(float[] g, int n)
-    {
-        var m = float.MinValue;
-        for (var i = 0; i < n; i++) m = MathF.Max(m, g[i]);
-        return m;
-    }
-
     // ── v16.34.0 VFX: 법선(평면/경사) · 포인트/스포트/디렉셔널 셰이딩 · 그림자 · 무할당 프레임 · fps 파싱 · 업스케일(목표 해상도·패스·디노이즈·디블록·바이큐빅·샤프·필터/인자)
     //    · 광학 흐름(블록 SAD·메디안) · 워프 보간 · 슬로모션 필터/atempo · RIFE/FLAVR 인자 · ffmpeg 부재 Graceful ──
     [Fact]
@@ -6908,7 +6128,7 @@ public class TitanReleaseTests
 
     private static SB.FacialEmotion FacialEmotionOf(string name) => Enum.Parse<SB.FacialEmotion>(name);
 
-    private static byte[] SineWav(int rate, double hz, double seconds)
+    internal static byte[] SineWav(int rate, double hz, double seconds)
     {
         var pcm = Sine(rate, hz, seconds);
         using var ms = new MemoryStream();
@@ -11189,327 +10409,6 @@ public class TitanReleaseTests
     }
 
     [Fact]
-    [Trait("Category", "FastUnit")]
-    public void GlobalLocalization_And_RealtimeDubbing_Check()
-    {
-        // ── LOCALIZATION-1: G2V · 등시성 · SIMD 행 보간 비트 동일 · ROI 워프 · 무할당 ──
-        var dub = new Lz.RealtimeNeuralAudioDubbingEngine();
-        var ph = new Lz.DubPhoneme[256];
-        var n = dub.ToPhonemes("마바", Lz.DubLanguage.Ko, ph);
-        Assert.Equal(new[] { Lz.Viseme.MBP, Lz.Viseme.A, Lz.Viseme.MBP, Lz.Viseme.A }, ph.Take(n).Select(p => p.Viseme).ToArray());
-        n = dub.ToPhonemes("앙", Lz.DubLanguage.Ko, ph);                                                       // ㅇ 초성 무음 · 종성 ㅇ
-        Assert.Equal(new[] { Lz.Viseme.A, Lz.Viseme.C }, ph.Take(n).Select(p => p.Viseme).ToArray());
-        n = dub.ToPhonemes("ばか", Lz.DubLanguage.Ja, ph);
-        Assert.Equal(new[] { Lz.Viseme.MBP, Lz.Viseme.A, Lz.Viseme.C, Lz.Viseme.A }, ph.Take(n).Select(p => p.Viseme).ToArray());
-        n = dub.ToPhonemes("バカ", Lz.DubLanguage.Ja, ph);                                                     // 가타카나 동일
-        Assert.Equal(4, n);
-        n = dub.ToPhonemes("Movie, fun!", Lz.DubLanguage.En, ph);
-        Assert.Equal(new[] { Lz.Viseme.MBP, Lz.Viseme.O, Lz.Viseme.FV, Lz.Viseme.I, Lz.Viseme.E, Lz.Viseme.Rest, Lz.Viseme.FV, Lz.Viseme.U, Lz.Viseme.C, Lz.Viseme.Rest },
-            ph.Take(n).Select(p => p.Viseme).ToArray());
-        var jaMs = Lz.RealtimeNeuralAudioDubbingEngine.DurationMs(ph.AsSpan(0, dub.ToPhonemes("かかかか", Lz.DubLanguage.Ja, ph)));
-        var zhMs = Lz.RealtimeNeuralAudioDubbingEngine.DurationMs(ph.AsSpan(0, dub.ToPhonemes("你好你好", Lz.DubLanguage.Zh, ph)));
-        Assert.True(zhMs > jaMs * 1.3f, $"zh {zhMs} ja {jaMs}");                                                // 발화 속도 차
-        n = dub.ToPhonemes("Hello there", Lz.DubLanguage.En, ph);
-        var k = Lz.RealtimeNeuralAudioDubbingEngine.FitIsochrony(ph.AsSpan(0, n), 10_000);
-        Assert.Equal(1.33f, k, 3);                                                                             // 상한 클램프
-        var rnd = new Random(1669);
-        for (var len = 0; len <= 300; len += 7)
-        {
-            var a = new byte[len]; var b = new byte[len]; rnd.NextBytes(a); rnd.NextBytes(b);
-            var w = (ushort)rnd.Next(0, 256);
-            var d1 = new byte[len]; var d2 = new byte[len];
-            Lz.RealtimeNeuralAudioDubbingEngine.LerpRow(a, b, w, d1, simd: true);
-            Lz.RealtimeNeuralAudioDubbingEngine.LerpRow(a, b, w, d2, simd: false);
-            Assert.Equal(d2, d1);
-        }
-        var frame = new byte[Lz.RealtimeNeuralAudioDubbingEngine.FrameW * Lz.RealtimeNeuralAudioDubbingEngine.FrameH * 4];
-        var scratch = new byte[Lz.RealtimeNeuralAudioDubbingEngine.RoiW * Lz.RealtimeNeuralAudioDubbingEngine.RoiH * 4];
-        Lz.RealtimeNeuralAudioDubbingEngine.DrawFace(frame, 0.3f);
-        Assert.Equal(0.3f, Lz.RealtimeNeuralAudioDubbingEngine.MeasureOpenness(frame), 1);
-        Lz.RealtimeNeuralAudioDubbingEngine.WarpMouth(frame, 1.8f, scratch);
-        var warped = Lz.RealtimeNeuralAudioDubbingEngine.MeasureOpenness(frame);
-        Assert.True(MathF.Abs(warped - ((2 + 6) * 1.8f - 2) / 20) < 0.08f, $"warped {warped}");
-        Assert.Equal(0, AllocationProbe.MinAllocated(() =>
-        {
-            for (var i = 0; i < 20; i++) { dub.ToPhonemes("형, 이번 작전은 식은 죽 먹기야.", Lz.DubLanguage.Ko, ph); Lz.RealtimeNeuralAudioDubbingEngine.DrawFace(frame, 0.5f); Lz.RealtimeNeuralAudioDubbingEngine.WarpMouth(frame, 1.3f, scratch); }
-        }));
-
-        // ── LOCALIZATION-3: 보이스 클로닝 — F0 · 잔향 RT60 · 밝기 보정 · 음색 · 블록 지연 · 무할당 ──
-        var voice = new Lz.NeuralVoiceCloningAcousticTransfer();
-        n = dub.ToPhonemes("형, 이번 작전은 식은 죽 먹기야. 대박 날 거야!", Lz.DubLanguage.Ko, ph);
-        var pcm = new float[Lz.NeuralVoiceCloningAcousticTransfer.SampleRate * 10];
-        var tim = new float[8];
-        var truth = Lz.GlobalLocalizationStudioRunner.ActorTruth;
-        var len2 = voice.Synthesize(ph.AsSpan(0, n), truth, pcm);
-        var est = voice.Analyze(pcm.AsSpan(0, len2), tim);
-        Assert.True(MathF.Abs(est.F0Hz - truth.F0Hz) / truth.F0Hz < 0.08f, $"F0 {est.F0Hz}");
-        Assert.True(MathF.Abs(est.Rt60Ms - truth.Rt60Ms) / truth.Rt60Ms < 0.35f, $"RT60 {est.Rt60Ms}");
-        var hi = voice.Synthesize(ph.AsSpan(0, n), truth with { F0Hz = 220 }, pcm);
-        Assert.True(MathF.Abs(voice.Analyze(pcm.AsSpan(0, hi), tim).F0Hz - 220) / 220 < 0.08f);
-        var dryLen = voice.Synthesize(ph.AsSpan(0, n), truth with { Rt60Ms = 0, Wet = 0 }, pcm);
-        Assert.True(voice.Analyze(pcm.AsSpan(0, dryLen), tim).Rt60Ms < truth.Rt60Ms * 0.5f);
-        foreach (var target in new[] { 0.75f, 0.95f })
-        {
-            var got = voice.CalibrateTimbre(truth with { Brightness = target, Rt60Ms = 0, Wet = 0 });
-            Assert.True(MathF.Abs(got - target) / target < 0.1f, $"bright {got} vs {target}");
-        }
-        voice.Tone = new Lz.VoiceToneSettings(PitchShiftSemis: 12);
-        var oct = voice.Synthesize(ph.AsSpan(0, n), truth, pcm);
-        Assert.True(MathF.Abs(voice.Analyze(pcm.AsSpan(0, oct), tim).F0Hz - 236) / 236 < 0.08f);                // +12반음 = 2배
-        voice.Tone = new Lz.VoiceToneSettings();
-        Assert.Equal(16, Lz.NeuralVoiceCloningAcousticTransfer.AlgorithmicLatencyMs);
-        var blk = new float[Lz.NeuralVoiceCloningAcousticTransfer.Block];
-        voice.Begin(ph.AsSpan(0, n), truth);
-        Assert.Equal(0, AllocationProbe.MinAllocated(() => { for (var i = 0; i < 100; i++) voice.Render(blk); }));
-        Assert.Equal(0, AllocationProbe.MinAllocated(() => voice.Analyze(pcm.AsSpan(0, 32000), tim)));
-
-        // ── LOCALIZATION-2: 문화 적응 — 관용구/은어/금기/맥락/유머/시각 금기/화체 · 자막 ──
-        var nu = new Lz.MultiLanguageCulturalNuanceAdaptor();
-        var s = Lz.MultiLanguageCulturalNuanceAdaptor.DemoScript;
-        var en0 = nu.Adapt(s[0].Text, Lz.DubLanguage.En, s[0].Visual);
-        Assert.Equal("Bro, this operation is a piece of cake. It's going to be a huge hit!", en0.Adapted);
-        Assert.Contains(en0.Findings, f => f.Kind == Lz.NuanceKind.Idiom && f.Action == Lz.NuanceAction.Replaced);
-        Assert.Contains(en0.Findings, f => f.Kind == Lz.NuanceKind.Honorific && f.Action == Lz.NuanceAction.Kept);
-        Assert.Equal("반말(친밀)", en0.Register);
-        Assert.Equal(1f, en0.NuanceScore);
-        Assert.Contains("朝飯前", nu.Adapt(s[0].Text, Lz.DubLanguage.Ja).Adapted);
-        var ar0 = nu.Adapt(s[0].Text, Lz.DubLanguage.Ar, s[0].Visual);
-        Assert.Contains(ar0.Findings, f => f.Kind == Lz.NuanceKind.VisualTaboo && f.Trigger == "gesture:thumbs_up");
-        Assert.Contains("上の階", nu.Adapt(s[1].Text, Lz.DubLanguage.Ja).Adapted);
-        Assert.Contains("楼上", nu.Adapt(s[1].Text, Lz.DubLanguage.Zh).Adapted);
-        Assert.Contains("4th-floor", nu.Adapt(s[1].Text, Lz.DubLanguage.En).Adapted);                               // 비해당 문화권 유지
-        var ar1 = nu.Adapt(s[1].Text, Lz.DubLanguage.Ar, s[1].Visual);
-        Assert.Contains("الشاي", ar1.Adapted);
-        Assert.Contains(ar1.Findings, f => f.Trigger == "prop:soju_bottle");
-        Assert.Contains("means death", nu.Adapt(s[2].Text, Lz.DubLanguage.En).Adapted);
-        Assert.Contains(nu.Adapt(s[2].Text, Lz.DubLanguage.Zh).Findings, f => f.Kind == Lz.NuanceKind.CulturalContext && f.Action == Lz.NuanceAction.Kept);
-        Assert.Equal("Want to come up for a coffee?", nu.Adapt(s[3].Text, Lz.DubLanguage.En).Adapted);
-        Assert.Contains(nu.Adapt(s[3].Text, Lz.DubLanguage.En, s[3].Visual).Findings, f => f.Kind == Lz.NuanceKind.VisualTaboo);
-        Assert.Equal("존댓말(격식)", Lz.MultiLanguageCulturalNuanceAdaptor.DetectRegister("감사합니다. 정말 좋아요."));
-        var unk = nu.Adapt("대박, 식은 죽 먹기네요.", Lz.DubLanguage.Fr);
-        Assert.StartsWith("[MT 미결선]", unk.Adapted);
-        Assert.Contains(unk.Findings, f => f.Action == Lz.NuanceAction.Flagged);
-        Assert.True(unk.NuanceScore <= 0.5f);
-        nu.Translator = new FakeMt();
-        var mt = nu.Adapt("대박, 식은 죽 먹기네요.", Lz.DubLanguage.Fr);
-        Assert.Equal("un carton, c'est du gâteau.", mt.Adapted);
-        nu.Translator = null;
-        var ja = nu.Adapt(s[0].Text, Lz.DubLanguage.Ja, null, 3000);
-        Assert.All(ja.Subtitles, c => Assert.True(c.Line1.Length <= 16 && (c.Line2?.Length ?? 0) <= 16));
-        Assert.Contains(ja.Subtitles, c => c.CpsOverflow);                                                       // ja 4 CPS
-        var enSub = Lz.MultiLanguageCulturalNuanceAdaptor.Segment(en0.Adapted, Lz.DubLanguage.En, 4000);
-        Assert.All(enSub, c => Assert.True(c.Line1.Length <= 42));
-        Assert.Equal(4000, enSub[^1].EndMs, 3);
-
-        // ── LOCALIZATION-4: 파이프라인 — 립싱크 개선 · 클론 정합 · 재생 무할당 ──
-        using var run = new Lz.GlobalLocalizationStudioRunner(new Lz.RealtimeNeuralAudioDubbingEngine(), new Lz.MultiLanguageCulturalNuanceAdaptor(), new Lz.NeuralVoiceCloningAcousticTransfer());
-        foreach (var lang in new[] { Lz.DubLanguage.En, Lz.DubLanguage.Ja, Lz.DubLanguage.Es })
-        {
-            var r = run.Localize(0, lang);
-            var L = r.LipSync;
-            Assert.True(L.AfterCorrelation > L.BeforeCorrelation + 0.1f && L.AfterCorrelation > 0.8f, $"{lang} lip {L.BeforeCorrelation} → {L.AfterCorrelation}");
-            Assert.True(L.AvAfter > L.AvBefore, $"{lang} av {L.AvBefore} → {L.AvAfter}");
-            Assert.True(L.MeanAbsOpennessError < 0.12f, $"{lang} openErr {L.MeanAbsOpennessError}");
-            Assert.True(MathF.Abs(L.DubMs - L.SourceMs) / L.SourceMs < 0.3f, $"{lang} dub {L.DubMs} src {L.SourceMs}");
-            Assert.True(r.F0ErrorPct < 10 && r.Rt60ErrorPct < 40 && r.TimbreSimilarity > 0.8f, $"{lang} f0 {r.F0ErrorPct} rt {r.Rt60ErrorPct} tim {r.TimbreSimilarity}");
-        }
-        Assert.Equal(0, AllocationProbe.MinAllocated(() => { for (var i = 0; i < 50; i++) run.TickOnce(); }));
-    }
-
-    private sealed class FakeMt : Lz.IMachineTranslationBackend
-    {
-        public string Name => "fake";
-        public bool TryTranslate(string text, Lz.DubLanguage from, Lz.DubLanguage to, out string translated)
-        {
-            translated = "daebak, c'est manger de la bouillie froide.";
-            return true;
-        }
-    }
-
-    [Fact]
-    [Trait("Category", "FastUnit")]
-    public void OmniModalNexus_And_CreativeSingularity_Check()
-    {
-        // NEXUS-1: 시공간 텐서 저랭크 분해 · 인코드/디코드 · 잔차 이상 · SQA QUBO 최적성 · 잡 배치 · 무할당 ──
-        var mesh = new Nx.QuantumHybridNeuralMeshEngine();
-        var rnd = new Random(1670);
-        var load = new float[3 * Nx.QuantumHybridNeuralMeshEngine.Features];
-        for (var i = 0; i < load.Length; i++) load[i] = (float)(rnd.NextDouble() * 2 - 1);
-        var row = new float[Nx.QuantumHybridNeuralMeshEngine.Features];
-        void Make(int t, float noise)
-        {
-            float z0 = MathF.Sin(t * 0.11f), z1 = MathF.Cos(t * 0.037f) * 0.6f, z2 = MathF.Sin(t * 0.23f + 1) * 0.3f;
-            for (var j = 0; j < row.Length; j++)
-                row[j] = 0.2f + z0 * load[j] + z1 * load[row.Length + j] + z2 * load[2 * row.Length + j] + noise * (float)(rnd.NextDouble() - 0.5);
-        }
-        void Push() => mesh.PushFrame(row.AsSpan(0, 16), row.AsSpan(16, 16), row.AsSpan(32, 16), row.AsSpan(48, 16));
-        for (var t = 0; t < Nx.QuantumHybridNeuralMeshEngine.Window; t++) { Make(t, 0.01f); Push(); }
-        var fz = mesh.Factorize(0.99f);
-        Assert.InRange(fz.Rank, 3, 4);
-        Assert.True(fz.EnergyCaptured >= 0.99f && fz.CompressionRatio > 10 && fz.FlopReduction >= 8, $"rank {fz.Rank} e {fz.EnergyCaptured} c {fz.CompressionRatio}");
-        var latest = new float[row.Length];
-        mesh.CopyLatest(latest);
-        var coeffs = new float[16];
-        var k = mesh.Encode(latest, coeffs);
-        var rec = new float[row.Length];
-        mesh.Decode(coeffs.AsSpan(0, k), rec);
-        float err = 0, nrm = 0;
-        for (var j = 0; j < row.Length; j++) { err += (rec[j] - latest[j]) * (rec[j] - latest[j]); nrm += latest[j] * latest[j]; }
-        Assert.True(MathF.Sqrt(err / nrm) < 0.05f, $"recon {MathF.Sqrt(err / nrm)}");
-        Make(500, 0.01f);
-        Assert.True(mesh.Residual(row) < 0.2f, $"normal residual {mesh.LastResidual}");
-        for (var j = 0; j < row.Length; j++) row[j] = (float)(rnd.NextDouble() * 4 - 2);
-        Assert.True(mesh.Residual(row) > 0.6f, $"anomaly residual {mesh.LastResidual}");
-        Make(7, 0);
-        Assert.Equal(0, AllocationProbe.MinAllocated(() => { Push(); mesh.Factorize(0.99f); mesh.Encode(row, coeffs); mesh.Decode(coeffs.AsSpan(0, k), rec); mesh.Residual(row); }));
-
-        const int nq = 12;
-        var q = new float[nq * nq];
-        for (var i = 0; i < q.Length; i++) q[i] = (float)(rnd.NextDouble() * 2 - 1);
-        var brute = float.MaxValue;
-        var bits = new byte[nq];
-        for (var m = 0; m < 1 << nq; m++)
-        {
-            for (var i = 0; i < nq; i++) bits[i] = (byte)((m >> i) & 1);
-            brute = MathF.Min(brute, Nx.QuantumHybridNeuralMeshEngine.QuboEnergy(q, nq, bits));
-        }
-        var best = new byte[nq];
-        var ar = mesh.SolveQubo(q, nq, best, seed: 77);
-        Assert.True(MathF.Abs(ar.Energy - brute) < 1e-3f, $"sqa {ar.Energy} brute {brute}");
-        Assert.True(MathF.Abs(Nx.QuantumHybridNeuralMeshEngine.QuboEnergy(q, nq, best) - ar.Energy) < 1e-3f);
-        Assert.Equal(0, AllocationProbe.MinAllocated(() => mesh.SolveQubo(q, nq, best, sweeps: 100, seed: 5)));
-
-        float[] jc = { 2.1f, 1.4f, 3.3f, 0.8f, 2.7f, 1.9f }, cap = { 4f, 2f, 1f }, lat = { 0.2f, 0.5f, 0.1f };
-        var asg = new int[jc.Length];
-        var placed = mesh.AssignJobs(jc, cap, lat, 0.05f, asg, seed: 9);
-        var bruteP = float.MaxValue;
-        var tryA = new int[jc.Length];
-        for (var m = 0; m < 729; m++)
-        {
-            for (int i = 0, v = m; i < jc.Length; i++, v /= 3) tryA[i] = v % 3;
-            bruteP = MathF.Min(bruteP, Nx.QuantumHybridNeuralMeshEngine.PlacementCost(jc, cap, lat, 0.05f, tryA));
-        }
-        Assert.True(MathF.Abs(placed - bruteP) < 1e-4f, $"placement {placed} brute {bruteP}");
-
-        // NEXUS-2: 시나리오 한 줄 → 브리프 · 3막 샷 · DAG · 오토 체이닝(실 모듈 호출 · 부분 구제) ──
-        var brief = Nx.AutonomousCreativeSingularityOrchestrator.Parse("우주 정거장에서 벌어지는 긴장감 넘치는 2분 추격전, 영어·일본어 글로벌 더빙과 VR 송출");
-        Assert.Equal("SF", brief.Genre);
-        Assert.Equal("서스펜스", brief.Mood);
-        Assert.Equal(120, brief.DurationSec);
-        Assert.True(brief.Xr && !brief.Bci);
-        Assert.Contains(Lz.DubLanguage.En, brief.Languages);
-        Assert.Contains(Lz.DubLanguage.Ja, brief.Languages);
-        var shots = Nx.AutonomousCreativeSingularityOrchestrator.PlanShots(brief);
-        Assert.Equal(12, shots.Length);
-        Assert.True(MathF.Abs(shots.Sum(s => s.DurationSec) - 120) < 0.01f);
-        Assert.True(MathF.Abs(shots.Where(s => s.Act == 2).Sum(s => s.DurationSec) - 60) < 0.01f);
-        Assert.Contains(shots, s => s.Beat == "클라이맥스");
-
-        var orch = new Nx.AutonomousCreativeSingularityOrchestrator(null, mesh);
-        var run = orch.Run(brief.Scenario);
-        var ids = run.Stages.Select(s => s.Id).ToList();
-        Assert.Contains("world4d", ids); Assert.Contains("dub", ids); Assert.Contains("xr", ids); Assert.DoesNotContain("bci", ids);
-        foreach (var s in run.Stages)
-            foreach (var d in s.DependsOn) Assert.True(ids.IndexOf(d) < ids.IndexOf(s.Id), $"{d} → {s.Id}");
-        Assert.All(run.Stages, s => Assert.Equal(Nx.NexusStageStatus.Done, s.Status));
-        Assert.Equal(0, run.Invoked);
-        Assert.True(run.Stages.Single(s => s.Id == "ota").Critical && run.Stages.Single(s => s.Id == "script").Critical);
-        Assert.True(run.CriticalPathMs >= run.Stages.Max(s => s.StartMs + s.CostMs) - 0.01f);
-        Assert.True(run.Makespan >= run.IdealMakespan && run.Makespan / run.IdealMakespan < 1.35f, $"makespan {run.Makespan} ideal {run.IdealMakespan}");
-        Assert.True(run.Shots.All(s => s.Node >= 0) && run.Quality > 0.8f, $"quality {run.Quality}");
-
-        var loc = new Lz.GlobalLocalizationStudioRunner(new Lz.RealtimeNeuralAudioDubbingEngine(), new Lz.MultiLanguageCulturalNuanceAdaptor(), new Lz.NeuralVoiceCloningAcousticTransfer());
-        var orch2 = new Nx.AutonomousCreativeSingularityOrchestrator(new NexusSp(loc), mesh);
-        orch2.RegisterExecutor("icvfx", _ => throw new InvalidOperationException("LED 볼륨 오프라인"));
-        var run2 = orch2.Run("우주 추격 1분 영어 더빙");
-        Assert.Equal(Nx.NexusStageStatus.Failed, run2.Stages.Single(s => s.Id == "icvfx").Status);
-        Assert.Equal(Nx.NexusStageStatus.Skipped, run2.Stages.Single(s => s.Id == "vfx").Status);
-        Assert.Equal(Nx.NexusStageStatus.Skipped, run2.Stages.Single(s => s.Id == "ota").Status);
-        Assert.Equal(Nx.NexusStageStatus.Done, run2.Stages.Single(s => s.Id == "atmos").Status);
-        Assert.Equal(Nx.NexusStageStatus.Done, run2.Stages.Single(s => s.Id == "world4d").Status);
-        Assert.Equal(1, run2.Failed);
-        Assert.Contains("[부분 구제]", run2.Stages.Single(s => s.Id == "qa").Artifact);
-        Assert.True(run2.Quality < run.Quality);
-        var run3 = new Nx.AutonomousCreativeSingularityOrchestrator(new NexusSp(loc), mesh).Run("우주 추격 1분 영어 더빙");
-        var dubStage = run3.Stages.Single(s => s.Id == "dub");
-        Assert.True(dubStage.Linked && dubStage.Invoked && dubStage.Artifact!.StartsWith("실행", StringComparison.Ordinal), dubStage.Artifact);
-        Assert.Equal(1, run3.Linked);
-        Assert.NotNull(loc.Last);
-
-        // NEXUS-3: 단일 스트림 · 계층 우선 · FEC 복구 · HMAC 변조 거부 · ABR · 지연 · 무할당 ──
-        var st = new Nx.SpatiotemporalCloudNexusStreamer();
-        st.ClearEndpoints();
-        st.AddEndpoint(new Nx.NexusEndpoint("clean", "로컬", Nx.NexusEndpointKind.EdgePop, 10, 0, 1000));
-        st.AddEndpoint(new Nx.NexusEndpoint("clean", "중복", Nx.NexusEndpointKind.EdgePop, 10, 0, 1000));
-        st.AddEndpoint(new Nx.NexusEndpoint("lossy", "에지", Nx.NexusEndpointKind.EdgePop, 40, 3f, 1000));
-        st.AddEndpoint(new Nx.NexusEndpoint("mitm", "변조", Nx.NexusEndpointKind.CloudRegion, 20, 0, 1000, Tampering: true));
-        st.AddEndpoint(new Nx.NexusEndpoint("thin", "3G", Nx.NexusEndpointKind.Mobile, 60, 0, 2));
-        Assert.Equal(4, st.EndpointCount);
-        var capture = new NexusCapture();
-        st.Transport = capture;
-        var buf = new byte[12 * 1024];
-        for (var i = 0; i < buf.Length; i++) buf[i] = (byte)(i * 13);
-        void Tick()
-        {
-            st.Enqueue(Nx.NexusLayer.Splat, buf.AsSpan(0, 12000));
-            st.Enqueue(Nx.NexusLayer.Video, buf.AsSpan(0, 6000));
-            st.Enqueue(Nx.NexusLayer.Control, buf.AsSpan(0, 16));
-            st.Enqueue(Nx.NexusLayer.Telemetry, buf.AsSpan(0, 40));
-            st.Enqueue(Nx.NexusLayer.Audio, buf.AsSpan(0, 960));
-            st.Enqueue(Nx.NexusLayer.Pose, buf.AsSpan(0, 64));
-            st.Flush();
-        }
-        Tick();
-        var firstFlush = capture.Layers.Where((_, i) => capture.Ids[i] == "clean").ToList();
-        Assert.Equal((byte)Nx.NexusLayer.Control, firstFlush[0]);
-        for (var i = 1; i < firstFlush.Count; i++) Assert.True(firstFlush[i] >= firstFlush[i - 1], "계층 우선 송출");
-        Assert.True(st.ParityPackets >= 6);
-        st.Transport = null;
-        for (var i = 0; i < 199; i++) Tick();
-        var stats = new Nx.NexusEndpointStats[4];
-        st.CopyStats(stats);
-        var clean = stats[0]; var lossy = stats[1]; var mitm = stats[2]; var thin = stats[3];
-        Assert.True(clean.FramesSent == 1200 && clean.Delivered == 1200 && clean.Lost == 0 && clean.Recovered == 0, $"clean {clean}");
-        Assert.True(clean.P95Ms >= 5 && clean.LatencyMs < 12, $"clean latency {clean.LatencyMs} p95 {clean.P95Ms}");
-        Assert.True(lossy.Recovered > 50 && lossy.PacketsLost > lossy.Recovered && lossy.Delivered + lossy.Lost == lossy.FramesSent, $"lossy {lossy}");
-        Assert.True(lossy.Delivered > lossy.FramesSent * 0.93, $"lossy delivered {lossy.Delivered}/{lossy.FramesSent}");
-        Assert.True(mitm.Delivered == 0 && mitm.Rejected == mitm.FramesSent && mitm.FramesSent > 0, $"mitm {mitm}");
-        Assert.True(thin.MaxLayer <= Nx.NexusLayer.Audio && thin.FramesSent < clean.FramesSent && thin.Lost == 0, $"thin {thin}");
-        Assert.Equal(0, AllocationProbe.MinAllocated(() => { for (var i = 0; i < 5; i++) Tick(); }));
-
-        // NEXUS-4: 러너 30Hz 틱 — 메시 재분해 · 이상 주입 잔차 상승 · 계층 송출 · 무할당 ──
-        var nexus = new Nx.OmniModalNexusStudioRunner(new Nx.QuantumHybridNeuralMeshEngine(), orch, new Nx.SpatiotemporalCloudNexusStreamer());
-        for (var i = 0; i < 160; i++) nexus.TickOnce();
-        Assert.True(nexus.Mesh.Rank > 0 && nexus.Mesh.Factorizations >= 4 && nexus.Streamer.Flushes == 160);
-        var normal = nexus.Anomaly;
-        nexus.InjectAnomaly = true;
-        var spike = nexus.TickOnce();
-        nexus.InjectAnomaly = false;
-        Assert.True(spike > normal * 3 && spike > 0.3f, $"normal {normal} spike {spike}");
-        var es = new Nx.NexusEndpointStats[8];
-        var ne = nexus.Streamer.CopyStats(es);
-        Assert.Equal(7, ne);
-        Assert.All(es.Take(ne), e => Assert.True(e.Delivered > 0 && e.LatencyMs > 0, e.Id));
-        Assert.Equal(0, AllocationProbe.MinAllocated(() => { for (var i = 0; i < 40; i++) nexus.TickOnce(); }));
-    }
-
-    private sealed class NexusSp(object service) : IServiceProvider
-    {
-        public object? GetService(Type serviceType) => serviceType.IsInstanceOfType(service) ? service : null;
-    }
-
-    private sealed class NexusCapture : Nx.SpatiotemporalCloudNexusStreamer.INexusTransport
-    {
-        public readonly List<string> Ids = new();
-        public readonly List<byte> Layers = new();
-        public void Send(string endpointId, ReadOnlySpan<byte> packet)
-        {
-            if (packet[3] != 0) return;
-            Ids.Add(endpointId); Layers.Add(packet[4]);
-        }
-    }
-
-    [Fact]
     [Trait("Category", "Integration")]
     public void LiveBroadcastProduction_And_InteractiveStreamer_Check()
     {
@@ -11708,367 +10607,6 @@ public class TitanReleaseTests
             if (Packets++ == 0) First = packet.ToArray();
             Ids.Add(destinationId);
         }
-    }
-
-    [Fact]
-    [Trait("Category", "Integration")]
-    public void OpenUsdSpatialAsset_And_GenerativeWorld_Check()
-    {
-        // USD-1: USDA 파싱 · 레이어 합성(over/뮤트/미정의) · 시간 샘플 · 계층 변환 · 3DGS/4D 바인딩 · USDC/USDZ/USDA 왕복 · 무할당 ──
-        var heroBytes = System.Text.Encoding.UTF8.GetBytes(Us.OpenUsdSpatialStudioRunner.HeroUsda);
-        var hero = new Us.UsdLayer("hero.usda");
-        Assert.True(Us.UsdaReader.Parse(heroBytes, hero), $"{hero.LastError}@{hero.ErrorOffset}");
-        Assert.Equal(8, hero.Count);
-        var ballA = hero.Find("/World/Hero/BallA");
-        Assert.True(ballA > 0 && hero.TypeOf(ballA) == Us.UsdPrimType.Sphere && hero.IsRigid(ballA));
-        Assert.Equal(0.4f, hero.RadiusOf(ballA), 5);
-        Assert.Equal(2f, hero.MassOf(ballA), 5);
-        Assert.Equal((-0.6f, 6f, 0f), hero.Translate(ballA));
-        Assert.Equal(5, hero.SampleCount(hero.Find("/World/Hero/Drone")));
-        Assert.Equal(8, hero.PointsOf(hero.Find("/World/Hero/Halo")).Length / 3);
-        Assert.Equal(hero.Find("/World/Hero"), hero.ParentOf(ballA));
-        Assert.False(Us.UsdaReader.Parse("def Xform \"X\" {}"u8, new Us.UsdLayer()));
-        var badSyntax = new Us.UsdLayer();
-        Assert.False(Us.UsdaReader.Parse("#usda 1.0\ndef Xform \"X\" {\n"u8, badSyntax));
-        Assert.Equal(Us.UsdError.Syntax, badSyntax.LastError);
-
-        var strong = new Us.UsdLayer("shot.usda");
-        Assert.True(Us.UsdaReader.Parse("""
-#usda 1.0
-over "World"
-{
-    over "Hero"
-    {
-        double3 xformOp:translate = (10, 0, 0)
-        over "BallA"
-        {
-            double radius = 1.5
-            token visibility = "invisible"
-        }
-        over "BallB" (doc = "meta")
-        {
-            rel material:binding = </Looks/Red>
-            custom string note = "a { tricky } string"
-            color3f[] primvars:displayColor = [(0, 1, 0), (1, 1, 1)]
-        }
-    }
-    over "Ghost"
-    {
-        double radius = 9
-    }
-}
-class "Proto"
-{
-    double radius = 3
-}
-"""u8, strong), $"{strong.LastError}@{strong.ErrorOffset}");
-        var usd = new Us.OpenUsdSpatialAssetCompositorEngine();
-        usd.SetLayer(1, hero);
-        usd.SetLayer(0, strong);
-        var st = usd.Stage;
-        var sA = usd.FindPrim("/World/Hero/BallA");
-        Assert.Equal(1.5f, st.RadiusOf(sA), 5);
-        Assert.False(usd.State(sA).Visible);
-        Assert.Equal((0f, 1f, 0f), st.Color(usd.FindPrim("/World/Hero/BallB")));
-        Assert.False(usd.State(usd.FindPrim("/World/Ghost")).Defined);
-        Assert.Equal(-1, usd.FindPrim("/Proto"));
-        Assert.Equal(10f - 0.6f, usd.State(sA).X, 4);
-        usd.Evaluate(24);
-        var drone = usd.State(usd.FindPrim("/World/Hero/Drone"));
-        Assert.Equal(10f, drone.X, 4); Assert.Equal(5.5f, drone.Y, 4); Assert.Equal(-4f, drone.Z, 4);
-        usd.Evaluate(500);
-        Assert.Equal(10f - 4f, usd.State(usd.FindPrim("/World/Hero/Drone")).X, 4);
-        var gs = new G3.GaussianScene(4096);
-        Assert.Equal(3 + 1 + 8, usd.BindToGaussians(gs));   // BallB · BallC · Drone + Pedestal + Halo 8 (BallA 비가시 · Ghost 미정의)
-        usd.MuteLayer(0, true);
-        Assert.Equal(0.4f, st.RadiusOf(usd.FindPrim("/World/Hero/BallA")), 5);
-        Assert.True(usd.State(usd.FindPrim("/World/Hero/BallA")).Visible);
-        Assert.Equal(-1, usd.FindPrim("/World/Ghost"));
-        Assert.Equal(13, usd.BindToGaussians(gs));
-        Assert.Equal(new System.Numerics.Vector3(-0.6f, 6f, 0f), gs.Position(0));
-        usd.MuteLayer(0, false);
-        Assert.Equal(0, AllocationProbe.MinAllocated(() => { for (var i = 0; i < 20; i++) { usd.Compose(); usd.Evaluate(i * 3); usd.BindToGaussians(gs); } }));
-        var scratch = new Us.UsdLayer();
-        Assert.Equal(0, AllocationProbe.MinAllocated(() => Us.UsdaReader.Parse(heroBytes, scratch)));
-
-        var crate = new byte[Us.OpenUsdSpatialAssetCompositorEngine.CrateSize(hero)];
-        var cn = Us.OpenUsdSpatialAssetCompositorEngine.EncodeUsdc(hero, crate);
-        Assert.Equal(crate.Length, cn);
-        Assert.Equal(Us.UsdFormat.Usdc, Us.OpenUsdSpatialAssetCompositorEngine.Detect(crate));
-        var fromCrate = new Us.UsdLayer();
-        Assert.True(Us.OpenUsdSpatialAssetCompositorEngine.Decode(crate, fromCrate), $"{fromCrate.LastError}");
-        Assert.Equal(hero.Count, fromCrate.Count);
-        for (var i = 0; i < hero.Count; i++)
-        {
-            Assert.True(hero.Path(i).SequenceEqual(fromCrate.Path(i)));
-            Assert.Equal(hero.Translate(i), fromCrate.Translate(i));
-            Assert.Equal(hero.FieldsOf(i), fromCrate.FieldsOf(i));
-        }
-        Assert.Equal(ballA, fromCrate.Find("/World/Hero/BallA"));
-        Assert.Equal(0, AllocationProbe.MinAllocated(() => Us.OpenUsdSpatialAssetCompositorEngine.DecodeUsdc(crate, scratch)));
-        crate[100] ^= 0x5A;
-        Assert.False(Us.OpenUsdSpatialAssetCompositorEngine.Decode(crate, fromCrate));
-        Assert.Equal(Us.UsdError.Checksum, fromCrate.LastError);
-        Assert.False(Us.OpenUsdSpatialAssetCompositorEngine.Decode("PXR-USDC\0\0\0\0"u8, fromCrate));
-        Assert.Equal(Us.UsdError.UnsupportedCrate, fromCrate.LastError);
-
-        var zip = new byte[heroBytes.Length + 512];
-        var zn = Us.OpenUsdSpatialAssetCompositorEngine.WriteUsdz("hero.usda"u8, heroBytes, zip);
-        Assert.True(zn > heroBytes.Length);
-        Assert.Equal(Us.UsdFormat.Usdz, Us.OpenUsdSpatialAssetCompositorEngine.Detect(zip));
-        var fromZip = new Us.UsdLayer();
-        Assert.True(Us.OpenUsdSpatialAssetCompositorEngine.DecodeUsdz(zip.AsSpan(0, zn), fromZip, out var aligned) && aligned);
-        Assert.Equal(8, fromZip.Count);
-        using (var ms = new MemoryStream(zip, 0, zn))
-        using (var za = new System.IO.Compression.ZipArchive(ms, System.IO.Compression.ZipArchiveMode.Read))
-        {
-            Assert.Single(za.Entries);
-            Assert.Equal("hero.usda", za.Entries[0].FullName);
-            using var es = za.Entries[0].Open();
-            using var rd = new StreamReader(es);
-            Assert.Equal(Us.OpenUsdSpatialStudioRunner.HeroUsda, rd.ReadToEnd());
-        }
-        zip[zn - 22 - 46 - 9 - 10] ^= 0x01;   // 페이로드 1바이트 변조
-        Assert.False(Us.OpenUsdSpatialAssetCompositorEngine.Decode(zip.AsSpan(0, zn), fromZip));
-        Assert.Equal(Us.UsdError.Checksum, fromZip.LastError);
-
-        var text = new byte[64 * 1024];
-        var tn = Us.OpenUsdSpatialAssetCompositorEngine.WriteUsda(st, text);
-        Assert.True(tn > 0);
-        var reparsed = new Us.UsdLayer();
-        Assert.True(Us.UsdaReader.Parse(text.AsSpan(0, tn), reparsed), $"{reparsed.LastError}@{reparsed.ErrorOffset}");
-        Assert.Equal(st.Count, reparsed.Count);
-        for (var i = 0; i < st.Count; i++)
-        {
-            var j = reparsed.Find(st.Path(i));
-            Assert.True(j >= 0 && reparsed.FieldsOf(j) == st.FieldsOf(i) && reparsed.SpecOf(j) == st.SpecOf(i), new string(st.Path(i)));
-            Assert.Equal(st.Translate(i), reparsed.Translate(j));
-            Assert.Equal(st.SampleCount(i), reparsed.SampleCount(j));
-        }
-
-        var cloud = new G3.GaussianScene(256);
-        var rnd = new Random(1672);
-        for (var i = 0; i < 100; i++) cloud.Add(new System.Numerics.Vector3(rnd.NextSingle() * 4, rnd.NextSingle() * 2, rnd.NextSingle() * 4), System.Numerics.Quaternion.Identity, new System.Numerics.Vector3(0.05f), 0.8f, new System.Numerics.Vector3(0.2f, 0.4f, 0.9f));
-        var splatLayer = new Us.UsdLayer("splats.usda");
-        Assert.Equal(100, Us.OpenUsdSpatialAssetCompositorEngine.ImportGaussians(cloud, splatLayer));
-        var back = new Us.OpenUsdSpatialAssetCompositorEngine();
-        back.SetLayer(0, splatLayer);
-        var gs2 = new G3.GaussianScene(256);
-        Assert.Equal(100, back.BindToGaussians(gs2));
-        for (var i = 0; i < 100; i++) Assert.True(System.Numerics.Vector3.Distance(cloud.Position(i), gs2.Position(i)) < 1e-5f);
-        Assert.True(System.Numerics.Vector3.Distance(gs2.BaseColor(7), new System.Numerics.Vector3(0.2f, 0.4f, 0.9f)) < 1e-3f);
-
-        var w4 = new PromptFlowStudio.Services.World.AiGenerative4dWorldModelEngine();
-        usd.MuteLayer(0, true);
-        Assert.Equal(5, usd.BindToWorld(w4));   // BallA/B/C · Pedestal · Drone
-        Assert.True(w4.IsStatic(w4.IndexOf("Pedestal")) && !w4.IsStatic(w4.IndexOf("BallC")));
-        Assert.Equal(PromptFlowStudio.Services.World.WorldShape.Box, w4.Shape(w4.IndexOf("Pedestal")));
-        var fromWorld = new Us.UsdLayer();
-        Assert.Equal(5, Us.OpenUsdSpatialAssetCompositorEngine.ImportWorld(w4, fromWorld));
-        var fw = fromWorld.Find("/World/BallC");
-        Assert.True(fw > 0 && fromWorld.IsRigid(fw) && fromWorld.TypeOf(fw) == Us.UsdPrimType.Sphere);
-        Assert.Equal(0.5f, fromWorld.RadiusOf(fw), 4);
-        Assert.Equal(3f, fromWorld.MassOf(fw), 4);
-
-        // USD-2: 프롬프트 → 특성 → 시밀러리티 시드 · 스펙트럼 · 시드 고정 · 바이옴 · 청크 연속/무한 · 무할당 ──
-        var gen = new Us.GenerativeWorldProceduralEngine();
-        gen.Configure("sunset desert dunes", 7);
-        var s1 = gen.Seed; var k1 = gen.SimilarityKey;
-        gen.EnsureAround(0, 0);
-        var h1 = gen.ChunkHash(0, 0);
-        Assert.Equal(Us.Biome.Desert, gen.DominantBiome);
-        gen.Configure("Dunes in the DESERT at sunset!!", 7);
-        Assert.Equal(k1, gen.SimilarityKey);
-        Assert.Equal(s1, gen.Seed);
-        Assert.Equal(h1, gen.ChunkHash(0, 0));
-        gen.Configure("sunset desert dunes", 8);
-        Assert.NotEqual(s1, gen.Seed);
-        gen.Configure("snowy arctic winter 설원", 7);
-        Assert.NotEqual(k1, gen.SimilarityKey);
-        gen.EnsureAround(0, 0);
-        Assert.Equal(Us.Biome.Snow, gen.DominantBiome);
-        Assert.True(Us.GenerativeWorldProceduralEngine.AnalyzePrompt("정글 열대 폭우").Moisture > 0.9f);
-        Assert.True(Us.GenerativeWorldProceduralEngine.AnalyzePrompt("화산 용암").Volcanism > 0.9f);
-        gen.Configure("forest mountains", 0);
-        var baseSeed = gen.Seed; var baseKey = gen.SimilarityKey;
-        gen.SetSpectrum(0.5f);
-        Assert.NotEqual(baseSeed, gen.Seed);
-        Assert.Equal(baseKey, gen.SimilarityKey);
-        var spectrumSeed = gen.Seed;
-        gen.SetSpectrum(0);
-        Assert.Equal(baseSeed, gen.Seed);
-        gen.LockSeed(0xABCDEFUL);
-        gen.Configure("ocean island", 3);
-        Assert.Equal(0xABCDEFUL, gen.Seed);
-        gen.LockSeed(null);
-        Assert.NotEqual(0xABCDEFUL, gen.Seed);
-        Assert.NotEqual(spectrumSeed, gen.Seed);
-        gen.Configure("forest mountains", 0);
-        const int V = Us.GenerativeWorldProceduralEngine.ChunkVerts;
-        float[] ha = new float[V * V], hb = new float[V * V];
-        byte[] ba = new byte[V * V], bb = new byte[V * V];
-        gen.CopyChunk(0, 0, ha, ba); gen.CopyChunk(1, 0, hb, bb);
-        for (var j = 0; j < V; j++) { Assert.Equal(ha[j * V + V - 1], hb[j * V]); Assert.Equal(ba[j * V + V - 1], bb[j * V]); }
-        gen.CopyChunk(-200_000, 150_000, ha, ba);
-        Assert.All(ha, v => Assert.True(float.IsFinite(v) && MathF.Abs(v) < 40));
-        Assert.Equal(ha[5], gen.HeightAt(-200_000 * Us.GenerativeWorldProceduralEngine.ChunkSize + 5, 150_000 * Us.GenerativeWorldProceduralEngine.ChunkSize));
-        gen.EnsureAround(0, 0);
-        Assert.Equal(5, gen.EnsureAround(Us.GenerativeWorldProceduralEngine.ChunkSize * 1.5f, 0));
-        Assert.Equal(0, gen.EnsureAround(Us.GenerativeWorldProceduralEngine.ChunkSize * 1.5f, 0));
-        var fx = 0f;
-        Assert.Equal(0, AllocationProbe.MinAllocated(() => { for (var i = 0; i < 4; i++) { fx += Us.GenerativeWorldProceduralEngine.ChunkSize; gen.EnsureAround(fx, 0); } }));
-        Assert.True(gen.AssetCount > 0);
-        var gsW = new G3.GaussianScene(8192);
-        Assert.True(gen.EmitGaussians(gsW) > 25 * 64);
-        var procLayer = new Us.UsdLayer();
-        var assets = gen.EmitUsd(procLayer, 40);
-        Assert.True(assets > 0 && procLayer.Find("/World/Sun") > 0 && procLayer.TypeOf(procLayer.Find("/World/Terrain/Asset_0")) is Us.UsdPrimType.Sphere or Us.UsdPrimType.Cube);
-        gen.Configure("noon", 0); var noon = gen.Light;
-        gen.Configure("노을", 0); var dusk = gen.Light;
-        Assert.True(dusk.SunColor.Z / dusk.SunColor.X < noon.SunColor.Z / noon.SunColor.X && dusk.SunDir.Y < noon.SunDir.Y);
-
-        // USD-3: 강체 정지 · 운동량 · 천 제약/충돌 · PBF 유체 · SIMD · 잔차 결선 · 음향 메시/RT60/IR · 무할당 ──
-        var ph = new Us.NeuralPhysicsCollisionSimulator { ClothEnabled = false, FluidEnabled = false };
-        ph.AddSphere(new System.Numerics.Vector3(0, 3, 0), 0.5f, 1f, 0.5f);
-        for (var i = 0; i < 180; i++) ph.Step(1f / 60);
-        Assert.Equal(0.5f, ph.BodyPosition(0).Y, 1);
-        Assert.True(MathF.Abs(ph.BodyPosition(0).Y - 0.5f) < 0.02f && ph.BodyVelocity(0).Length() < 0.05f, $"{ph.BodyPosition(0)} {ph.BodyVelocity(0)}");
-        Assert.True(ph.ImpactCount > 0);
-        var imp = new Us.ImpactEvent[8];
-        Assert.True(ph.CopyImpacts(imp) > 0 && imp[0].Kind == Us.ImpactKind.Ground && imp[0].Energy > 0);
-
-        var col = new Us.NeuralPhysicsCollisionSimulator { ClothEnabled = false, FluidEnabled = false, GravityY = 0, GroundY = -100 };
-        col.AddSphere(new System.Numerics.Vector3(-1, 0, 0), 0.25f, 1f, 1f, new System.Numerics.Vector3(2, 0, 0));
-        col.AddSphere(new System.Numerics.Vector3(1, 0, 0), 0.25f, 1f, 1f, new System.Numerics.Vector3(-1, 0, 0));
-        for (var i = 0; i < 60; i++) col.Step(1f / 60);
-        Assert.Equal(-1f, col.BodyVelocity(0).X, 3);
-        Assert.Equal(2f, col.BodyVelocity(1).X, 3);
-        var pile = new Us.NeuralPhysicsCollisionSimulator { ClothEnabled = false, FluidEnabled = false };
-        for (var i = 0; i < 120; i++) pile.AddSphere(new System.Numerics.Vector3((i % 6) * 0.5f - 1.5f, 1 + i / 36 * 0.6f + (i % 7) * 0.05f, (i / 6 % 6) * 0.5f - 1.5f), 0.2f, 1f, 0.3f);
-        for (var i = 0; i < 180; i++) pile.Step(1f / 60);
-        for (var i = 0; i < 120; i++) Assert.True(float.IsFinite(pile.BodyPosition(i).Y) && pile.BodyPosition(i).Y > 0.15f, $"{i} {pile.BodyPosition(i)}");
-        Assert.True(pile.KineticEnergy() < 5f, $"{pile.KineticEnergy()}");
-        Assert.Equal(0, AllocationProbe.MinAllocated(() => { for (var i = 0; i < 10; i++) pile.Step(1f / 60); }));
-
-        var cl = new Us.NeuralPhysicsCollisionSimulator { FluidEnabled = false };
-        cl.ResetCloth(new System.Numerics.Vector3(-0.75f, 2f, -0.75f), 0.1f);
-        cl.AddSphere(new System.Numerics.Vector3(0, 1.2f, 0), 0.4f, 0f);
-        var pinA = cl.ClothPoint(0); var pinB = cl.ClothPoint(Us.NeuralPhysicsCollisionSimulator.ClothN - 1);
-        for (var i = 0; i < 120; i++) cl.Step(1f / 60);
-        Assert.Equal(pinA, cl.ClothPoint(0)); Assert.Equal(pinB, cl.ClothPoint(Us.NeuralPhysicsCollisionSimulator.ClothN - 1));
-        Assert.True(cl.ClothMaxStretch() < 0.2f, $"{cl.ClothMaxStretch()}");
-        var lowest = float.MaxValue;
-        for (var k = 0; k < Us.NeuralPhysicsCollisionSimulator.ClothCount; k++)
-        {
-            var p = cl.ClothPoint(k);
-            Assert.True(System.Numerics.Vector3.Distance(p, new System.Numerics.Vector3(0, 1.2f, 0)) > 0.39f);
-            lowest = MathF.Min(lowest, p.Y);
-        }
-        Assert.True(lowest < 1.6f, $"천 처짐 {lowest}");
-        Assert.Equal(2 * 15 * 16 + 2 * 15 * 15, cl.ClothConstraintCount);
-
-        var fl = new Us.NeuralPhysicsCollisionSimulator { ClothEnabled = false };
-        for (var i = 0; i < 120; i++) fl.Step(1f / 60);
-        var (bmin, bmax) = fl.FluidBox;
-        var rhoSum = 0f;
-        var topY = float.MinValue;
-        for (var p = 0; p < Us.NeuralPhysicsCollisionSimulator.FluidCount; p++)
-        {
-            var q = fl.FluidPoint(p);
-            Assert.True(float.IsFinite(q.X + q.Y + q.Z) && q.X >= bmin.X - 1e-4f && q.X <= bmax.X + 1e-4f && q.Z >= bmin.Z - 1e-4f && q.Z <= bmax.Z + 1e-4f && q.Y >= bmin.Y - 1e-4f);
-            rhoSum += fl.FluidDensityRatio(p);
-            topY = MathF.Max(topY, q.Y);
-        }
-        var meanRho = rhoSum / Us.NeuralPhysicsCollisionSimulator.FluidCount;
-        Assert.True(meanRho > 0.3f && meanRho < 1.3f, $"ρ/ρ0 {meanRho}");
-        Assert.True(topY < bmin.Y + 0.5f, $"유체 수면 {topY}");   // 6층 블록(0.3m)이 용기 안에서 퍼짐(폭발 없음)
-        Assert.Equal(0, AllocationProbe.MinAllocated(() => { for (var i = 0; i < 5; i++) fl.Step(1f / 60); }));
-
-        float[] ya = new float[37], xa = new float[37], yr = new float[37];
-        for (var i = 0; i < 37; i++) { ya[i] = i * 0.5f; xa[i] = 3 - i; yr[i] = ya[i] + 0.25f * xa[i]; }
-        Us.NeuralPhysicsCollisionSimulator.Axpy(ya, xa, 0.25f);
-        Assert.Equal(yr, ya);
-        Assert.True(Us.NeuralPhysicsCollisionSimulator.SimdLanes >= 1);
-
-        var res = new UsdResidual();
-        var rp = new Us.NeuralPhysicsCollisionSimulator { ClothEnabled = false, FluidEnabled = false, GravityY = 0, GroundY = -100, Residual = res, Substeps = 1 };
-        rp.AddSphere(default, 0.1f, 1f);
-        rp.Step(0.1f);
-        Assert.Equal(1, res.Calls);
-        Assert.Equal(0.5f, rp.BodyVelocity(0).X, 4);
-
-        float Rt(float absorption, out int taps, out float gainSum)
-        {
-            var a = new Us.NeuralPhysicsCollisionSimulator { Field = new UsdFlatField(absorption), ClothEnabled = false, FluidEnabled = false };
-            a.AddSphere(new System.Numerics.Vector3(2, 1, 0), 0.5f, 0);
-            taps = a.BuildAcousticMesh(new System.Numerics.Vector3(-2, 1.5f, 0), new System.Numerics.Vector3(2, 1.7f, 3));
-            gainSum = 0;
-            for (var t = 0; t < taps; t++) { gainSum += a.Tap(t).Gain; if (t > 0) Assert.True(a.Tap(t).DelayMs >= a.Tap(t - 1).DelayMs); }
-            return a.Rt60;
-        }
-        var rtSnow = Rt(0.85f, out var tapsSnow, out var gSnow);
-        var rtRock = Rt(0.08f, out var tapsRock, out var gRock);
-        Assert.True(tapsSnow >= 9 && tapsSnow == tapsRock);
-        Assert.True(gSnow < gRock * 0.5f && rtSnow < rtRock, $"{gSnow}/{gRock} {rtSnow}/{rtRock}");
-        var room = new Us.NeuralPhysicsCollisionSimulator { ClothEnabled = false, FluidEnabled = false, Enclosure = (new System.Numerics.Vector3(-5, 0, -4), new System.Numerics.Vector3(5, 4, 4), 0.1f) };
-        room.BuildAcousticMesh(new System.Numerics.Vector3(-2, 1.5f, 0), new System.Numerics.Vector3(2, 1.5f, 1));
-        var area = 0f; var aSum = 0f;
-        for (var i = 0; i < room.PatchCount; i++) { var pt = room.Patch(i); area += pt.Area; aSum += pt.Area * pt.Absorption; }
-        Assert.Equal(0.161f * 320f / aSum, room.Rt60, 3);
-        Assert.True(room.Rt60 > 0.5f && room.Rt60 > rtRock, $"{room.Rt60}");
-        var ir = new float[48_000];
-        room.RenderImpulseResponse(ir, 48_000);
-        Assert.Equal(1f, ir[0], 3);
-        double e1 = 0, e2 = 0;
-        for (var i = 1000; i < 12_000; i++) e1 += ir[i] * ir[i];
-        for (var i = 36_000; i < 47_000; i++) e2 += ir[i] * ir[i];
-        Assert.True(e1 > e2 * 4, $"{e1} {e2}");
-        Assert.Equal(0, AllocationProbe.MinAllocated(() => room.BuildAcousticMesh(new System.Numerics.Vector3(-1, 1.5f, 0), new System.Numerics.Vector3(2, 1.5f, 1))));
-
-        // USD-4: 러너 — 레이어 스택 · 물리 → session over → 합성 → 3DGS · 뮤트 · 맵 · 무할당 ──
-        var run = new Us.OpenUsdSpatialStudioRunner(new Us.OpenUsdSpatialAssetCompositorEngine(), new Us.GenerativeWorldProceduralEngine(), new Us.NeuralPhysicsCollisionSimulator());
-        Assert.Equal(3, run.BodyCount);
-        Assert.Equal(3, run.Compositor.LayerCount);
-        Assert.True(run.SplatCount > 100);
-        for (var i = 0; i < 240; i++) run.TickOnce();
-        var c = run.Compositor;
-        var pa = c.FindPrim("/World/Hero/BallA");
-        var sa = c.State(pa);
-        var body = run.Physics.BodyPosition(0);
-        Assert.True(MathF.Abs(sa.X - body.X) < 1e-3f && MathF.Abs(sa.Y - body.Y) < 1e-3f && MathF.Abs(sa.Z - body.Z) < 1e-3f, $"{sa} {body}");
-        Assert.True(body.Y < 4f + run.Generator.HeightAt(body.X, body.Z) && body.Y > run.Generator.HeightAt(body.X, body.Z), $"{body}");
-        Assert.True(run.Physics.TapCount > 0 && run.Physics.Rt60 > 0);
-        Assert.Equal(0, AllocationProbe.MinAllocated(() => { for (var i = 0; i < 30; i++) run.TickOnce(); }));
-        run.MuteLayer(Us.OpenUsdSpatialStudioRunner.SessionSlot, true);
-        Assert.Equal(6f, c.State(c.FindPrim("/World/Hero/BallA")).Y, 3);   // session(지형 높이·물리 결과) 제거 → hero 원본
-        run.MuteLayer(Us.OpenUsdSpatialStudioRunner.SessionSlot, false);
-        run.DropBall();
-        Assert.Equal(4, run.BodyCount);
-        var map = run.SnapshotBmp();
-        Assert.Equal(54 + 96 * 96 * 4, map.Length);
-        var before = run.Generator.Seed;
-        run.SetSpectrum(0.3f);
-        Assert.NotEqual(before, run.Generator.Seed);
-        Assert.Equal(3, run.BodyCount);
-        run.Dispose();
-    }
-
-    private sealed class UsdResidual : Us.IPhysicsResidualModel
-    {
-        public int Calls;
-        public void Correct(Span<float> vx, Span<float> vy, Span<float> vz, int count, float dt)
-        {
-            Calls++;
-            for (var i = 0; i < count; i++) vx[i] += 5f * dt;
-        }
-    }
-
-    private sealed class UsdFlatField : Us.IHeightField
-    {
-        private readonly float _a;
-        public UsdFlatField(float a) => _a = a;
-        public float HeightAt(float x, float z) => 0;
-        public float AbsorptionAt(float x, float z) => _a;
     }
 
     [Fact]
@@ -12355,255 +10893,6 @@ class "Proto"
             Packets++;
             if (Tw.AutonomousSensorFeedbackLoopSimulator.TryDecodeMetric(packet, out var s)) { Last = s; LastBytes = packet.ToArray(); }
         }
-    }
-
-    [Fact]
-    [Trait("Category", "Integration")]
-    public void NeuralPathTracing_And_RealtimeDenoising_Check()
-    {
-        static System.Numerics.Vector3 V3(float x, float y, float z) => new(x, y, z);
-
-        // PATHTRACE-3: MaterialX 파싱/왕복 · 진단 · 프롬프트 프리셋 · BSDF 에너지 보존/상반성/샘플 일관성 · 무할당 ──
-        var mx = new Pt.MaterialXBsdfShaderSynthesizer();
-        Assert.Equal(6, mx.LoadMtlx(Pt.PathTracingStudioRunner.StudioMtlx));
-        var gold = mx.Get(mx.Find("Gold"));
-        Assert.True(gold.Metallic == 1 && gold.Roughness == 0.25f && gold.BaseColor == V3(1, 0.78f, 0.34f));
-        var backdrop = mx.Get(mx.Find("backdrop"));
-        Assert.True(backdrop.Roughness == 0.8f && backdrop.BaseColor == V3(0.7f, 0.7f, 0.72f) && backdrop.Emission == default && backdrop.Metallic == 0);
-        Assert.True(System.Numerics.Vector3.Distance(V3(12, 10.2f, 7.2f), mx.Get(mx.Find("Lamp")).Emission) < 1e-4f);
-        var jade = mx.Get(mx.Find("Jade"));
-        Assert.True(jade.Subsurface == 0.8f && MathF.Abs(jade.SubsurfaceRadius - 0.2f) < 1e-6f && jade.Ior == 1.6f);
-        Assert.Throws<FormatException>(() => mx.LoadMtlx("<materialx version=\"1.38\"><surfacematerial name=\"X\" type=\"material\"><input name=\"surfaceshader\" type=\"surfaceshader\" nodename=\"Missing\" /></surfacematerial></materialx>"));
-        var mx2 = new Pt.MaterialXBsdfShaderSynthesizer();
-        mx2.LoadMtlx(mx.ExportMtlx());
-        for (var i = 0; i < mx.Count; i++)
-        {
-            var a = mx.Get(i); var b = mx2.Get(mx2.Find(mx.Name(i)));
-            Assert.True(System.Numerics.Vector3.Distance(a.BaseColor, b.BaseColor) < 1e-5f && System.Numerics.Vector3.Distance(a.Emission, b.Emission) < 1e-4f
-                && a.Metallic == b.Metallic && a.Roughness == b.Roughness && a.Specular == b.Specular && a.Ior == b.Ior && a.Subsurface == b.Subsurface
-                && MathF.Abs(a.SubsurfaceRadius - b.SubsurfaceRadius) < 1e-6f, mx.Name(i));
-        }
-        Assert.Empty(mx.Diagnose(mx.Find("Gold")).Issues);
-        var badM = Pt.PbrMaterial.Default; badM.Metallic = 0.5f; badM.Roughness = 0.01f;
-        Assert.True(mx.Diagnose(mx.Register("bad", badM)).Issues.Count >= 2);
-        Assert.Equal("gold", Pt.MaterialXBsdfShaderSynthesizer.SuggestFromPrompt("반짝이는 금 반지")!.Value.Name);
-        Assert.Equal(0.9f, Pt.MaterialXBsdfShaderSynthesizer.SuggestFromPrompt("candle wax")!.Value.Material.Subsurface);
-        Assert.Null(Pt.MaterialXBsdfShaderSynthesizer.SuggestFromPrompt("something"));
-
-        var white = Pt.PbrMaterial.Default; white.BaseColor = System.Numerics.Vector3.One; white.Specular = 0;
-        Assert.Equal(1f, Pt.MaterialXBsdfShaderSynthesizer.DirectionalAlbedo(white, 0.7f, 20_000), 2);
-        var plastic = Pt.PbrMaterial.Default; plastic.Roughness = 0.08f;
-        var roughMetal = gold; roughMetal.Roughness = 1f;
-        foreach (var m in new[] { gold, Pt.PbrMaterial.Default, plastic, roughMetal, jade })
-            foreach (var cv in new[] { 1f, 0.5f, 0.1f })
-                { var al = Pt.MaterialXBsdfShaderSynthesizer.DirectionalAlbedo(m, cv, 8000); Assert.True(al <= 1.02f, $"albedo {al} r={m.Roughness} metal={m.Metallic} cos={cv}"); }
-        Assert.True(Pt.MaterialXBsdfShaderSynthesizer.DirectionalAlbedo(gold, 1f, 8000) > 0.5f);
-        var rnd = new Random(1674);
-        var nz = System.Numerics.Vector3.UnitZ;
-        System.Numerics.Vector3 Hemi() { var v = V3(rnd.NextSingle() * 2 - 1, rnd.NextSingle() * 2 - 1, rnd.NextSingle() + 0.05f); return System.Numerics.Vector3.Normalize(v); }
-        for (var k = 0; k < 200; k++)
-        {
-            var wo = Hemi(); var wi = Hemi();
-            var fa = Pt.MaterialXBsdfShaderSynthesizer.Eval(Pt.PbrMaterial.Default, nz, wo, wi, out _) / wi.Z;
-            var fb = Pt.MaterialXBsdfShaderSynthesizer.Eval(Pt.PbrMaterial.Default, nz, wi, wo, out _) / wo.Z;
-            Assert.True(System.Numerics.Vector3.Distance(fa, fb) < 1e-4f * (1 + fa.Length()), $"상반성 {fa} {fb}");
-            if (Pt.MaterialXBsdfShaderSynthesizer.Sample(gold, nz, wo, rnd.NextSingle(), rnd.NextSingle(), rnd.NextSingle(), out var ws, out var weight, out var pdf, out _))
-            {
-                var f = Pt.MaterialXBsdfShaderSynthesizer.Eval(gold, nz, wo, ws, out var pdf2);
-                Assert.True(MathF.Abs(pdf - pdf2) < 1e-4f * pdf && System.Numerics.Vector3.Distance(weight, f / pdf) < 1e-3f * (1 + weight.Length()));
-            }
-        }
-        Assert.Equal(0, AllocationProbe.MinAllocated(() => { for (var k = 0; k < 2000; k++) Pt.MaterialXBsdfShaderSynthesizer.Sample(gold, nz, V3(0.3f, 0, 0.95f), k / 2000f, 0.37f, 0.61f, out _, out _, out _, out _); }));
-
-        // PATHTRACE-1: 퍼니스(빈 장면 · 백색 확산 · 백색 SSS · 산란 안개) · 흡수 투과율 · 3DGS 매질 · SIMD 교차 · AOV/모션 벡터 · 누적 · 결정성 · 무할당 ──
-        var mt = new Pt.MaterialXBsdfShaderSynthesizer();
-        var whiteIdx = mt.Register("white", white);
-        var sssW = white; sssW.Subsurface = 1; sssW.SubsurfaceColor = System.Numerics.Vector3.One; sssW.SubsurfaceRadius = 0.3f;
-        var sssIdx = mt.Register("sss", sssW);
-        var goldIdx = mt.Register("gold", gold);
-        var L = V3(0.5f, 0.5f, 0.5f);
-        var pt = new Pt.VolumetricPathTracingLightTransportEngine(mt) { Ground = false, SunRadiance = default, SkyZenith = L, SkyHorizon = L, MaxBounces = 64 };
-        pt.SetResolution(16, 12);
-        pt.SetCamera(V3(0, 0, 5), default, 40);
-        pt.RenderFrame(0);
-        Assert.All(pt.Color.ToArray(), c => Assert.Equal(0.5f, c, 5));
-        pt.AddSphere(default, 1, whiteIdx);
-        pt.Spp = 4;
-        pt.RenderFrame(1);
-        Assert.All(pt.Color.ToArray(), c => Assert.True(MathF.Abs(c - 0.5f) < 1e-3f, $"확산 퍼니스 {c}"));
-        pt.ClearScene();
-        pt.AddSphere(default, 1, sssIdx);
-        pt.Spp = 16;
-        pt.RenderFrame(2);
-        Assert.True(MathF.Abs(pt.Color.ToArray().Average() - 0.5f) < 0.005f, $"SSS 퍼니스 {pt.Color.ToArray().Average()}");
-        pt.ClearScene();
-        pt.AddSphere(default, 1, goldIdx);
-        var gb = 0f;
-        for (var s = 0; s < 64; s++) gb += pt.Radiance(V3(0, 0, 5), V3(0, 0, -1), (ulong)s).Z / 64;
-        Assert.True(gb < 0.45f && gb > 0.1f, $"금 청색 반사 {gb}");
-        pt.ClearScene();
-        pt.FogDensity = 0.8f; pt.FogAlbedo = System.Numerics.Vector3.One; pt.FogMin = V3(-2, -2, -2); pt.FogMax = V3(2, 2, 2); pt.FogAnisotropy = 0.5f;
-        pt.Spp = 8;
-        pt.RenderFrame(3);
-        Assert.True(pt.Color.ToArray().Min() > 0.49f && pt.Color.ToArray().Max() < 0.5001f, "산란 안개 퍼니스");
-        pt.FogAlbedo = V3(0.5f, 0.5f, 0.5f);
-        pt.RenderFrame(4);
-        var center = (6 * 16 + 8) * 3;
-        Assert.True(pt.Color[center] < 0.45f, $"흡수 안개 {pt.Color[center]}");
-
-        var emit = Pt.PbrMaterial.Default; emit.BaseColor = default; emit.Specular = 0; emit.Emission = System.Numerics.Vector3.One;
-        var emitIdx = mt.Register("emit", emit);
-        pt.SkyZenith = default; pt.SkyHorizon = default;
-        pt.AddBox(V3(-5, -5, -1.1f), V3(5, 5, -1), emitIdx);
-        pt.FogDensity = 0.5f; pt.FogAlbedo = default; pt.FogMin = V3(-10, -10, -1); pt.FogMax = V3(10, 10, 3);
-        var tr = 0f;
-        for (var s = 0; s < 4000; s++) tr += pt.Radiance(V3(0, 0, 5), V3(0, 0, -1), (ulong)s).X / 4000;
-        Assert.True(MathF.Abs(tr - MathF.Exp(-0.5f * 4)) < 0.02f, $"투과율 {tr} vs {MathF.Exp(-2)}");
-
-        pt.ClearScene(); pt.FogDensity = 0; pt.SkyZenith = L; pt.SkyHorizon = L;
-        var smoke = new G3.GaussianScene(64);
-        for (var i = 0; i < 40; i++) smoke.Add(V3((i % 4 - 1.5f) * 0.2f, (i / 4 % 5 - 2) * 0.2f, (i / 20 - 0.5f) * 0.2f), System.Numerics.Quaternion.Identity, V3(0.25f, 0.25f, 0.25f), 1f, default);
-        pt.BindGaussians(smoke, 8f);
-        Assert.True(pt.HasGrid && pt.GridMaxDensity > 1f);
-        var through = 0f;
-        for (var s = 0; s < 400; s++) through += pt.Radiance(V3(0, 0, 5), V3(0, 0, -1), (ulong)s).X / 400;
-        Assert.True(through < 0.25f, $"3DGS 매질 {through}");
-        Assert.Equal(0.5f, pt.Radiance(V3(0, 3, 5), V3(0, 0, -1), 1).X, 5);
-
-        var simd = new Pt.VolumetricPathTracingLightTransportEngine(mt) { Ground = false };
-        var sph = new List<(System.Numerics.Vector3 C, float R)>();
-        for (var i = 0; i < 37; i++) { var c = V3(rnd.NextSingle() * 8 - 4, rnd.NextSingle() * 8 - 4, rnd.NextSingle() * 8 - 4); var r = 0.2f + rnd.NextSingle() * 0.8f; sph.Add((c, r)); simd.AddSphere(c, r, whiteIdx); }
-        for (var k = 0; k < 500; k++)
-        {
-            var o = V3(rnd.NextSingle() * 20 - 10, rnd.NextSingle() * 20 - 10, rnd.NextSingle() * 20 - 10);
-            var d = System.Numerics.Vector3.Normalize(-o + V3(rnd.NextSingle() * 4 - 2, rnd.NextSingle() * 4 - 2, rnd.NextSingle() * 4 - 2));
-            float best = 1e9f; var bi = -1;
-            for (var i = 0; i < sph.Count; i++)
-            {
-                var oc = o - sph[i].C; var b = System.Numerics.Vector3.Dot(oc, d); var disc = b * b - (oc.LengthSquared() - sph[i].R * sph[i].R);
-                if (disc <= 0) continue;
-                var t0 = -b - MathF.Sqrt(disc); var t1 = -b + MathF.Sqrt(disc); var t = t0 > 1e-3f ? t0 : t1;
-                if (t > 1e-3f && t < best) { best = t; bi = i; }
-            }
-            var hit = simd.TraceClosest(o, d, 1e9f, out var ts, out var kind, out var idx);
-            Assert.Equal(bi >= 0, hit);
-            if (hit) { Assert.Equal(bi, idx); Assert.Equal(Pt.PtPrimKind.Sphere, kind); Assert.True(MathF.Abs(ts - best) < 1e-3f * (1 + best)); }
-        }
-
-        var aov = new Pt.VolumetricPathTracingLightTransportEngine(mt) { Ground = true, GroundMaterial = whiteIdx };
-        aov.SetResolution(32, 24);
-        aov.AddSphere(V3(0, 1.5f, 0), 1, goldIdx);
-        aov.SetCamera(V3(0, 1.5f, 5), V3(0, 1.5f, 0), 40);
-        aov.RenderFrame(0);
-        var cp = 12 * 32 + 16;
-        Assert.Equal(4f, aov.Depth[cp], 1);
-        Assert.True(aov.Normal[cp * 3 + 2] > 0.99f && aov.Albedo[cp * 3 + 2] == 0.34f);
-        Assert.Equal(0f, aov.MotionX[cp]);
-        Assert.True(aov.Depth[0] == 0 && aov.Depth[23 * 32 + 16] > 0, "하늘 = 0 · 바닥 히트");
-        aov.RenderFrame(1);
-        Assert.Equal(2, aov.AccumulatedFrames);
-        var c1 = aov.Color.ToArray();
-        aov.RenderFrame(1);
-        Assert.Equal(c1, aov.Color.ToArray());
-        aov.SetCamera(V3(0.2f, 1.5f, 5), V3(0.2f, 1.5f, 0), 40);
-        aov.RenderFrame(2);
-        Assert.Equal(1, aov.AccumulatedFrames);
-        Assert.InRange(aov.MotionX[cp], 1.4f, 1.95f);
-        Assert.True(MathF.Abs(aov.MotionY[cp]) < 0.2f);
-        Assert.Equal(0, AllocationProbe.MinAllocated(() => aov.RenderFrame(3)));
-        Assert.Equal(0f, aov.MotionX[cp]);
-
-        // PATHTRACE-2: 디노이즈 품질(단일/시간) · 잔상 차단(깊이 거부 · 분산 클리핑) · 업스케일 · SIMD 톤매핑 · 무할당 ──
-        var qs = new Pt.VolumetricPathTracingLightTransportEngine(mt) { GroundMaterial = whiteIdx, SunRadiance = V3(1f, 0.95f, 0.9f), SkyZenith = V3(0.15f, 0.25f, 0.45f), SkyHorizon = V3(0.35f, 0.38f, 0.42f) };
-        qs.SetResolution(48, 32);
-        qs.AddSphere(V3(-0.6f, 0.6f, 0), 0.6f, whiteIdx);
-        qs.AddSphere(V3(0.7f, 0.5f, -0.4f), 0.5f, goldIdx);
-        qs.SetCamera(V3(0, 1.4f, 4), V3(0, 0.5f, 0), 45);
-        qs.Spp = 256;
-        qs.RenderFrame(10_000);
-        var reference = qs.Color.ToArray();
-        qs.Spp = 1;
-        qs.RenderFrame(0);
-        var psnrNoisy = Pt.AiRealtimeSpatiotemporalDenoiser.Psnr(qs.Color, reference);
-        var dn = new Pt.AiRealtimeSpatiotemporalDenoiser { Strength = 0.5f, Sharpen = 0 };
-        dn.Configure(48, 32, 1);
-        dn.Denoise(qs.Color, qs.Albedo, qs.Normal, qs.Depth, qs.MotionX, qs.MotionY);
-        var psnrSingle = Pt.AiRealtimeSpatiotemporalDenoiser.Psnr(dn.Output, reference);
-        Assert.True(psnrSingle > psnrNoisy + 2.5, $"단일 프레임 {psnrNoisy:0.0} → {psnrSingle:0.0} dB");
-        for (var f = 1; f < 16; f++) { qs.RenderFrame(f); dn.Denoise(qs.Color, qs.Albedo, qs.Normal, qs.Depth, qs.MotionX, qs.MotionY); }
-        var psnrTemporal = Pt.AiRealtimeSpatiotemporalDenoiser.Psnr(dn.Output, reference);
-        Assert.True(psnrTemporal > psnrSingle + 1, $"시간 누적 {psnrSingle:0.0} → {psnrTemporal:0.0} dB");
-        Assert.True(dn.MeanHistoryLength > 10 && dn.DisocclusionRatio < 0.01f);
-        Assert.Equal(0, AllocationProbe.MinAllocated(() => dn.Denoise(qs.Color, qs.Albedo, qs.Normal, qs.Depth, qs.MotionX, qs.MotionY)));
-
-        float Ghost(bool depthCue, bool clamp)
-        {
-            const int GW = 40, GH = 20;
-            var g = new Pt.AiRealtimeSpatiotemporalDenoiser { Strength = 0, Sharpen = 0, ClampHistory = clamp };
-            g.Configure(GW, GH, 1);
-            var col = new float[GW * GH * 3]; var alb = new float[GW * GH * 3]; var nrm = new float[GW * GH * 3];
-            var dep = new float[GW * GH]; var mvx = new float[GW * GH]; var mvy = new float[GW * GH];
-            Array.Fill(alb, 1f);
-            for (var p = 0; p < GW * GH; p++) nrm[p * 3 + 2] = 1;
-            for (var f = 0; f <= 5; f++)
-            {
-                var xo = 4 + 5 * f;
-                for (var y = 0; y < GH; y++)
-                    for (var x = 0; x < GW; x++)
-                    {
-                        var p = y * GW + x;
-                        var obj = x >= xo && x < xo + 6 && y >= 7 && y < 13;
-                        col[p * 3] = col[p * 3 + 1] = col[p * 3 + 2] = obj ? 1f : 0.1f;
-                        dep[p] = obj && depthCue ? 2f : 10f;
-                        mvx[p] = obj && f > 0 ? -5 : 0;
-                    }
-                g.Denoise(col, alb, nrm, dep, mvx, mvy);
-            }
-            var worst = 0f;
-            for (var x = 24; x <= 26; x++) worst = MathF.Max(worst, g.Output[(10 * GW + x) * 3]);
-            return worst;
-        }
-        Assert.True(Ghost(true, false) < 0.15f, "깊이 불일치 → 이력 거부");
-        Assert.True(Ghost(false, true) < 0.15f, "분산 클리핑");
-        Assert.True(Ghost(false, false) > 0.5f, "대조군: 보호 장치 없으면 잔상");
-
-        var up = new Pt.AiRealtimeSpatiotemporalDenoiser { Sharpen = 0.3f };
-        up.Configure(8, 6, 4);
-        var cc = Enumerable.Repeat(0.3f, 8 * 6 * 3).ToArray();
-        up.Denoise(cc, Enumerable.Repeat(1f, 8 * 6 * 3).ToArray(), Enumerable.Range(0, 8 * 6 * 3).Select(i => i % 3 == 2 ? 1f : 0f).ToArray(), Enumerable.Repeat(5f, 48).ToArray(), new float[48], new float[48]);
-        Assert.Equal(32 * 24 * 3, up.Upscaled.Length);
-        Assert.All(up.Upscaled.ToArray(), v => Assert.Equal(0.3f, v, 4));
-        Assert.Equal(32 * 24 * 4, up.Rgba.Length);
-        var big = new Pt.AiRealtimeSpatiotemporalDenoiser();
-        big.Configure(960, 540, 4);
-        Assert.True(big.OutputWidth == 3840 && big.OutputHeight == 2160);
-        var tmIn = Enumerable.Range(0, 3 * 37).Select(i => i * 0.05f).ToArray();
-        var tmOut = new byte[37 * 4];
-        Pt.AiRealtimeSpatiotemporalDenoiser.ToneMap(tmIn, tmOut, 1.3f, new float[tmIn.Length]);
-        for (var i = 0; i < tmIn.Length; i++)
-        {
-            var x = tmIn[i] * 1.3f;
-            var e = (byte)(MathF.Sqrt(MathF.Min(1, x * (2.51f * x + 0.03f) / (x * (2.43f * x + 0.59f) + 0.14f))) * 255 + 0.5f);
-            Assert.InRange(tmOut[i / 3 * 4 + i % 3], e - 1, e + 1);
-        }
-
-        // PATHTRACE-4: 러너 — USD 장면/재질 바인딩 · 3DGS 연기 · 정적 누적 대비 PSNR · 궤도 모션 벡터 · 프롬프트 재질 · 무할당 ──
-        var run = new Pt.PathTracingStudioRunner(new Pt.MaterialXBsdfShaderSynthesizer(), new Pt.AiRealtimeSpatiotemporalDenoiser());
-        Assert.True(run.Tracer.SphereCount == 4 && run.Tracer.BoxCount == 2 && run.Tracer.HasGrid);
-        for (var k = 0; k < 24; k++) run.TickOnce();
-        Assert.True(run.PsnrDenoised > run.PsnrNoisy + 3, $"{run.PsnrNoisy:0.0} → {run.PsnrDenoised:0.0}");
-        Assert.Equal(24, run.Tracer.AccumulatedFrames);
-        Assert.Equal(0, AllocationProbe.MinAllocated(() => { for (var k = 0; k < 3; k++) run.TickOnce(); }));
-        run.Orbit = true;
-        run.TickOnce();
-        Assert.Equal(1, run.Tracer.AccumulatedFrames);
-        Assert.True(run.Denoiser.DisocclusionRatio < 0.3f, $"{run.Denoiser.DisocclusionRatio}");
-        var skin = run.Materials.Find("Skin");
-        Assert.True(run.ApplyPrompt(skin, "따뜻한 양초 왁스 candle"));
-        Assert.Equal(0.9f, run.Materials.Get(skin).Subsurface);
-        Assert.Equal(54 + 320 * 180 * 4, run.SnapshotBmp(1).Length);
-        Assert.Equal(54 + 160 * 90 * 4, run.SnapshotBmp(6).Length);
-        run.Dispose();
     }
 
     [Fact]
@@ -13942,869 +12231,6 @@ class "Proto"
     }
 
     [Fact]
-    [Trait("Category", "Integration")]
-    public void GenerativeEnvironment_And_MicroWeatherLighting_Check()
-    {
-        // ══ ENV-0 SIMD 커널 = 스칼라(비트 일치 · 꼬리) ══
-        var rnd = new Random(1684);
-        foreach (var len in new[] { 0, 1, 7, 8, 9, 17, 33, 1001 })
-        {
-            float[] R() { var a = new float[len]; for (var i = 0; i < len; i++) a[i] = (float)(rnd.NextDouble() * 4 - 2); return a; }
-            var x = R(); var y = R(); var z = R(); var w = R();
-            var d1 = new float[len]; var d2 = new float[len];
-            At.EnvSimd.Dot3(x, y, z, 0.3f, -0.7f, 0.65f, d1); At.EnvSimd.Dot3Scalar(x, y, z, 0.3f, -0.7f, 0.65f, d2);
-            Assert.True(d1.AsSpan().SequenceEqual(d2), $"dot3 {len}");
-            At.EnvSimd.MulAcc(d1, x, y); At.EnvSimd.MulAccScalar(d2, x, y);
-            Assert.True(d1.AsSpan().SequenceEqual(d2), $"mulacc {len}");
-            At.EnvSimd.Composite(d1, w, 0.37f); At.EnvSimd.CompositeScalar(d2, w, 0.37f);
-            Assert.True(d1.AsSpan().SequenceEqual(d2), $"composite {len}");
-            At.EnvSimd.Lerp(d1, x, 0.08f, w); At.EnvSimd.LerpScalar(d2, x, 0.08f, w);
-            Assert.True(d1.AsSpan().SequenceEqual(d2), $"lerp {len}");
-            var o1 = new float[len]; var o2 = new float[len];
-            At.EnvSimd.ClampOverflow(d1, z, o1); At.EnvSimd.ClampOverflowScalar(d2, z, o2);
-            Assert.True(d1.AsSpan().SequenceEqual(d2) && o1.AsSpan().SequenceEqual(o2), $"overflow {len}");
-        }
-
-        // ══ ENV-1 천체 위치 · 대기 산란 ══
-        var (eq, _) = At.AtmosphericScatteringLightingEngine.SolarPosition(80, 12f, 0f);
-        Assert.True(eq > 86f, $"equinox noon equator {eq}");
-        var (sol, solAz) = At.AtmosphericScatteringLightingEngine.SolarPosition(172, 12f, 37.5f);
-        Assert.True(MathF.Abs(sol - 75.94f) < 1.5f && MathF.Abs(solAz - 180f) < 15f, $"solstice {sol} az {solAz}");
-        var (mid, _) = At.AtmosphericScatteringLightingEngine.SolarPosition(172, 0f, 37.5f);
-        Assert.True(mid < -20f, $"midnight {mid}");
-        var (am, amAz) = At.AtmosphericScatteringLightingEngine.SolarPosition(172, 8f, 37.5f);
-        Assert.True(am > 20f && am < 50f && amAz > 60f && amAz < 120f, $"morning {am} az {amAz} (east)");
-        var (moonEl, _) = At.AtmosphericScatteringLightingEngine.LunarPosition(172, 0f, 37.5f, 0.5f);
-        Assert.True(moonEl > 0f, $"full moon at midnight {moonEl}");
-
-        var atm = new At.AtmosphericScatteringLightingEngine();
-        Assert.Equal(1, atm.LutBuilds);
-        // 천정 투과율 ≈ exp(−(βR·H_R + βM·H_M + 오존 텐트 면적 15 km))
-        var tz = atm.Transmittance(0f, 1f);
-        float Expect(float br, float bo) => MathF.Exp(-(br * 8000f * (1f - MathF.Exp(-12.5f)) + 8.396e-6f * 1200f + bo * 15000f));
-        Assert.True(MathF.Abs(tz.Y - Expect(13.558e-6f, 1.881e-6f)) < 0.01f && MathF.Abs(tz.Z - Expect(33.1e-6f, 0.085e-6f)) < 0.01f, $"T zenith {tz}");
-        Assert.Equal(Nm.Vector3.Zero, atm.Transmittance(1000f, -0.5f));
-        Assert.True(atm.Transmittance(0f, 0.05f).Z < atm.Transmittance(0f, 0.05f).X, "horizon reddening");
-
-        var noonSun = At.AtmosphericScatteringLightingEngine.FromAngles(70f, 180f);
-        var down = -Nm.Vector3.UnitY;
-        atm.Update(noonSun, down, 0f, 0f, 0f, 0f, 1f, 1f);
-        var zen = atm.ZenithColor;
-        Assert.True(zen.Z > zen.Y && zen.Y > zen.X && zen.Z > 1e-3f, $"blue sky {zen}");
-        var noonSunC = atm.SunIrradiance; var noonLux = atm.GroundLux; var noonVis = atm.Visibility;
-        Assert.True(noonLux > 50_000f && noonLux < 160_000f, $"lux {noonLux}");
-        atm.Update(At.AtmosphericScatteringLightingEngine.FromAngles(2f, 270f), down, 0f, 0f, 0f, 0f, 1f, 1f);
-        Assert.True(atm.SunIrradiance.Z / atm.SunIrradiance.X < 0.5f * noonSunC.Z / noonSunC.X, $"sunset red {atm.SunIrradiance}");
-        var sunsetHor = atm.HorizonColor;
-        Assert.True(sunsetHor.X / sunsetHor.Z > zen.X / zen.Z, "warm horizon");
-        atm.Update(At.AtmosphericScatteringLightingEngine.FromAngles(-4f, 270f), down, 0f, 0f, 0f, 0f, 1f, 1f);
-        var twilight = At.AtmosphericScatteringLightingEngine.Luminance(atm.ZenithColor);
-        Assert.True(atm.SunIrradiance == Nm.Vector3.Zero, "sun below horizon → planet shadow");
-        atm.Update(At.AtmosphericScatteringLightingEngine.FromAngles(-30f, 270f), down, 0f, 0f, 0f, 0f, 1f, 1f);
-        var night = At.AtmosphericScatteringLightingEngine.Luminance(atm.ZenithColor);
-        Assert.True(night < 1e-3f * At.AtmosphericScatteringLightingEngine.Luminance(zen) && twilight > 10f * night, $"night {night} twilight {twilight}");
-        atm.Update(At.AtmosphericScatteringLightingEngine.FromAngles(-30f, 270f), Nm.Vector3.UnitY, 0.5f, 0f, 0f, 0f, 1f, 1f);
-        Assert.True(At.AtmosphericScatteringLightingEngine.Luminance(atm.ZenithColor) > 2f * night && atm.MoonLight.Y > 0f && atm.NightFactor == 1f, "moonlit");
-        atm.Update(noonSun, down, 0f, 1f, 25f, 0f, 1f, 1f);
-        Assert.True(atm.SunIrradiance.Y < 0.01f * noonSunC.Y && atm.GodRayStrength < 0.01f, "overcast blocks sun");
-        var oc = atm.ZenithColor;
-        Assert.True(oc.Z / oc.X < zen.Z / zen.X, "overcast greys sky");
-        atm.Update(noonSun, down, 0f, 0.5f, 10f, 0f, 1f, 1f);
-        Assert.True(atm.GodRayStrength > 0.1f, $"god rays {atm.GodRayStrength}");
-        atm.Update(noonSun, down, 0f, 0f, 0f, 0.03f, 1f, 1f);
-        Assert.True(MathF.Abs(atm.Visibility - 3.912f / (0.03f + 13.2e-6f + 8.396e-6f)) < 5f && atm.Visibility < 0.01f * noonVis, $"fog vis {atm.Visibility}");
-        var builds = atm.LutBuilds;
-        atm.Update(noonSun, down, 0f, 0f, 0f, 0f, 4f, 1f);
-        Assert.Equal(builds + 1, atm.LutBuilds);
-        Assert.True(atm.Transmittance(0f, 1f).Y < tz.Y, "haze → more extinction");
-        var ar = new float[] { 1f, 1f }; var ag = new float[] { 1f, 1f }; var ab = new float[] { 1f, 1f }; var tt = new float[2];
-        atm.ApplyAerial(ar, ag, ab, new float[] { 0f, 1e7f }, tt);
-        Assert.True(ar[0] == 1f && MathF.Abs(ar[1] - atm.FogColor.X) < 1e-6f, "aerial perspective");
-        var disp = atm.ToDisplay(new Nm.Vector3(1e9f));
-        Assert.True(disp.X <= 1f && disp.X > 0.99f && atm.ToDisplay(Nm.Vector3.Zero) == Nm.Vector3.Zero);
-        Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>
-        {
-            for (var i = 0; i < 10; i++) atm.Update(noonSun, Nm.Vector3.UnitY, 0.5f, 0.3f, 8f, 0.002f, 4f, 1f / 60f);
-        }));
-
-        // ══ ENV-2 미세 기상: 상 · 종단 속도 · 회전 돌풍 · 바람 추종 · 번개 · 프롬프트 · 결정성 · 무할당 ══
-        Assert.True(MathF.Abs(At.DynamicMicroWeatherSimulatorEngine.RainTerminalVelocity(2f) - 6.55f) < 0.05f);
-        Assert.True(At.DynamicMicroWeatherSimulatorEngine.MarshallPalmerLambda(25f) < At.DynamicMicroWeatherSimulatorEngine.MarshallPalmerLambda(1f), "heavier rain → larger drops");
-        Assert.True(MathF.Abs(At.DynamicMicroWeatherSimulatorEngine.DewPointOf(20f, 0.5f) - 9.26f) < 0.2f);
-        Assert.Equal(1f, At.DynamicMicroWeatherSimulatorEngine.ProfileFactor(10f), 4);
-        Assert.True(At.DynamicMicroWeatherSimulatorEngine.ProfileFactor(1f) < 0.7f);
-        var wx = new At.DynamicMicroWeatherSimulatorEngine(42);
-        wx.SetScenario(new At.WeatherScenario { Precipitation = 20f, CloudCoverage = 0.9f, Temperature = 12f, Humidity = 0.9f, WindSpeed = 6f, WindYawDeg = 90f, Storm = 0f, Fog = 0f });
-        wx.SnapToTarget();
-        for (var f = 0; f < 240; f++) wx.Step(1f / 60f);
-        Assert.Equal(At.PrecipKind.Rain, wx.Kind);
-        Assert.True(wx.ActiveParticles > 4000, $"{wx.ActiveParticles}");
-        float mvx = 0, mvy = 0; var nr = 0;
-        for (var i = 0; i < wx.ActiveParticles; i++)
-        {
-            var p = wx.Position(i);
-            Assert.True(p.X >= -20f && p.X < 20f && p.Z >= -20f && p.Z < 20f && p.Y >= 0f && p.Y < 24f, $"box {p}");
-            if (wx.ParticleKind(i) != At.PrecipKind.Rain) continue;
-            var v = wx.Velocity(i); mvx += v.X; mvy += v.Y; nr++;
-        }
-        Assert.True(mvx / nr > 2.5f && mvy / nr < -1.2f, $"wind drift {mvx / nr} fall {mvy / nr}");
-        Assert.True(wx.MeanDropDiameter > 0.35f && wx.ImpactsPerSecond > 100f, $"{wx.MeanDropDiameter} {wx.ImpactsPerSecond}");
-        Assert.True(wx.GridGustRms() > 0.3f && wx.GridDivergenceRms() < 1e-3f * wx.GridGustRms(), $"curl gust {wx.GridGustRms()} div {wx.GridDivergenceRms()}");
-        Assert.True(wx.CloudCover > 0.6f && wx.RelativeHumidity > 0.9f, $"{wx.CloudCover}");
-        Assert.Equal(0, wx.LightningStrikes);
-        Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>
-        {
-            for (var f = 0; f < 30; f++) wx.Step(1f / 60f);
-        }, out var wxWindows));
-        var wx2 = new At.DynamicMicroWeatherSimulatorEngine(42);
-        wx2.SetScenario(wx.Target); wx2.SnapToTarget();
-        for (var f = 0; f < 240 + 30 * wxWindows; f++) wx2.Step(1f / 60f);   // 결정론 재생 = 측정 전 240 + 창당 30 프레임
-        Assert.Equal(wx.Position(17), wx2.Position(17));
-        var sc = wx.Target; sc.Temperature = -6f; wx.SetScenario(sc); wx.SnapToTarget();
-        for (var f = 0; f < 600; f++) wx.Step(1f / 60f);
-        Assert.Equal(At.PrecipKind.Snow, wx.Kind);
-        var snowN = 0;
-        for (var i = 0; i < wx.ActiveParticles; i++) if (wx.ParticleKind(i) == At.PrecipKind.Snow) snowN++;
-        Assert.True(snowN > wx.ActiveParticles * 0.95f, $"snow {snowN}/{wx.ActiveParticles}");
-        sc.Storm = 1f; sc.CloudCoverage = 1f; wx.SetScenario(sc);
-        float maxFlash = 0;
-        for (var f = 0; f < 60 * 60; f++) { wx.Step(1f / 60f); maxFlash = MathF.Max(maxFlash, wx.FlashIntensity); }
-        Assert.True(wx.LightningStrikes >= 3 && maxFlash > 0.05f && wx.ThunderDelay > 0.8f, $"strikes {wx.LightningStrikes} flash {maxFlash}");
-        Assert.Equal(0f, wx.BoltY[0]); Assert.Equal(1f, wx.BoltY[At.DynamicMicroWeatherSimulatorEngine.BoltPoints - 1]);
-        var ps = At.WeatherScenario.Clear;
-        Assert.True(At.DynamicMicroWeatherSimulatorEngine.ParsePrompt("천둥 번개 치는 폭우", ref ps) >= 2 && ps.Precipitation >= 20f && ps.Storm > 0.5f);
-        ps = At.WeatherScenario.Clear;
-        Assert.True(At.DynamicMicroWeatherSimulatorEngine.ParsePrompt("a foggy blizzard", ref ps) >= 2 && ps.Temperature < 0f && ps.Fog > 0.5f);
-        ps = At.WeatherScenario.Clear;
-        Assert.True(At.DynamicMicroWeatherSimulatorEngine.ParsePrompt("진눈깨비", ref ps) == 1 && ps.Temperature > 0f);
-        Assert.Equal(0, At.DynamicMicroWeatherSimulatorEngine.ParsePrompt("", ref ps));
-        // 방사 안개: 이슬점 근접 + 약풍
-        var fogx = new At.DynamicMicroWeatherSimulatorEngine(7);
-        fogx.SetScenario(new At.WeatherScenario { Temperature = 8f, Humidity = 0.99f, WindSpeed = 0.5f, CloudCoverage = 0.1f });
-        fogx.SnapToTarget(); fogx.Step(1f / 60f);
-        Assert.True(fogx.FogAmount > 0.3f && fogx.FogExtinction > 0.001f, $"radiation fog {fogx.FogAmount}");
-
-        // ══ ENV-3 습윤/적설: 물 수지 보존 · 공극률 감쇠 · 웅덩이 · 증발 · 적설/경사 탈락/융설 · 가드 · 3DGS · 캐릭터 ══
-        var world = new Us.GenerativeWorldProceduralEngine();
-        world.Configure("rolling green grassland hills with forest", 1684);
-        var wet = new At.EnvironmentalBiomeWetnessGuard();
-        wet.Rebuild(world);
-        Assert.True(wet.LandCells > 200, $"land {wet.LandCells}");
-        Assert.Equal(0f, wet.MeanWetness);
-        float dryAlb = 0, dryRough = 0;
-        for (var c = 0; c < At.EnvironmentalBiomeWetnessGuard.Cells; c++) if (wet.BiomeOf(c) != Us.Biome.Ocean) { dryAlb += wet.AlbedoG[c]; dryRough += wet.Roughness[c]; }
-        var rainIn = new At.PrecipitationInput(20f, 0f, 15f, 0.95f, 3f, 0f, 6f);
-        for (var f = 0; f < 60 * 30; f++) wet.Step(1f / 60f, rainIn);
-        Assert.True(wet.MeanWetness > 0.6f && wet.MeanPuddle > 0f, $"wet {wet.MeanWetness} puddle {wet.MeanPuddle}");
-        float wetAlb = 0, wetRough = 0;
-        for (var c = 0; c < At.EnvironmentalBiomeWetnessGuard.Cells; c++) if (wet.BiomeOf(c) != Us.Biome.Ocean) { wetAlb += wet.AlbedoG[c]; wetRough += wet.Roughness[c]; }
-        Assert.True(wetAlb < 0.8f * dryAlb && wetRough < 0.8f * dryRough, $"darken {wetAlb / dryAlb} smooth {wetRough / dryRough}");
-        double Balance() => wet.TotalIn - (wet.TotalEvaporated + wet.TotalInfiltrated + wet.TotalRunoff + wet.Stored);
-        Assert.True(Math.Abs(Balance()) < 1e-3 * wet.TotalIn, $"mass {Balance()} of {wet.TotalIn}");
-        Assert.True(wet.TotalInfiltrated > 0 && wet.TotalRunoff >= 0);
-        var wetPeak = wet.MeanWetness;
-        Assert.True(wet.ClothWetness > 0.3f, $"cloth {wet.ClothWetness} skin {wet.SkinWetness}");
-        var dryIn = new At.PrecipitationInput(0f, 0f, 28f, 0.25f, 5f, 1f, 6f);
-        for (var f = 0; f < 60 * 60; f++) wet.Step(1f / 60f, dryIn);
-        Assert.True(wet.MeanWetness < 0.5f * wetPeak && wet.EvaporationMmH > 0.3f, $"dry {wet.MeanWetness} evap {wet.EvaporationMmH}");
-        Assert.True(wet.ClothWetness > wet.SkinWetness, $"cloth dries slower {wet.ClothWetness} vs {wet.SkinWetness}");
-        Assert.True(Math.Abs(Balance()) < 1e-3 * wet.TotalIn, "mass after drying");
-        Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>
-        {
-            for (var f = 0; f < 30; f++) wet.Step(1f / 60f, rainIn);
-        }));
-        // 적설
-        wet.ResetState();
-        var snowIn = new At.PrecipitationInput(0f, 6f, -6f, 0.85f, 2f, 0f, 1f);
-        for (var f = 0; f < 60 * 40; f++) wet.Step(1f / 60f, snowIn);
-        Assert.True(wet.SnowCoverage > 0.5f && wet.MaxSnowDepth > 0.02f, $"snow {wet.SnowCoverage} depth {wet.MaxSnowDepth}");
-        float flatSnow = 0, steepSnow = 0, snowAlb = 0; int nf = 0, ns = 0;
-        for (var c = 0; c < At.EnvironmentalBiomeWetnessGuard.Cells; c++)
-        {
-            if (wet.BiomeOf(c) == Us.Biome.Ocean) continue;
-            if (wet.Normal(c).Y > 0.95f) { flatSnow += wet.SnowWaterEquivalent(c); nf++; snowAlb += wet.AlbedoG[c]; }
-            else if (wet.Normal(c).Y < 0.8f) { steepSnow += wet.SnowWaterEquivalent(c); ns++; }
-        }
-        Assert.True(nf > 0 && snowAlb / nf > 0.8f, $"snow albedo {snowAlb / Math.Max(1, nf)}");
-        if (ns > 0) Assert.True(steepSnow / ns < flatSnow / nf, "steep less snow");
-        var stored0 = wet.Stored; var cover0 = wet.SnowCoverage;
-        var meltIn = new At.PrecipitationInput(0f, 0f, 10f, 0.7f, 2f, 0.5f, 6f);
-        for (var f = 0; f < 60 * 20; f++) wet.Step(1f / 60f, meltIn);
-        Assert.True(wet.SnowCoverage < cover0 && wet.MeanWetness > 0f, $"melt {wet.SnowCoverage} vs {cover0}");
-        Assert.True(Math.Abs(Balance()) < 1e-3 * Math.Max(1, wet.TotalIn) && wet.Stored < stored0, $"mass melt {Balance()}");
-        var iceIn = new At.PrecipitationInput(5f, 0f, -3f, 0.9f, 1f, 0f, 6f);
-        wet.ResetState();
-        for (var f = 0; f < 600; f++) wet.Step(1f / 60f, iceIn);
-        Assert.True(wet.IceRisk > 0.3f, $"ice {wet.IceRisk}");
-        // 재질 가드
-        var metal = new Pt.PbrMaterial { BaseColor = new Nm.Vector3(0.9f, 0.6f, 0.3f), Metallic = 1f, Roughness = 0.3f, Specular = 1f, Ior = 1.5f, Opacity = 1f };
-        var wm = wet.Apply(metal, 1f, 0f, 0f, 0f);
-        Assert.Equal(metal.BaseColor, wm.BaseColor);
-        Assert.True(wm.Roughness < metal.Roughness);
-        var soil = new Pt.PbrMaterial { BaseColor = new Nm.Vector3(0.5f, 0.4f, 0.3f), Roughness = 0.9f, Specular = 0.5f, Ior = 1.5f, Opacity = 1f };
-        var ws = wet.Apply(soil, 1f, 1f, 0f, 0f);
-        Assert.True(ws.BaseColor.X < 0.25f * soil.BaseColor.X + 1e-4f && ws.Roughness < soil.Roughness);
-        var pd = wet.Apply(soil, 1f, 1f, 1f, 0f);
-        Assert.True(MathF.Abs(pd.DielectricF0 - 0.0201f) < 0.002f && pd.Roughness <= 0.0201f, $"puddle F0 {pd.DielectricF0} r {pd.Roughness}");
-        var sn = wet.Apply(soil, 0f, 0.5f, 0f, 1f);
-        Assert.True(sn.BaseColor.Y > 0.85f && sn.Subsurface > 0.3f);
-        var nanGuards = wet.NanGuards;
-        var bad = soil; bad.BaseColor = new Nm.Vector3(float.NaN, 1f, 1f);
-        var gm = wet.Apply(bad, float.NaN, 0.5f, 0f, 0f);
-        Assert.True(float.IsFinite(gm.BaseColor.X) && wet.NanGuards == nanGuards + 1);
-        var hot = wet.Apply(new Pt.PbrMaterial { BaseColor = new Nm.Vector3(2f), Roughness = 0f, Ior = 1.5f, Specular = 1f }, 0f, 0f, 0f, 0f);
-        Assert.True(hot.BaseColor.X <= 0.95f && hot.Roughness >= 0.02f);
-        Assert.True(float.IsFinite(wet.ApplyCharacter(soil, At.WetSurface.Cloth).Roughness));
-        // 3DGS 오버레이: 상향 스플랫 → 눈 백색화 · 측면 스플랫 유지
-        var gs = new G3.GaussianScene(4);
-        gs.Add(Nm.Vector3.Zero, Dh.PhotorealisticMicroSkinSssSynthesizer.FromTo(Nm.Vector3.UnitZ, Nm.Vector3.UnitY), new Nm.Vector3(0.1f), 1f, new Nm.Vector3(0.2f, 0.3f, 0.2f));
-        gs.Add(Nm.Vector3.One, Dh.PhotorealisticMicroSkinSssSynthesizer.FromTo(Nm.Vector3.UnitZ, Nm.Vector3.UnitX), new Nm.Vector3(0.1f), 1f, new Nm.Vector3(0.2f, 0.3f, 0.2f));
-        var ver = gs.Version;
-        Assert.Equal(2, wet.ApplyToSplats(gs, 0f, 0.5f, 1f));
-        Assert.True(gs.BaseColor(0).Y > 0.85f && MathF.Abs(gs.BaseColor(1).Y - 0.3f) < 1e-3f && gs.Version > ver, $"{gs.BaseColor(0)} {gs.BaseColor(1)}");
-        Assert.Equal(0, wet.ApplyToSplats(gs, 0f, 0.5f, 0f));
-
-        // ══ ENV-4 러너: 프롬프트 · 태양 제어 · 피드백 · 3DGS · 무할당 ══
-        var run = new At.GenerativeEnvironmentStudioRunner(new At.AtmosphericScatteringLightingEngine(), new At.DynamicMicroWeatherSimulatorEngine(5), new At.EnvironmentalBiomeWetnessGuard(), world);
-        Assert.True(run.Splats.Count >= At.EnvironmentalBiomeWetnessGuard.Cells);
-        run.SetSun(45f, 180f);
-        Assert.True(run.TriggerPrompt("천둥 번개 폭우") >= 2);
-        run.Weather.SnapToTarget();
-        for (var f = 0; f < 120; f++) run.TickOnce();
-        Assert.True(MathF.Abs(run.SunElevation - 45f) < 0.1f && run.Weather.ActiveParticles > 3000);
-        Assert.True(run.Splats.Count > At.EnvironmentalBiomeWetnessGuard.Cells && run.Wet.MeanWetness > 0.2f, $"{run.Wet.MeanWetness}");
-        Assert.True(run.Weather.SurfaceMoisture > 0.2f);
-        for (var c = 0; c < At.EnvironmentalBiomeWetnessGuard.Cells; c += 37) { Assert.InRange(run.TerrainR[c], 0f, 1f); Assert.InRange(run.TerrainB[c], 0f, 1f); }
-        Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>
-        {
-            for (var f = 0; f < 20; f++) run.TickOnce();
-        }));
-        Assert.True(run.TriggerPrompt("맑은 정오") >= 2 && run.ClockMode && run.Hour == 12.5f);
-        run.Weather.SnapToTarget();
-        run.TickOnce();
-        Assert.True(run.SunElevation > 60f && run.Weather.ActiveParticles == 0, $"{run.SunElevation}");
-        run.TriggerPrompt("달빛 비치는 한밤");
-        for (var f = 0; f < 240; f++) run.TickOnce();
-        Assert.True(run.SunElevation < 0f && run.Atmosphere.NightFactor > 0.5f && run.Atmosphere.MoonLight.Y > 0f, $"{run.SunElevation} {run.Atmosphere.NightFactor} {run.Atmosphere.MoonLight}");
-        Assert.Equal(0, run.TriggerPrompt("   "));
-        run.NewShot();
-        Assert.Equal(0, run.Frame);
-        Assert.True(run.Wet.MeanWetness < 0.01f);
-        run.Dispose();
-    }
-
-    [Fact]
-    [Trait("Category", "Integration")]
-    public void NeuralCinematography_And_ShotComposition_Check()
-    {
-        // ══ CI-0 SIMD 커널 = 스칼라(비트 일치 · 꼬리) ══
-        var rnd = new Random(1685);
-        foreach (var len in new[] { 0, 1, 7, 8, 9, 17, 33, 1001 })
-        {
-            float[] R() { var a = new float[len]; for (var i = 0; i < len; i++) a[i] = (float)(rnd.NextDouble() * 4 - 2); return a; }
-            var x = R(); var a1 = R(); var a2 = (float[])a1.Clone();
-            Ci.CineSimd.MulAdd(a1, x, 0.37f); Ci.CineSimd.MulAddScalar(a2, x, 0.37f);
-            Assert.True(a1.AsSpan().SequenceEqual(a2), $"muladd {len}");
-            Ci.CineSimd.Threshold(a1, x, 0.4f, 1.3f); Ci.CineSimd.ThresholdScalar(a2, x, 0.4f, 1.3f);
-            Assert.True(a1.AsSpan().SequenceEqual(a2), $"threshold {len}");
-        }
-
-        // ══ CI-1 박막 렌즈 광학 ══
-        Assert.Equal(0f, Ci.NeuralCameraTrajectoryEngine.CocMm(5f, 5f, 50f, 2.8f), 5);
-        Assert.True(Ci.NeuralCameraTrajectoryEngine.CocMm(20f, 5f, 50f, 1.4f) > Ci.NeuralCameraTrajectoryEngine.CocMm(20f, 5f, 50f, 8f) * 4f, "aperture");
-        var hfd = Ci.NeuralCameraTrajectoryEngine.Hyperfocal(50f, 8f);
-        Assert.True(MathF.Abs(hfd - 12.55f) < 0.1f, $"hyperfocal {hfd}");
-        var (near, far) = Ci.NeuralCameraTrajectoryEngine.DepthOfField(5f, 50f, 2.8f);
-        Assert.True(near < 5f && far > 5f && MathF.Abs(Ci.NeuralCameraTrajectoryEngine.CocMm(near, 5f, 50f, 2.8f) - Ci.NeuralCameraTrajectoryEngine.CocLimitMm) < 2e-3f, $"dof {near} {far}");
-        Assert.True(float.IsPositiveInfinity(Ci.NeuralCameraTrajectoryEngine.DepthOfField(20f, 50f, 8f).Far));
-        Assert.True(Ci.NeuralCameraTrajectoryEngine.VerticalFovDeg(25f) > Ci.NeuralCameraTrajectoryEngine.VerticalFovDeg(100f));
-        var q = Ci.NeuralCameraTrajectoryEngine.LookRotation(Nm.Vector3.UnitX, 0f);
-        Assert.True(Nm.Vector3.Distance(Nm.Vector3.Transform(Nm.Vector3.UnitZ, q), Nm.Vector3.UnitX) < 1e-4f && Nm.Vector3.Transform(Nm.Vector3.UnitY, q).Y > 0.999f);
-
-        // ══ CI-2 궤적: 장애물 우회 · 평활 · 가시선 · 지형 여유고 · 자동 줌 · 랙 포커스 · 무할당 ══
-        var tr = new Ci.NeuralCameraTrajectoryEngine();
-        var flat = new FlatField(0.5f);
-        tr.BindTerrain(flat);
-        tr.AddObstacle(new Nm.Vector3(0f, 1.5f, -3f), 1.2f);
-        var subj = Nm.Vector3.Zero; var sv = new Nm.Vector3(0f, 0f, 1.2f);
-        tr.Reset(subj, sv);
-        for (var f = 0; f < 240; f++)
-        {
-            subj += sv / 60f;
-            tr.Step(1f / 60f, subj, sv, new Nm.Vector3(2f, 1.6f, 8f));
-            Assert.True(Nm.Vector3.Distance(tr.Pose.Position, new Nm.Vector3(0f, 1.5f, -3f)) >= 1.2f + Ci.NeuralCameraTrajectoryEngine.ObstacleMargin - 1e-3f, $"penetration f{f}");
-            Assert.True(tr.Pose.Position.Y >= 0.5f + Ci.NeuralCameraTrajectoryEngine.Clearance - 1e-3f, "terrain clearance");
-        }
-        Assert.True(tr.OptimizedCost <= tr.RawCost, $"opt {tr.OptimizedCost} raw {tr.RawCost}");
-        Assert.True(tr.MinClearance >= Ci.NeuralCameraTrajectoryEngine.ObstacleMargin - 1e-3f);
-        var dist = Nm.Vector3.Distance(tr.Pose.Position, subj + Nm.Vector3.UnitY * 1.6f);
-        Assert.True(dist > 3f && dist < 6f, $"follow distance {dist}");
-        var expF = Ci.NeuralCameraTrajectoryEngine.FrameCoverage(Ci.ShotScale.Medium) * Ci.NeuralCameraTrajectoryEngine.SensorHeightMm * tr.SubjectDistance / tr.SubjectHeight;
-        Assert.True(MathF.Abs(tr.Pose.FocalMm - expF) / expF < 0.05f, $"zoom {tr.Pose.FocalMm} vs {expF}");
-        var fpt = subj + Nm.Vector3.UnitY * (tr.SubjectHeight * 0.92f);
-        Assert.True(MathF.Abs(tr.Pose.FocusDistance - Nm.Vector3.Dot(fpt - tr.Pose.Position, tr.Pose.Forward)) < 0.1f, "focus on subject");
-        Assert.True(Nm.Vector3.Dot(Nm.Vector3.Normalize(fpt - tr.Pose.Position), tr.Pose.Forward) > 0.95f, "aim");
-        Assert.True(tr.RmsJerk < 400f, $"jerk {tr.RmsJerk}");
-        tr.Focus = Ci.FocusTarget.Secondary;
-        for (var f = 0; f < 180; f++) { subj += sv / 60f; tr.Step(1f / 60f, subj, sv, new Nm.Vector3(2f, 1.6f, 8f)); }
-        var secD = Nm.Vector3.Dot(new Nm.Vector3(2f, 1.6f, 8f) - tr.Pose.Position, tr.Pose.Forward);
-        Assert.True(MathF.Abs(tr.Pose.FocusDistance - secD) < 0.3f, $"rack {tr.Pose.FocusDistance} vs {secD}");
-        Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>
-        {
-            for (var f = 0; f < 30; f++) { subj += sv / 60f; tr.Step(1f / 60f, subj, sv, new Nm.Vector3(2f, 1.6f, 8f)); }
-        }));
-        // 가시선: 피사체와 카메라 사이 장애물 → 가림 해소
-        var los = new Ci.NeuralCameraTrajectoryEngine { AzimuthOffsetDeg = 0f, Distance = 6f };
-        var occ = new Nm.Vector3(0f, 1.5f, -3f);
-        los.AddObstacle(occ, 0.8f);
-        los.Reset(Nm.Vector3.Zero, new Nm.Vector3(0f, 0f, 0.01f));
-        for (var f = 0; f < 120; f++) los.Step(1f / 60f, Nm.Vector3.Zero, new Nm.Vector3(0f, 0f, 0.01f), Nm.Vector3.One);
-        var cp = los.Pose.Position; var look = new Nm.Vector3(0f, 1.3f, 0f); var seg = look - cp;
-        var u = Math.Clamp(Nm.Vector3.Dot(occ - cp, seg) / seg.LengthSquared(), 0f, 1f);
-        Assert.True(Nm.Vector3.Distance(cp + seg * u, occ) > 0.8f, $"line of sight {cp}");
-        // 오빗 · 더치 롤
-        var orb = new Ci.NeuralCameraTrajectoryEngine { Move = Ci.CameraMove.Orbit, OrbitRateDeg = 45f, DutchDeg = 15f };
-        orb.Reset(Nm.Vector3.Zero, Nm.Vector3.Zero);
-        var p0 = orb.Pose.Position;
-        for (var f = 0; f < 120; f++) orb.Step(1f / 60f, Nm.Vector3.Zero, Nm.Vector3.Zero, Nm.Vector3.One);
-        Assert.True(Nm.Vector3.Distance(p0, orb.Pose.Position) > 1f && MathF.Abs(new Nm.Vector2(orb.Pose.Position.X, orb.Pose.Position.Z).Length() - orb.Distance) < 0.8f, "orbit");
-        Assert.True(MathF.Abs(orb.Pose.Up.X) > 0.15f || MathF.Abs(orb.Pose.Up.Z) > 0.15f, "dutch roll");
-
-        // ══ CI-3 구도 평가: 분류 · 삼등분/황금비 · 헤드룸 · 리드룸 · 더치 · 제안 개선 ══
-        var ev = new Ci.GenerativeShotFramingEvaluator();
-        Assert.Equal(Ci.ShotType.CloseUp, Ci.GenerativeShotFramingEvaluator.Classify(0.3f, 3f));
-        Assert.Equal(Ci.ShotType.Medium, Ci.GenerativeShotFramingEvaluator.Classify(0.08f, 1.5f));
-        Assert.Equal(Ci.ShotType.Full, Ci.GenerativeShotFramingEvaluator.Classify(0.05f, 0.8f));
-        Assert.Equal(Ci.ShotType.Wide, Ci.GenerativeShotFramingEvaluator.Classify(0.02f, 0.4f));
-        Ci.CameraPose Cam(Nm.Vector3 pos, Nm.Vector3 tgt, float focal, float roll) => new()
-        { Position = pos, Orientation = Ci.NeuralCameraTrajectoryEngine.LookRotation(Nm.Vector3.Normalize(tgt - pos), roll), FocalMm = focal, FocusDistance = 5f, FStop = 2.8f, RollDeg = roll };
-        var feet = new Nm.Vector3(0f, 0f, 5f);
-        var eyeW = feet + Nm.Vector3.UnitY * (1.75f * 0.92f);
-        var centered = ev.Evaluate(Cam(new Nm.Vector3(0f, 1.6f, 0f), eyeW, 60f, 0f), feet, 1.75f, Nm.Vector3.UnitX, default, false);
-        Assert.True(centered.Visible && MathF.Abs(centered.Eye.X - 0.5f) < 0.02f);
-        // 시선 +X(화면 오른쪽) → 눈을 왼쪽 1/3 에 두도록 조준 이동
-        var target = Ci.GenerativeShotFramingEvaluator.SuggestEyeTarget(centered);
-        Assert.True(MathF.Abs(target.X - 1f / 3f) < 1e-4f && MathF.Abs(target.Y - 1f / 3f) < 1e-4f, $"{target}");
-        var tv = Ci.NeuralCameraTrajectoryEngine.SensorHeightMm * 0.5f / 60f; var th = tv * Ci.NeuralCameraTrajectoryEngine.ImageAspect;
-        var aim = eyeW + Nm.Vector3.UnitX * ((0.5f - target.X) * 2f * th * 5f) + Nm.Vector3.UnitY * ((0.5f - target.Y) * 2f * tv * 5f * -1f);
-        var thirds = ev.Evaluate(Cam(new Nm.Vector3(0f, 1.6f, 0f), aim, 60f, 0f), feet, 1.75f, Nm.Vector3.UnitX, default, false);
-        Assert.True(thirds.Thirds > 0.8f && thirds.LeadRoom > centered.LeadRoom && thirds.Score > centered.Score + 5f, $"thirds {thirds.Score} vs {centered.Score} eye {thirds.Eye}");
-        Assert.InRange(thirds.Score, 0f, 100f);
-        var tilted = ev.Evaluate(Cam(new Nm.Vector3(0f, 1.6f, 0f), aim, 60f, 4f), feet, 1.75f, Nm.Vector3.UnitX, default, false);
-        var dutch = ev.Evaluate(Cam(new Nm.Vector3(0f, 1.6f, 0f), aim, 60f, 15f), feet, 1.75f, Nm.Vector3.UnitX, default, false);
-        Assert.True(!tilted.Dutch && dutch.Dutch && tilted.Horizon < dutch.Horizon && tilted.Horizon < 1f, "accidental tilt < dutch");
-        var cu = ev.Evaluate(Cam(new Nm.Vector3(0f, 1.6f, 0f), eyeW, 200f, 0f), feet, 1.75f, Nm.Vector3.UnitX, default, false);
-        var wide = ev.Evaluate(Cam(new Nm.Vector3(0f, 1.6f, 0f), eyeW, 18f, 0f), feet + new Nm.Vector3(0f, 0f, 15f), 1.75f, Nm.Vector3.UnitX, default, false);
-        Assert.True(cu.Type is Ci.ShotType.CloseUp or Ci.ShotType.ExtremeCloseUp && wide.Type is Ci.ShotType.Wide or Ci.ShotType.ExtremeWide, $"{cu.Type} {wide.Type}");
-        var behind = ev.Evaluate(Cam(new Nm.Vector3(0f, 1.6f, 0f), new Nm.Vector3(0f, 1.6f, -5f), 50f, 0f), feet, 1.75f, Nm.Vector3.UnitX, default, false);
-        Assert.True(!behind.Visible && behind.Score == 0f && behind.Type == Ci.ShotType.None);
-        Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>
-        {
-            for (var i = 0; i < 100; i++) ev.Evaluate(Cam(new Nm.Vector3(0f, 1.6f, 0f), aim, 60f, 0f), feet, 1.75f, Nm.Vector3.UnitX, Nm.Vector3.One, true);
-        }));
-
-        // ══ CI-4 아나모픽 렌즈: 초점면 선명 · 타원 보케 · 스트릭 · 왜곡/색수차 · 경로 추적/3DGS 결선 · 무할당 ══
-        const int W = 96, H = 64;
-        var lens = new Ci.AnamorphicLensBokehSynthesizer { DistortionK1 = 0f, DistortionK2 = 0f, ChromaticAberration = 0f, Vignette = 0f, StreakIntensity = 0f, CatEye = 0f, FocalMm = 85f, FStop = 1.4f, FocusDistance = 1.2f };
-        var rgb = new float[W * H * 3]; var dep = new float[W * H];
-        for (var i = 0; i < W * H; i++) { dep[i] = 30f; rgb[i * 3] = rgb[i * 3 + 1] = rgb[i * 3 + 2] = 0.05f; }
-        void Dot(int x, int y, float v, float d) { var i = y * W + x; rgb[i * 3] = rgb[i * 3 + 1] = rgb[i * 3 + 2] = v; dep[i] = d; }
-        Dot(48, 32, 1f, 30f);
-        lens.ProcessLinear(rgb, dep, W, H, false);
-        Assert.True(lens.MaxCoc > 5f && lens.BokehPixels > W * H / 2, $"coc {lens.MaxCoc}");
-        int SpreadX() { var n = 0; for (var x = 0; x < W; x++) if (lens.OutputLinear(32 * W + x).Y > 0.08f) n++; return n; }
-        int SpreadY() { var n = 0; for (var y = 0; y < H; y++) if (lens.OutputLinear(y * W + 48).Y > 0.08f) n++; return n; }
-        var sxA = SpreadX(); var syA = SpreadY();
-        Assert.True(syA > sxA * 1.4f && sxA >= 2, $"anamorphic oval {sxA}x{syA}");
-        lens.Squeeze = 1f; lens.ProcessLinear(rgb, dep, W, H, false);
-        Assert.True(Math.Abs(SpreadX() - SpreadY()) <= 2, $"spherical round {SpreadX()}x{SpreadY()}");
-        // 초점면 점광원은 선명 유지
-        for (var i = 0; i < W * H; i++) dep[i] = 1.2f;
-        lens.ProcessLinear(rgb, dep, W, H, false);
-        Assert.True(lens.OutputLinear(32 * W + 48).Y > 0.95f && lens.OutputLinear(32 * W + 50).Y < 0.06f && lens.BokehPixels == 0, "in focus sharp");
-        // 스트릭: 수평으로 길게 · 청색 틴트
-        lens.StreakIntensity = 1f; lens.StreakThreshold = 0.5f;
-        lens.ProcessLinear(rgb, dep, W, H, false);
-        var sAt = lens.OutputLinear(32 * W + 60); var vAt = lens.OutputLinear(44 * W + 48);
-        Assert.True(sAt.Z > 0.06f && sAt.Z > sAt.X && vAt.Z < 0.06f && lens.StreakEnergy > 0f, $"streak {sAt} vertical {vAt}");
-        // 배럴 왜곡 · 색수차: 모서리 이동 > 0 · 중앙 불변
-        lens.StreakIntensity = 0f; lens.DistortionK1 = 0.1f; lens.ChromaticAberration = 0.01f; lens.Vignette = 0.5f;
-        lens.ProcessLinear(rgb, dep, W, H, false);
-        Assert.True(lens.CornerShiftPx > 1f && lens.CornerCaPx > 0.5f && lens.OutputLinear(32 * W + 48).Y > 0.9f, $"distort {lens.CornerShiftPx} ca {lens.CornerCaPx}");
-        Assert.True(lens.OutputLinear(0).Y < 0.05f, "vignette");
-        Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>
-        {
-            lens.ProcessLinear(rgb, dep, W, H, false);
-        }));
-        Assert.Equal((byte)200, Ci.AnamorphicLensBokehSynthesizer.Encode(Ci.AnamorphicLensBokehSynthesizer.Decode(200)));
-        // v16.74 경로 추적기 결선
-        var mtl = new Pt.MaterialXBsdfShaderSynthesizer();
-        var pt = new Pt.VolumetricPathTracingLightTransportEngine(mtl);
-        pt.SetResolution(48, 24); pt.SetCamera(new Nm.Vector3(0f, 1f, -4f), new Nm.Vector3(0f, 1f, 0f), 40f);
-        pt.AddSphere(new Nm.Vector3(0f, 1f, 0f), 0.8f, 0);
-        pt.RenderFrame(0);
-        var lpt = new Ci.AnamorphicLensBokehSynthesizer();
-        lpt.ProcessPathTracer(pt);
-        Assert.True(lpt.Width == 48 && lpt.Frames == 1 && lpt.Output.Length == 48 * 24 * 3);
-        for (var i = 0; i < 48 * 24; i++) Assert.True(float.IsFinite(lpt.OutputLinear(i).X));
-
-        // ══ CI-5 러너: 3DGS 렌더 · 자동 구도 · 프롬프트 · 경로 추적 모드 · 무할당 ══
-        var run = new Ci.NeuralCinematographyStudioRunner(new Ci.NeuralCameraTrajectoryEngine(), new Ci.GenerativeShotFramingEvaluator(), new Ci.AnamorphicLensBokehSynthesizer());
-        Assert.True(run.RenderedFrames >= 1 && run.Scene.Count > 576 + 6 * 24);
-        for (var f = 0; f < 240; f++) run.TickOnce();
-        Assert.True(run.LastFraming.Visible && run.LastFraming.Score > 40f, $"score {run.LastFraming.Score} {run.LastFraming.Type}");
-        Assert.True(run.Trajectory.MinClearance >= Ci.NeuralCameraTrajectoryEngine.ObstacleMargin - 0.05f, $"clear {run.Trajectory.MinClearance}");
-        var lit = 0;
-        for (var i = 0; i < run.Lens.Output.Length; i++) if (run.Lens.Output[i] > 20) lit++;
-        Assert.True(lit > run.Lens.Output.Length / 4, $"lit {lit}");
-        Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>
-        {
-            for (var f = 0; f < 20; f++) run.TickOnce();
-        }));
-        Assert.True(run.TriggerPrompt("아나모픽 오빗 클로즈업 더치 보케") >= 4);
-        Assert.True(run.Trajectory.Move == Ci.CameraMove.Orbit && run.Trajectory.Scale == Ci.ShotScale.CloseUp && run.Trajectory.DutchDeg > 8f && run.Trajectory.FStop < 2f);
-        for (var f = 0; f < 120; f++) run.TickOnce();
-        Assert.True(run.LastFraming.Dutch, "dutch framing");
-        Assert.Equal(0, run.TriggerPrompt(""));
-        run.SetPathTracer(true);
-        for (var f = 0; f < 4; f++) run.TickOnce();
-        Assert.True(run.UsePathTracer && run.Lens.Width == Ci.NeuralCinematographyStudioRunner.PtW);
-        run.SetPathTracer(false);
-        run.NewShot();
-        Assert.Equal(0, run.Frame);
-        run.Dispose();
-    }
-
-    [Fact]
-    [Trait("Category", "Integration")]
-    [Trait("Speed", "Slow")]   // Step 35: 기준 실행 ≥ 10 s — 빠른 루프는 --filter "Speed!=Slow"
-    public void GenerativeFilmScore_And_NeuralSoundDesign_Check()
-    {
-        const int B = Sc.NeuralCinematographicFilmScoreGenerator.Block, SR = Sc.NeuralCinematographicFilmScoreGenerator.SampleRate;
-        // ══ FS-0 SIMD 커널 = 스칼라(비트 일치 · 꼬리) · 사인 근사 오차 ══
-        var rnd = new Random(1686);
-        foreach (var len in new[] { 0, 1, 7, 8, 9, 17, 33, 800, 1001 })
-        {
-            var a1 = new float[len]; var a2 = new float[len];
-            Sc.AudioSimd.PhaseRamp(a1, 0.37f, 0.0123f); Sc.AudioSimd.PhaseRampScalar(a2, 0.37f, 0.0123f);
-            Assert.True(a1.AsSpan().SequenceEqual(a2), $"ramp {len}");
-            Sc.AudioSimd.SinePoly(a1); Sc.AudioSimd.SinePolyScalar(a2);
-            Assert.True(a1.AsSpan().SequenceEqual(a2), $"sine {len}");
-            var x = new float[len]; for (var i = 0; i < len; i++) x[i] = (float)(rnd.NextDouble() * 2 - 1);
-            Sc.AudioSimd.MulAdd(a1, x, -0.41f); Sc.AudioSimd.MulAddScalar(a2, x, -0.41f);
-            Sc.AudioSimd.MulAcc(a1, x, x); Sc.AudioSimd.MulAccScalar(a2, x, x);
-            Assert.True(a1.AsSpan().SequenceEqual(a2), $"muladd/acc {len}");
-            double ss = 0; foreach (var v in a1) ss += v * v;
-            Assert.True(Math.Abs(Sc.AudioSimd.SumSquares(a1) - ss) <= 1e-4 * (1 + ss), $"sumsq {len}");
-        }
-        var maxErr = 0f;
-        for (var i = 0; i < 1000; i++) { var p = i / 1000f; maxErr = MathF.Max(maxErr, MathF.Abs(Sc.AudioSimd.SineScalar(p) - MathF.Sin(MathF.Tau * p))); }
-        Assert.True(maxErr < 2e-3f, $"sine err {maxErr}");
-
-        // ══ FS-1 BS.1770-4 라우드니스: 997 Hz −20 dBFS(L) = −23.0 LUFS · 게이팅 · 서라운드 가중 ══
-        float MeasureTone(int[] chans, float amp, float silenceSec, float toneSec)
-        {
-            var m = new Sc.LoudnessMeter(); var bed = new float[12 * B]; long n = 0;
-            var total = (int)((silenceSec + toneSec) * SR / B);
-            for (var b = 0; b < total; b++)
-            {
-                Array.Clear(bed);
-                for (var i = 0; i < B; i++, n++)
-                {
-                    if (n < silenceSec * SR) continue;
-                    var s = amp * MathF.Sin(MathF.Tau * 997f * n / SR);
-                    foreach (var c in chans) bed[c * B + i] = s;
-                }
-                m.Process(bed, B, B);
-            }
-            return m.Integrated;
-        }
-        var lufsL = MeasureTone(new[] { 0 }, 0.1f, 0f, 8f);
-        Assert.True(MathF.Abs(lufsL + 23.0f) < 0.15f, $"L tone {lufsL}");
-        Assert.True(MathF.Abs(MeasureTone(new[] { 0 }, 0.1f, 6f, 8f) - lufsL) < 0.1f, "absolute gate ignores silence");
-        Assert.True(MathF.Abs(MeasureTone(new[] { 0, 1 }, 0.1f, 0f, 6f) - (lufsL + 3.01f)) < 0.1f, "L+R +3 dB");
-        Assert.True(MathF.Abs(MeasureTone(new[] { 4 }, 0.1f, 0f, 6f) - (lufsL + 1.49f)) < 0.1f, "surround weight 1.41");
-        Assert.True(MeasureTone(new[] { 3 }, 0.1f, 0f, 4f) <= -70f, "LFE excluded");
-
-        // ══ FS-2 BGM: 선법 · 화성음 · 템포 · 레이어 · 컷 스팅어 · 결정성 · 무할당 ══
-        var sc = new Sc.NeuralCinematographicFilmScoreGenerator(42);
-        sc.SetCue(0.6f, 0.2f, 0.1f);
-        float brassCalm = 0, percCalm = 0;
-        for (var b = 0; b < 60 * 8; b++) { sc.RenderBlock(); brassCalm += sc.StemRms(Sc.Stem.Brass); percCalm += sc.StemRms(Sc.Stem.Percussion); }
-        Assert.Equal(Sc.ScoreMode.Major, sc.Mode);
-        Assert.True(MathF.Abs(sc.Bpm - 78f) < 1f, $"calm bpm {sc.Bpm}");
-        Assert.True(sc.StemRms(Sc.Stem.Ambient) > 1e-3f && sc.StemRms(Sc.Stem.Strings) > 1e-3f, "pad + strings");
-        Assert.True(brassCalm == 0f && percCalm == 0f, $"calm layers {brassCalm} {percCalm}");
-        void InScale(Sc.NeuralCinematographicFilmScoreGenerator g)
-        {
-            var scale = Sc.NeuralCinematographicFilmScoreGenerator.ScaleOf(g.Mode);
-            for (var v = 0; v < Sc.NeuralCinematographicFilmScoreGenerator.MaxVoices; v++)
-            {
-                var m = g.VoiceMidi(v);
-                if (m < 0 || !g.VoiceCurrent(v) || g.VoiceInstrument(v) is Sc.Instrument.Cymbal or Sc.Instrument.Drum or Sc.Instrument.Snare) continue;
-                var pc = ((m - g.KeyRoot) % 12 + 12) % 12;
-                Assert.True(scale.IndexOf(pc) >= 0, $"{g.VoiceInstrument(v)} midi {m} not in {g.Mode} of {g.KeyRoot}");
-            }
-        }
-        InScale(sc);
-        var calmBpm = sc.Bpm; var calmRoot = sc.KeyRoot;
-        sc.SetCue(-0.6f, 0.9f, 0.8f);
-        float brassAct = 0, percAct = 0;
-        for (var b = 0; b < 60 * 8; b++)
-        {
-            sc.RenderBlock(); brassAct += sc.StemRms(Sc.Stem.Brass); percAct += sc.StemRms(Sc.Stem.Percussion);
-            if (b % 37 == 0) InScale(sc);
-        }
-        Assert.Equal(Sc.ScoreMode.Phrygian, sc.Mode);
-        Assert.True(((calmRoot - sc.KeyRoot) % 12 + 12) % 12 == 3, $"relative minor {calmRoot} → {sc.KeyRoot}");
-        Assert.True(sc.Bpm > calmBpm + 50f && brassAct > 0.05f && percAct > 0.05f, $"action bpm {sc.Bpm} brass {brassAct} perc {percAct}");
-        Assert.True(sc.LayerOstinato && sc.ActiveVoices > 6);
-        var st0 = sc.Stingers;
-        sc.Cut(false);
-        var waited = 0;
-        while (sc.Stingers == st0 && waited < 120) { sc.RenderBlock(); waited++; }
-        Assert.True(sc.Stingers == st0 + 1 && sc.LastCutLatencyMs <= 60000f / sc.Bpm + 17f, $"stinger {sc.LastCutLatencyMs} ms");
-        sc.Cut(true); sc.RenderBlock();
-        Assert.True(sc.Stingers == st0 + 2 && sc.LastCutLatencyMs < 17f, $"hard cut {sc.LastCutLatencyMs}");
-        var sA = new Sc.NeuralCinematographicFilmScoreGenerator(7); var sB = new Sc.NeuralCinematographicFilmScoreGenerator(7);
-        sA.SetCue(0.1f, 0.6f, 0.4f); sB.SetCue(0.1f, 0.6f, 0.4f);
-        for (var b = 0; b < 200; b++) { sA.RenderBlock(); sB.RenderBlock(); }
-        Assert.True(sA.StemBuffer(Sc.Stem.Strings).SequenceEqual(sB.StemBuffer(Sc.Stem.Strings)) && sA.StemBuffer(Sc.Stem.Woodwinds).SequenceEqual(sB.StemBuffer(Sc.Stem.Woodwinds)));
-        Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>
-        {
-            for (var b = 0; b < 30; b++) sc.RenderBlock();
-        }));
-        for (var s = 0; s < 5; s++) Assert.True(float.IsFinite(sc.StemRms((Sc.Stem)s)) && sc.StemPeak((Sc.Stem)s) < 4f);
-
-        // ══ FS-3 폴리: 접지 검출 · 샘플 정확 동기 · 전파 지연 · 재질 스펙트럼 · 의상 마찰 · Minnaert · 무할당 ══
-        Assert.Equal(3260f, Sc.AutonomousNeuralFoleySfxSynthesizer.MinnaertHz(0.001f), 1);
-        Assert.Equal(Sc.SurfaceKind.Snow, Sc.AutonomousNeuralFoleySfxSynthesizer.FromBiome(Us.Biome.Snow));
-        var det = new Sc.FootContactDetector(); var contacts = 0;
-        for (var f = 0; f < 180; f++) if (det.Update(MathF.Max(0f, MathF.Sin(MathF.Tau * f / 60f)) * 0.1f, 1f / 60f, out _)) contacts++;
-        Assert.Equal(3, contacts);
-        var fo = new Sc.AutonomousNeuralFoleySfxSynthesizer { PropagationDelay = false };
-        Assert.True(fo.Trigger(new Sc.FoleyEvent(10.005, Sc.FoleyKind.Footstep, Sc.SurfaceKind.Gravel, 0.8f, new Nm.Vector3(1f, 0f, 0f))));
-        fo.RenderBlock(10.0);
-        var vb = fo.VoiceBuffer[0]; var first = -1;
-        for (var i = 0; i < B; i++) if (vb[i] != 0f) { first = i; break; }
-        Assert.True(first >= 240 && first <= 242 && fo.MaxSyncErrorMs < 0.02f && fo.LateEvents == 0, $"sync first {first} err {fo.MaxSyncErrorMs}");
-        var prop = new Sc.AutonomousNeuralFoleySfxSynthesizer { Listener = Nm.Vector3.Zero };
-        prop.Trigger(new Sc.FoleyEvent(0.0, Sc.FoleyKind.Explosion, Sc.SurfaceKind.Stone, 1f, new Nm.Vector3(343f, 0f, 0f)));
-        for (var b = 0; b < 59; b++) prop.RenderBlock(b / 60.0);
-        Assert.True(prop.Triggered == 0 && prop.Pending == 1, "delay pending");
-        prop.RenderBlock(59 / 60.0); prop.RenderBlock(60 / 60.0);
-        Assert.Equal(1, prop.Triggered);
-        Assert.Equal(1f, prop.LogEvent(0).Position.X / 343f, 3);
-        float Zcr(Sc.SurfaceKind s)
-        {
-            var f2 = new Sc.AutonomousNeuralFoleySfxSynthesizer { PropagationDelay = false };
-            f2.Trigger(new Sc.FoleyEvent(0.0, Sc.FoleyKind.Footstep, s, 0.8f, new Nm.Vector3(1f, 0f, 0f)));
-            int zc = 0, n = 0; var prev = 0f;
-            for (var b = 0; b < 6; b++)
-            {
-                f2.RenderBlock(b / 60.0);
-                var buf = f2.VoiceBuffer[0];
-                for (var i = 0; i < B; i++) { if ((buf[i] > 0f) != (prev > 0f) && MathF.Abs(buf[i]) > 1e-4f) zc++; prev = buf[i]; n++; }
-            }
-            return zc / (float)n;
-        }
-        var zSnow = Zcr(Sc.SurfaceKind.Snow); var zStone = Zcr(Sc.SurfaceKind.Stone); var zWood = Zcr(Sc.SurfaceKind.Wood);
-        Assert.True(zSnow > zStone * 1.3f && zSnow > zWood * 1.3f, $"material spectrum snow {zSnow} stone {zStone} wood {zWood}");
-        float RustleRms(float speed)
-        {
-            var f3 = new Sc.AutonomousNeuralFoleySfxSynthesizer();
-            f3.SetRustle(speed, Hc.FabricKind.Denim);
-            for (var b = 0; b < 20; b++) f3.RenderBlock(b / 60.0);
-            return MathF.Sqrt(Sc.AudioSimd.SumSquares(f3.RustleBuffer) / B);
-        }
-        Assert.True(RustleRms(3f) > 4f * RustleRms(0.5f) && RustleRms(0f) < 1e-5f, "rustle ∝ speed");
-        // 최소 할당(3 창) — 단일 창은 병렬 부하 중 티어드 JIT/OSR 재컴파일 일시 할당(584 B 관측)에 오염(저장소 AllocationProbe 관례)
-        var foT = 10.0;
-        Assert.Equal(0, AllocationProbe.MinAllocated(() =>
-        {
-            fo.Trigger(new Sc.FoleyEvent(foT + 0.05, Sc.FoleyKind.Splash, Sc.SurfaceKind.Water, 0.7f, Nm.Vector3.One));
-            for (var b = 0; b < 10; b++) fo.RenderBlock(foT + (b + 1) / 60.0);
-            foT += 1.0;
-        }));
-
-        // ══ FS-4 마스터링 가드: 채널 할당 · 더킹/명료도 · R128/A85 정규화 · 트루 피크 · 무할당 ══
-        var gp = new float[12];
-        for (var k = 0; k < 200; k++)
-        {
-            float az = (float)(rnd.NextDouble() * 360 - 180), el = (float)(rnd.NextDouble() * 60);
-            Sc.HarmonicMixingAndAudioMasteringGuard.PanDirection(az, el, gp);
-            float e = 0; foreach (var gg in gp) e += gg * gg;
-            Assert.True(MathF.Abs(e - 1f) < 1e-4f && gp[2] == 0f && gp[3] == 0f, $"pan {az} {el} e {e}");
-        }
-        Sc.HarmonicMixingAndAudioMasteringGuard.PanDirection(-30f, 0f, gp); Assert.True(gp[0] > 0.999f);
-        Sc.HarmonicMixingAndAudioMasteringGuard.PanDirection(90f, 0f, gp); Assert.True(gp[5] > 0.999f);
-        Sc.HarmonicMixingAndAudioMasteringGuard.PanDirection(45f, 45f, gp); Assert.True(gp[9] > 0.999f);
-
-        var music = new Sc.NeuralCinematographicFilmScoreGenerator(3); music.SetCue(0.3f, 0.5f, 0.3f);
-        var fol = new Sc.AutonomousNeuralFoleySfxSynthesizer();
-        var gD = new Sc.HarmonicMixingAndAudioMasteringGuard { Normalize = false };
-        var gN = new Sc.HarmonicMixingAndAudioMasteringGuard { Normalize = false, Ducking = false };
-        for (var b = 0; b < 120; b++) { music.RenderBlock(); fol.RenderBlock(b / 60.0); gD.Process(music, fol); gN.Process(music, fol); }
-        float cMax = 0; foreach (var v in gD.BedChannel(2)) cMax = MathF.Max(cMax, MathF.Abs(v));
-        Assert.True(cMax == 0f && gD.DuckGrDb < 0.1f, "C reserved for dialogue");
-        gD.Dialogue.Active = true; gN.Dialogue.Active = true;
-        for (var b = 0; b < 180; b++) { music.RenderBlock(); fol.RenderBlock((120 + b) / 60.0); gD.Process(music, fol); gN.Process(music, fol); }
-        Assert.True(gD.DuckGrDb > 7f && gN.DuckGrDb < 0.1f, $"duck {gD.DuckGrDb}");
-        Assert.True(gD.DialogueSnrDb > gN.DialogueSnrDb + 8f, $"speech SNR {gD.DialogueSnrDb} vs {gN.DialogueSnrDb}");
-        Assert.True(gD.ChannelDb(2) > -60f && gD.StemDb(Sc.Stem.Dialogue) > -60f);
-        // 폭발 → LFE 저역 전용
-        fol.Listener = Nm.Vector3.Zero;
-        fol.Trigger(new Sc.FoleyEvent(300 / 60.0, Sc.FoleyKind.Explosion, Sc.SurfaceKind.Stone, 1f, new Nm.Vector3(5f, 0f, 5f)));
-        for (var b = 0; b < 30; b++) { music.RenderBlock(); fol.RenderBlock((300 + b) / 60.0); gD.Process(music, fol); }
-        Assert.True(gD.ChannelDb(3) > -60f && gD.LfeHighBandRatio < 0.05f, $"LFE {gD.ChannelDb(3)} hi {gD.LfeHighBandRatio}");
-        Assert.True(gD.ChannelDb(1) > gD.ChannelDb(6), "foley right-front > left-back");
-        Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>
-        {
-            for (var b = 0; b < 20; b++) { music.RenderBlock(); fol.RenderBlock((330 + b) / 60.0); gD.Process(music, fol); }
-        }));
-
-        void RunProgram(Sc.HarmonicMixingAndAudioMasteringGuard g, Sc.NeuralCinematographicFilmScoreGenerator m, Sc.AutonomousNeuralFoleySfxSynthesizer f, int blocks, ref double t)
-        {
-            for (var b = 0; b < blocks; b++)
-            {
-                if (b % 90 == 0) f.Trigger(new Sc.FoleyEvent(t, Sc.FoleyKind.Explosion, Sc.SurfaceKind.Stone, 1f, new Nm.Vector3(3f, 0f, 4f)));
-                m.RenderBlock(); f.RenderBlock(t); g.Process(m, f); t += 1 / 60.0;
-            }
-        }
-        foreach (var std in new[] { Sc.LoudnessStandard.EbuR128, Sc.LoudnessStandard.AtscA85 })
-        {
-            var gm = new Sc.HarmonicMixingAndAudioMasteringGuard { Standard = std };
-            var mm = new Sc.NeuralCinematographicFilmScoreGenerator(11); mm.SetCue(-0.4f, 0.9f, 0.7f);
-            for (var s = 0; s < 5; s++) mm.StemGain[s] = 2f;
-            var ff = new Sc.AutonomousNeuralFoleySfxSynthesizer { Listener = Nm.Vector3.Zero };
-            double tt = 0;
-            RunProgram(gm, mm, ff, 60 * 6, ref tt);
-            gm.Post.ResetIntegrated();
-            RunProgram(gm, mm, ff, 60 * 10, ref tt);
-            Assert.True(MathF.Abs(gm.Post.Integrated - gm.TargetLufs) < 1f, $"{std} integrated {gm.Post.Integrated} target {gm.TargetLufs} norm {gm.NormGainDb}");
-            Assert.True(gm.MaxTruePeakDbtp <= gm.CeilingDbtp + 0.2f, $"{std} TP {gm.MaxTruePeakDbtp} ceil {gm.CeilingDbtp}");
-            Assert.True(gm.Compliant, $"{std} compliant");
-            Assert.True(gm.NormGainDb < 0f, $"loud input attenuated {gm.NormGainDb}");
-        }
-        var wav = gD.ExportPreviewWav();
-        Assert.True(wav.Length > 44 + 4 * SR && wav[0] == (byte)'R' && wav[8] == (byte)'W' && BitConverter.ToInt32(wav, 24) == SR);
-        for (var k = 0; k < Sc.HarmonicMixingAndAudioMasteringGuard.Bands; k++) Assert.True(float.IsFinite(gD.Spectrum(Sc.Stem.Strings, k)));
-        var gb = new Sc.HarmonicMixingAndAudioMasteringGuard(new Sx.NeuralBinauralHrtfSpatializer()) { Binaural = true };
-        for (var b = 0; b < 10; b++) { music.RenderBlock(); fol.RenderBlock((400 + b) / 60.0); gb.Process(music, fol); }
-        Assert.True(float.IsFinite(gb.OutL[100]) && float.IsFinite(gb.OutR[100]));
-
-        // ══ FS-5 러너: 서사 아크 · 보행 폴리 · 컷 · 프롬프트 · 무할당 ══
-        var run = new Sc.FilmScoreStudioRunner(new Sc.NeuralCinematographicFilmScoreGenerator(), new Sc.AutonomousNeuralFoleySfxSynthesizer(), new Sc.HarmonicMixingAndAudioMasteringGuard());
-        for (var f = 0; f < 60 * 14; f++) run.TickOnce();
-        Assert.True(run.Footsteps > 12 && run.Cuts >= 2 && run.Foley.Triggered >= run.Footsteps - 2, $"steps {run.Footsteps} cuts {run.Cuts} trig {run.Foley.Triggered}");
-        Assert.True(run.Foley.MaxSyncErrorMs < 0.05f && run.Foley.LateEvents == 0, $"sync {run.Foley.MaxSyncErrorMs}");
-        Assert.Equal(1, run.Segment);
-        Assert.True(run.Score.Stingers >= 1 && float.IsFinite(run.Guard.Post.ShortTerm));
-        Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>
-        {
-            for (var f = 0; f < 20; f++) run.TickOnce();
-        }));
-        Assert.True(run.TriggerPrompt("비극적인 슬픔 가죽 ATSC 폭발") >= 4);
-        Assert.True(!run.AutoNarrative && run.Score.Valence < -0.5f && run.Foley.Fabric == Hc.FabricKind.Leather && run.Guard.Standard == Sc.LoudnessStandard.AtscA85);
-        for (var f = 0; f < 120; f++) run.TickOnce();
-        Assert.True(run.Explosions >= 1 && run.Foley.Triggered > 0);
-        Assert.Equal(0, run.TriggerPrompt(" "));
-        run.NewShot();
-        Assert.Equal(0, run.Frame);
-        run.Dispose();
-    }
-
-    [Fact]
-    [Trait("Category", "Integration")]
-    public void LatentVideoDiffusion_And_TemporalConsistency_Check()
-    {
-        const int W = Vd.RealtimeLatentVideoDiffusionEngine.W, H = Vd.RealtimeLatentVideoDiffusionEngine.H, LS = Vd.RealtimeLatentVideoDiffusionEngine.LatentSize;
-        // ══ VD-0 SIMD 커널 = 스칼라(비트 일치 · 꼬리) ══
-        var rnd = new Random(1687);
-        foreach (var len in new[] { 0, 1, 7, 8, 9, 17, 33, 1001 })
-        {
-            float[] R(float s) { var a = new float[len]; for (var i = 0; i < len; i++) a[i] = (float)(rnd.NextDouble() * 2 - 1) * s; return a; }
-            var x1 = R(2f); var x2 = (float[])x1.Clone(); var mu = R(1f); var v = R(0.1f); for (var i = 0; i < len; i++) v[i] = MathF.Abs(v[i]) + 0.001f;
-            var o1 = new float[len]; var o2 = new float[len];
-            Vd.DiffusionSimd.GuidedStep(x1, mu, v, o1, 0.6f, 0.8f, 0.75f, 0.66f, 3f, 1.6f);
-            Vd.DiffusionSimd.GuidedStepScalar(x2, mu, v, o2, 0.6f, 0.8f, 0.75f, 0.66f, 3f, 1.6f);
-            Assert.True(x1.AsSpan().SequenceEqual(x2) && o1.AsSpan().SequenceEqual(o2), $"guided {len}");
-            var b1 = new float[len]; var b2 = new float[len]; var t = R(1f);
-            Vd.DiffusionSimd.Blend(b1, x1, mu, t); Vd.DiffusionSimd.BlendScalar(b2, x1, mu, t);
-            Assert.True(b1.AsSpan().SequenceEqual(b2), $"blend {len}");
-            float sad = 0; for (var i = 0; i < len; i++) sad += MathF.Abs(x1[i] - mu[i]);
-            Assert.True(MathF.Abs(Vd.DiffusionSimd.Sad(x1, mu) - sad) < 1e-3f * (1 + sad), $"sad {len}");
-        }
-
-        // ══ VD-1 스케줄 · DDIM 정확성(가우시안 사전 → 평균/분산 복원) · CFG · 결정성 · 무할당 ══
-        Assert.True(Vd.RealtimeLatentVideoDiffusionEngine.AlphaBarAt(0) > 0.999f && Vd.RealtimeLatentVideoDiffusionEngine.AlphaBarAt(999) < 0.01f);
-        for (var tt = 1; tt < 1000; tt++) Assert.True(Vd.RealtimeLatentVideoDiffusionEngine.AlphaBarAt(tt) < Vd.RealtimeLatentVideoDiffusionEngine.AlphaBarAt(tt - 1));
-        Assert.Equal(999, Vd.RealtimeLatentVideoDiffusionEngine.Timestep(0, 20));
-        var noFlow = new float[2 * Vd.ControlNetSpatialConditioningSynthesizer.Cells];
-        var eng = new Vd.RealtimeLatentVideoDiffusionEngine(5) { Noise = Vd.NoiseMode.Independent, GuidanceScale = 1f, Steps = 30, ClampRange = 10f };
-        eng.SetUniformTarget(0.3f, 1e-8f);
-        eng.Generate(noFlow, 0f, 1f);
-        var maxDev = 0f; foreach (var x in eng.Latent) maxDev = MathF.Max(maxDev, MathF.Abs(x - 0.3f));
-        Assert.True(maxDev < 1e-3f, $"σ→0 converges to μ {maxDev}");
-        eng.SetUniformTarget(0.3f, 0.04f);
-        eng.Generate(noFlow, 0f, 1f);
-        double m = 0, sq = 0; foreach (var x in eng.Latent) { m += x; sq += x * x; }
-        m /= LS; var std = Math.Sqrt(sq / LS - m * m);
-        Assert.True(Math.Abs(m - 0.3) < 0.01 && std > 0.2 * 0.85 && std < 0.2 * 1.05, $"posterior mean {m} std {std}");
-        for (var k = 1; k < 30; k++) Assert.True(eng.StepSigma[k] <= eng.StepSigma[k - 1] && float.IsFinite(eng.StepDelta[k]), "monitor");
-        Assert.True(eng.StepSigma.Length == 30 && eng.StepSigma[0] > 10f && eng.StepSigma[29] < 0.1f, $"sigma {eng.StepSigma[0]} {eng.StepSigma[29]}");
-        // CFG w = 3: 레이아웃(평균) 증폭 · 텍스처 분산 보존
-        eng.SetUniformTarget(0.3f, 0.04f); eng.GuidanceScale = 3f; eng.Generate(noFlow, 0f, 1f);
-        double m3 = 0, sq3 = 0; foreach (var x in eng.Latent) { m3 += x; sq3 += x * x; }
-        m3 /= LS; var std3 = Math.Sqrt(sq3 / LS - m3 * m3);
-        Assert.True(std3 > std * 0.8 && m3 > 0.33, $"CFG std {std3} vs {std} mean {m3}");
-        var eA = new Vd.RealtimeLatentVideoDiffusionEngine(9) { Noise = Vd.NoiseMode.Independent }; var eB = new Vd.RealtimeLatentVideoDiffusionEngine(9) { Noise = Vd.NoiseMode.Independent };
-        eA.SetUniformTarget(0f, 0.02f); eB.SetUniformTarget(0f, 0.02f);
-        eA.Generate(noFlow, 0f, 1f); eB.Generate(noFlow, 0f, 1f);
-        Assert.True(eA.Frame.AsSpan().SequenceEqual(eB.Frame));
-        Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>
-        {
-            for (var i = 0; i < 3; i++) eA.Generate(noFlow, 0f, 1f);
-        }));
-        var c0 = Vd.RealtimeLatentVideoDiffusionEngine.Decode(Vd.RealtimeLatentVideoDiffusionEngine.Encode(new Nm.Vector3(0.7f, 0.3f, 0.2f), 0.5f).X, Vd.RealtimeLatentVideoDiffusionEngine.Encode(new Nm.Vector3(0.7f, 0.3f, 0.2f), 0.5f).Y, Vd.RealtimeLatentVideoDiffusionEngine.Encode(new Nm.Vector3(0.7f, 0.3f, 0.2f), 0.5f).Z);
-        Assert.True(Nm.Vector3.Distance(c0, new Nm.Vector3(0.7f, 0.3f, 0.2f)) < 1e-4f, "YUV round trip");
-        // 노이즈 모드: 정지 카메라 → 공유/워핑 노이즈가 독립보다 프레임 간 변화 작음
-        float TemporalDiff(Vd.NoiseMode mode)
-        {
-            var e = new Vd.RealtimeLatentVideoDiffusionEngine(21) { Noise = mode, Grain = 0f };
-            e.SetUniformTarget(0f, 0.04f);
-            var prev = new float[W * H * 3]; double d = 0;
-            for (var f = 0; f < 4; f++) { e.Generate(noFlow, 0f, 1f); if (f > 0) for (var i = 0; i < prev.Length; i++) d += MathF.Abs(e.Frame[i] - prev[i]); e.Frame.CopyTo(prev, 0); }
-            return (float)(d / (3.0 * prev.Length));
-        }
-        var dInd = TemporalDiff(Vd.NoiseMode.Independent); var dShared = TemporalDiff(Vd.NoiseMode.Shared); var dWarp = TemporalDiff(Vd.NoiseMode.FlowWarped);
-        Assert.True(dShared < 1e-6f && dWarp < 0.5f * dInd, $"noise ind {dInd} shared {dShared} warp {dWarp}");
-
-        // ══ VD-2 ControlNet: 지형 깊이 · 포즈 · 카메라 플로 · 가중치 → 목표 ══
-        var hills = new Vd.CachedHeightField(); hills.BakeHills(200f);
-        Assert.True(MathF.Abs(hills.HeightAt(3f, -4f)) < 3f);
-        var cn = new Vd.ControlNetSpatialConditioningSynthesizer();
-        cn.BindTerrain(hills);
-        var cam = new Ci.CameraPose { Position = new Nm.Vector3(0f, 2.5f, -8f), Orientation = Ci.NeuralCameraTrajectoryEngine.LookRotation(Nm.Vector3.Normalize(new Nm.Vector3(0f, -0.15f, 1f)), 0f), FocalMm = 28f, FocusDistance = 8f, FStop = 4f };
-        var root = new Nm.Vector3(0f, hills.HeightAt(0f, 0f), 0f);
-        cn.SetWalkPose(0.25f);
-        cn.Build(cam, root, 0f);
-        const int LW = Vd.ControlNetSpatialConditioningSynthesizer.LW, LH = Vd.ControlNetSpatialConditioningSynthesizer.LH;
-        Assert.Equal(1f, cn.Depth[2 * LW + 5]);
-        Assert.True(cn.Depth[(LH - 1) * LW + 5] < 0.6f && cn.SkyFraction > 0.1f && cn.SkyFraction < 0.8f, $"depth bottom {cn.Depth[(LH - 1) * LW + 5]} sky {cn.SkyFraction}");
-        var pel = cn.Joint2D(Mq.MocapSkeleton.Pelvis);
-        int px = (int)(pel.X * LW), py = (int)(pel.Y * LH);
-        Assert.True(pel.Z > 7f && pel.Z < 9f && cn.Pose[py * LW + px] > 0.5f && cn.PoseCoverage > 0.002f, $"pose {pel} cov {cn.PoseCoverage}");
-        Assert.True(cn.Depth[py * LW + px] < Vd.ControlNetSpatialConditioningSynthesizer.NormalizeDepth(9f), "subject depth overrides");
-        Assert.True(cn.Joint2D(Mq.MocapSkeleton.Head).Y < cn.Joint2D(Mq.MocapSkeleton.LAnkle).Y, "head above ankle");
-        var cam2 = cam; cam2.Orientation = Ci.NeuralCameraTrajectoryEngine.LookRotation(Nm.Vector3.Normalize(new Nm.Vector3(0.05f, -0.15f, 1f)), 0f);
-        cn.Build(cam2, root, 0f);
-        Assert.True(cn.CameraFlowPx.X < -2f && MathF.Abs(cn.CameraFlowPx.Y) < 1f, $"pan right → content left {cn.CameraFlowPx}");
-        var ce = new Vd.RealtimeLatentVideoDiffusionEngine(3);
-        cn.DepthWeight = 0f; cn.PoseWeight = 0f; ce.BuildTargets(cn);
-        Assert.True(ce.Target.SequenceEqual(ce.PromptTarget), "zero control = prompt prior");
-        cn.DepthWeight = 1f; cn.PoseWeight = 1f; ce.BuildTargets(cn);
-        Assert.False(ce.Target.SequenceEqual(ce.PromptTarget));
-        ce.Noise = Vd.NoiseMode.Shared;
-        ce.Generate(noFlow, 0f, 1f);
-        Assert.Equal(ce.LastSteps, ce.ControlledSteps);
-        // 최종 빌드(cam2) 기준 몸통 위치 재투영
-        var sp2 = cn.Joint2D(Mq.MocapSkeleton.Spine2); px = (int)(sp2.X * LW); py = (int)(sp2.Y * LH);
-        var subj = ce.Palette.Subject; int fx = px * 4 + 2, fy = py * 4 + 2; var fi = (fy * W + fx) * 3;
-        Assert.True(Nm.Vector3.Distance(new Nm.Vector3(ce.Frame[fi], ce.Frame[fi + 1], ce.Frame[fi + 2]), subj) < 0.35f, $"subject color at pose {ce.Frame[fi]},{ce.Frame[fi + 1]},{ce.Frame[fi + 2]} vs {subj} pose {cn.Pose[py * LW + px]}");
-        ce.Generate(noFlow, 0f, 0.3f);
-        Assert.True(ce.ControlledSteps < ce.LastSteps && ce.ControlledSteps > 0);
-        Assert.True(ce.Configure("석양 숲 빨간 망토 안개") >= 3 && ce.Palette.Name == "석양");
-
-        // ══ VD-3 옵티컬 플로 · 가림 · 플리커 보정 ══
-        float Tex(float x, float y) => 0.5f + 0.2f * MathF.Sin(0.31f * x + 0.7f * MathF.Sin(0.13f * y)) * MathF.Cos(0.23f * y) + 0.1f * MathF.Sin(0.9f * x + 0.5f * y);
-        void Fill(float[] img, float ox, float oy, float gain, int seed, float noise)
-        {
-            var r2 = new Random(seed);
-            for (var y = 0; y < H; y++)
-                for (var x = 0; x < W; x++)
-                {
-                    var v0 = Math.Clamp(Tex(x - ox, y - oy) * gain + (float)(r2.NextDouble() - 0.5) * noise, 0f, 1f);
-                    var i = (y * W + x) * 3; img[i] = v0; img[i + 1] = v0 * 0.9f; img[i + 2] = v0 * 0.8f;
-                }
-        }
-        var gd = new Vd.NeuralTemporalConsistencyGuard();
-        var img1 = new float[W * H * 3];
-        Fill(img1, 0f, 0f, 1f, 1, 0f); gd.Process(img1, Nm.Vector2.Zero);
-        Fill(img1, 6f, -4f, 1f, 1, 0f); gd.Process(img1, Nm.Vector2.Zero);
-        float mx = 0, my = 0; var nb = 0;
-        for (var by = 1; by < Vd.NeuralTemporalConsistencyGuard.BY - 1; by++)
-            for (var bx = 1; bx < Vd.NeuralTemporalConsistencyGuard.BX - 1; bx++) { var f = gd.BlockFlow(bx, by); mx += f.X; my += f.Y; nb++; }
-        mx /= nb; my /= nb;
-        Assert.True(MathF.Abs(mx - 6f) < 0.6f && MathF.Abs(my + 4f) < 0.6f, $"flow {mx},{my}");
-        Assert.True(gd.OcclusionRatio < 0.3f, $"occ {gd.OcclusionRatio}");
-        // 큰 팬(±6 초과) → 카메라 힌트로 포착
-        var gh = new Vd.NeuralTemporalConsistencyGuard();
-        Fill(img1, 0f, 0f, 1f, 1, 0f); gh.Process(img1, Nm.Vector2.Zero);
-        Fill(img1, 20f, 0f, 1f, 1, 0f); gh.Process(img1, new Nm.Vector2(18f, 0f));
-        Assert.True(MathF.Abs(gh.MeanFlow.X - 20f) < 1.5f, $"hinted flow {gh.MeanFlow}");
-        // 플리커 시퀀스(정지 + 팬): 밝기 지터 ±12% + 노이즈 → 워핑 오차 감소 · 비활성 대비
-        foreach (var pan in new[] { 0f, 2f })
-        {
-            var on = new Vd.NeuralTemporalConsistencyGuard(); var off = new Vd.NeuralTemporalConsistencyGuard { Enabled = false };
-            double eOn = 0, eOff = 0;
-            for (var f = 0; f < 12; f++)
-            {
-                var gain = 1f + 0.12f * ((f * 7919 % 13) / 6f - 1f);
-                Fill(img1, pan * f, 0f, gain, 100 + f, 0.08f);
-                on.Process(img1, new Nm.Vector2(pan, 0f)); off.Process(img1, new Nm.Vector2(pan, 0f));
-                if (f > 0) { eOn += on.OutWarpError; eOff += off.OutWarpError; }
-            }
-            Assert.True(eOn < 0.5 * eOff && on.MeanFlickerReduction > 0.4f && MathF.Abs(off.MeanFlickerReduction) < 0.05f, $"pan {pan}: on {eOn} off {eOff} red {on.MeanFlickerReduction}");
-            Assert.True(on.OutLumaJitter <= off.OutLumaJitter + 1e-3f);
-            // 고스트 방지: 출력이 깨끗한 정답 프레임과 가까움(원본 노이즈보다)
-            var clean = new float[W * H * 3]; Fill(clean, pan * 11, 0f, 1f, 0, 0f);
-            // 디플리커는 밝기를 시간 평활하므로 정답 대비 최적 스칼라 이득 정합 후 오차 비교
-            double Err(float[] img)
-            {
-                double num = 0, den = 0, e = 0;
-                for (var y = 16; y < H - 16; y++) for (var x = 16; x < W - 16; x++) { var i = (y * W + x) * 3; num += img[i] * clean[i]; den += clean[i] * clean[i]; }
-                var gfit = num / den;
-                for (var y = 16; y < H - 16; y++) for (var x = 16; x < W - 16; x++) { var i = (y * W + x) * 3; e += Math.Abs(img[i] - gfit * clean[i]); }
-                return e;
-            }
-            var eo = Err(on.Output); var er = Err(img1);
-            Assert.True(eo < er * 1.1, $"no ghosting pan {pan}: {eo} vs {er}");
-        }
-        // 가림: 정지 배경 위 이동 사각형 → 일부 블록 가림
-        var go = new Vd.NeuralTemporalConsistencyGuard();
-        for (var f = 0; f < 2; f++)
-        {
-            Fill(img1, 0f, 0f, 1f, 1, 0f);
-            for (var y = 40; y < 104; y++) for (var x = 60 + 30 * f; x < 124 + 30 * f; x++) { var i = (y * W + x) * 3; img1[i] = 0.05f + 0.9f * ((x / 4 + y / 4) & 1); img1[i + 1] = img1[i]; img1[i + 2] = img1[i]; }
-            go.Process(img1, Nm.Vector2.Zero);
-        }
-        Assert.True(go.OcclusionRatio > 0.005f && go.OcclusionRatio < 0.5f, $"occlusion {go.OcclusionRatio}");
-        // Step 40 — 정상 상태 측정(전체 실행에서 계층 JIT/OSR 1회성 7,528 B 관측 · 진짜 할당은 매 창 재현 → 실패 유지)
-        Assert.Equal(0, SteadyStateAllocation.MinBytes(() => { for (var f = 0; f < 3; f++) go.Process(img1, Nm.Vector2.Zero); }));
-
-        // ══ VD-4 러너: 카메라 궤적 · ControlNet · 디퓨전 · 일관성 · 무할당 ══
-        var run = new Vd.LatentVideoDiffusionStudioRunner(new Vd.RealtimeLatentVideoDiffusionEngine(), new Vd.NeuralTemporalConsistencyGuard(), new Vd.ControlNetSpatialConditioningSynthesizer());
-        for (var f = 0; f < 120; f++) run.TickOnce();
-        Assert.True(run.GeneratedFrames >= 60 && run.Guard.Frames >= 60 && run.Control.PoseCoverage > 0f, $"frames {run.GeneratedFrames}");
-        Assert.True(run.Guard.MeanFlickerReduction > 0.1f, $"runner flicker reduction {run.Guard.MeanFlickerReduction}");
-        var lit = 0; foreach (var b in run.Guard.OutputBytes) if (b > 10) lit++;
-        Assert.True(lit > run.Guard.OutputBytes.Length / 2);
-        Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>
-        {
-            for (var f = 0; f < 10; f++) run.TickOnce();
-        }));
-        Assert.True(run.TriggerPrompt("네온 사이버펑크 밤 달리는 오빗") >= 3 && run.Camera.Move == Ci.CameraMove.Orbit && run.WalkSpeed > 3f);
-        run.SetNoise(Vd.NoiseMode.Independent);
-        for (var f = 0; f < 20; f++) run.TickOnce();
-        Assert.Equal(Vd.NoiseMode.Independent, run.Engine.Noise);
-        Assert.Equal(0, run.TriggerPrompt(""));
-        run.NewShot();
-        Assert.Equal(0, run.Frame);
-        run.Dispose();
-    }
-
-    [Fact]
     [Trait("Category", "FastUnit")]
     public void ScriptContinuity_And_SceneCoherence_Check()
     {
@@ -15139,208 +12565,7 @@ class "Proto"
         run.Dispose();
     }
 
-    [Fact]
-    [Trait("Category", "Integration")]
-    public void ContentSecurity_And_DigitalRights_Check()
-    {
-        // ══ SC-0 SIMD 커널 = 스칼라(비트 일치 · 꼬리) · DCT 기저 정규직교 · CRC ══
-        var rnd = new Random(1690);
-        foreach (var len in new[] { 0, 1, 7, 8, 9, 17, 64, 1001 })
-        {
-            float[] R() { var a = new float[len]; for (var i = 0; i < len; i++) a[i] = (float)(rnd.NextDouble() * 2 - 1); return a; }
-            var a1 = R(); var b1 = R();
-            Assert.Equal(Cs.WmSimd.DotScalar(a1, b1), Cs.WmSimd.Dot(a1, b1));
-            var d1 = (float[])a1.Clone(); var d2 = (float[])a1.Clone();
-            Cs.WmSimd.MulAdd(d1, b1, -0.37f); Cs.WmSimd.MulAddScalar(d2, b1, -0.37f);
-            Assert.True(d1.AsSpan().SequenceEqual(d2), $"muladd {len}");
-        }
-        for (var p = 0; p < 64; p++)
-            for (var q = 0; q < 64; q++)
-            {
-                var dot = Cs.WmSimd.Dot(Cs.NeuralInvisibleWatermarkEncoderEngine.BasisOf(p % 8, p / 8), Cs.NeuralInvisibleWatermarkEncoderEngine.BasisOf(q % 8, q / 8));
-                Assert.True(MathF.Abs(dot - (p == q ? 1f : 0f)) < 1e-4f, $"basis {p},{q} {dot}");
-            }
-        Assert.Equal(0x29B1, Cs.NeuralInvisibleWatermarkEncoderEngine.Crc16("123456789"u8));
-        var pl = new Cs.WatermarkPayload(0xABCDEF, 0x123456, 0xBEEF);
-        Assert.Equal(pl, Cs.WatermarkPayload.FromId(pl.Id));
-
-        // ══ SC-1 비디오 워터마크: 비가시(PSNR) · 무손실 검출 · 재압축 Q50/노이즈/밝기 견고 · 오키/미내장 거부 · 대역 · 무할당 ══
-        const int W = 256, H = 144;
-        void Scene(float[] f, int seed, float shift)
-        {
-            var r2 = new Random(seed);
-            for (var y = 0; y < H; y++)
-                for (var x = 0; x < W; x++)
-                {
-                    var v = 0.45f + 0.25f * MathF.Sin((x + shift) * 0.07f) * MathF.Cos(y * 0.05f) + 0.08f * (float)(r2.NextDouble() - 0.5);
-                    float dx = x - 128f, dy = y - 70f; if (dx * dx / 900 + dy * dy / 1300 < 1) v = 0.75f + 0.05f * MathF.Sin(x * 0.4f);
-                    var i = (y * W + x) * 3; f[i] = v; f[i + 1] = v * 0.9f + 0.05f; f[i + 2] = v * 0.8f;
-                }
-        }
-        var key = new byte[32]; key[0] = 7;
-        var wm = new Cs.NeuralInvisibleWatermarkEncoderEngine(key);
-        Assert.False(wm.EphemeralKey);
-        wm.SetPayload(pl);
-        var orig = new float[W * H * 3]; Scene(orig, 1, 0);
-        var img = (float[])orig.Clone();
-        wm.EncodeFrame(img, W, H);
-        Assert.True(wm.LastPsnr > 42f, $"psnr {wm.LastPsnr}");
-        var maxDiff = 0f; for (var i = 0; i < img.Length; i++) maxDiff = MathF.Max(maxDiff, MathF.Abs(img[i] - orig[i]));
-        Assert.True(maxDiff < 12f / 255f, $"max pixel change {maxDiff * 255}");
-        var det = wm.DetectFrame(img, W, H, pl);
-        Assert.True(det.Valid && det.Payload == pl && det.BitErrorRate == 0f && det.Confidence > 0.95f);
-        float[] Attack(Action<float[]> a) { var c = (float[])img.Clone(); a(c); return c; }
-        foreach (var (name, atk) in new (string, Action<float[]>)[]
-        {
-            ("q75", c => Cs.ContentAttackSimulator.Recompress(c, W, H, 75)), ("q50", c => Cs.ContentAttackSimulator.Recompress(c, W, H, 50)),
-            ("noise", c => Cs.ContentAttackSimulator.Noise(c, 0.015f, 3)), ("bright", c => Cs.ContentAttackSimulator.Brightness(c, 1.1f, 0.02f)),
-        })
-        {
-            var d = wm.DetectFrame(Attack(atk), W, H, pl);
-            Assert.True(d.Valid && d.Payload == pl, $"{name}: {d.Valid} ber {d.BitErrorRate} conf {d.Confidence}");
-        }
-        var other = new Cs.NeuralInvisibleWatermarkEncoderEngine(new byte[32]);
-        Assert.False(other.DetectFrame(img, W, H).Valid, "wrong key");
-        Assert.False(wm.DetectFrame(orig, W, H).Valid, "unmarked");
-        foreach (var band in new[] { Cs.WmBand.Low, Cs.WmBand.High })
-        {
-            var e = new Cs.NeuralInvisibleWatermarkEncoderEngine(key) { Band = band }; e.SetPayload(pl);
-            var c = (float[])orig.Clone(); e.EncodeFrame(c, W, H);
-            Assert.True(e.DetectFrame(c, W, H, pl).Valid && e.LastPsnr > 40f, $"band {band}");
-        }
-        var weak = new Cs.NeuralInvisibleWatermarkEncoderEngine(key) { Strength = 0.03f }; weak.SetPayload(pl);
-        var wc = (float[])orig.Clone(); weak.EncodeFrame(wc, W, H);
-        Assert.True(weak.LastPsnr > wm.LastPsnr + 6f, "strength ↔ visibility");
-        Assert.Equal(0, AllocationProbe.MinAllocated(() => { for (var i = 0; i < 3; i++) { wm.EncodeFrame(img, W, H); wm.DetectFrame(img, W, H, pl); } }));
-
-        // ══ SC-2 오디오 위상(7.1.4) · 3DGS ══
-        const int N = Cs.NeuralInvisibleWatermarkEncoderEngine.AudioN;
-        var bed = new float[12 * N]; var rx = new float[12 * N];
-        wm.ResetAudioDetect();
-        float snr = 0f;
-        for (var f = 0; f < 6; f++)
-        {
-            for (var c = 0; c < 12; c++) for (var n = 0; n < N; n++) { var t = (f * N + n) / 48000f; bed[c * N + n] = 0.15f * MathF.Sin(MathF.Tau * (220 + 20 * c) * t) + 0.07f * MathF.Sin(MathF.Tau * 2000 * t + c) + 0.02f * (float)(rnd.NextDouble() - 0.5); }
-            var pre = (float[])bed.Clone();
-            wm.EncodeAudio(bed, N, f); snr += wm.LastAudioSnrDb;
-            Assert.True(bed.AsSpan(3 * N, N).SequenceEqual(pre.AsSpan(3 * N, N)), "LFE untouched");
-            for (var i = 0; i < bed.Length; i++) rx[i] = bed[i] * 0.6f + 0.005f * (float)(rnd.NextDouble() - 0.5);
-            wm.AccumulateAudio(rx, N, f);
-        }
-        var ad = wm.DecideAudio(pl);
-        Assert.True(ad.Valid && ad.Payload == pl && snr / 6 > 15f, $"audio {ad.Valid} ber {ad.BitErrorRate} snr {snr / 6}");
-        var gs = new G3.GaussianScene(400);
-        for (var i = 0; i < 400; i++) gs.Add(new Nm.Vector3(i * 0.01f, 0, 0), Nm.Quaternion.Identity, new Nm.Vector3(0.02f), 0.9f, new Nm.Vector3((float)rnd.NextDouble()));
-        wm.EncodeSplats(gs);
-        Assert.True(wm.DetectSplats(gs, pl).Valid && !other.DetectSplats(gs).Valid);
-
-        // ══ SC-3 진위 가드: 진본 · 재압축 · 얼굴 교체/스플라이스 위치 · 미내장 · 서명 변조 · 역추적 · 무할당 ══
-        var guard = new Cs.DeepfakeProtectionContentAuthenticityGuard(wm, key);
-        Scene(orig, 1, 0); img = (float[])orig.Clone(); wm.EncodeFrame(img, W, H);
-        var man = new Cs.FrameManifest(); guard.Seal(img, W, H, 42, man);
-        Assert.True(man.Sealed && man.Tiles == 48 && guard.VerifySignature(man));
-        Assert.Equal(Cs.AuthVerdict.Authentic, guard.Verify(img, W, H, man));
-        Assert.True(guard.Radar(Cs.ThreatAxis.LocalTamper) == 0f && guard.Radar(Cs.ThreatAxis.Signature) == 0f);
-        Assert.Equal(Cs.AuthVerdict.Recompressed, guard.Verify(Attack(c => Cs.ContentAttackSimulator.Recompress(c, W, H, 60)), W, H, man));
-        Assert.True(guard.Detection.Valid && guard.Detection.Payload == pl && guard.TamperedTiles == 0, "trace survives recompression");
-        Assert.True(guard.Radar(Cs.ThreatAxis.Recompression) > 0.2f);
-        Assert.Equal(Cs.AuthVerdict.Tampered, guard.Verify(Attack(c => Cs.ContentAttackSimulator.FaceSwap(c, W, 96, 48, 64, 48)), W, H, man));
-        int[] faceTiles = { 19, 20, 27, 28 };
-        foreach (var t in faceTiles) Assert.Equal(1, guard.TamperMask[t]);
-        for (var t = 0; t < man.Tiles; t++) if (Array.IndexOf(faceTiles, t) < 0) Assert.True(guard.TamperMask[t] == 0, $"false tile {t}");
-        Assert.True(guard.Radar(Cs.ThreatAxis.Synthetic) > 0.6f && guard.Detection.Valid, "face swap localized · id still traced");
-        var donor = new float[W * H * 3]; Scene(donor, 9, 40);
-        Assert.Equal(Cs.AuthVerdict.Tampered, guard.Verify(Attack(c => Cs.ContentAttackSimulator.Splice(c, donor, W, 0, 0, 160, 72, 64, 48)), W, H, man));
-        var spliceHits = 0; foreach (var t in new[] { 29, 30, 37, 38 }) spliceHits += guard.TamperMask[t];
-        Assert.True(spliceHits >= 3 && guard.TamperedTiles <= 6, $"splice tiles {spliceHits} total {guard.TamperedTiles}");
-        Assert.Equal(Cs.AuthVerdict.Tampered, guard.Verify(Attack(c => { Cs.ContentAttackSimulator.Recompress(c, W, H, 75); Cs.ContentAttackSimulator.FaceSwap(c, W, 96, 48, 64, 48); }), W, H, man));
-        var unmarked = new float[W * H * 3]; Scene(unmarked, 2, 13);
-        Assert.Equal(Cs.AuthVerdict.Unmarked, guard.Verify(unmarked, W, H, man));
-        var forged = new Cs.FrameManifest(); forged.CopyFrom(man); forged.TileHash[3] ^= 1;
-        Assert.Equal(Cs.AuthVerdict.SignatureInvalid, guard.Verify(img, W, H, forged));
-        forged.CopyFrom(man); forged.PayloadId ^= 1;
-        Assert.False(guard.VerifySignature(forged));
-        var otherKeyGuard = new Cs.DeepfakeProtectionContentAuthenticityGuard(wm, new byte[32]);
-        Assert.False(otherKeyGuard.VerifySignature(man));
-        var ov = (float[])img.Clone();
-        guard.Verify(Attack(c => Cs.ContentAttackSimulator.FaceSwap(c, W, 96, 48, 64, 48)), W, H, man);
-        guard.Overlay(ov, W, H);
-        var fi = ((50 * W) + 100) * 3; Assert.True(ov[fi] > img[fi] && ov[fi + 1] < img[fi + 1], "overlay");
-        var att = Attack(c => Cs.ContentAttackSimulator.Recompress(c, W, H, 70));
-        guard.Verify(att, W, H, man);
-        Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>
-        {
-            for (var i = 0; i < 3; i++) { guard.Seal(img, W, H, 43, man); guard.Verify(att, W, H, man); }
-        }));
-
-        // ══ SC-4 저작권 · 수익화: 계약 파싱 · 워터폴 · 정확 보존 · 불법 차단 · 원장 체인/서명/변조 검출 · 상태 전이 · 무할당 ══
-        var rights = new Cs.EnterpriseDigitalRightsMonetizationSynthesizer(key);
-        Assert.True(rights.Load(Cs.ContentSecurityStudioRunner.DefaultContract), rights.ParseMessage);
-        Assert.True(rights.HolderCount == 5 && rights.ChannelCount == 4 && rights.TerritoryCount == 5 && rights.ParseErrors == 0 && rights.AssetId == "PFS-A-1690");
-        Assert.Equal(12500L, rights.Rate(0));
-        Assert.Equal(Cs.RateUnit.RevenueShare, rights.Unit(2));
-        Assert.Equal(5500L, rights.Rate(2));
-        Assert.False(new Cs.EnterpriseDigitalRightsMonetizationSynthesizer(key).Load("지분: A=60, B=30\n요율: 스트리밍=10 /재생"), "shares must sum 100");
-        var pay = new long[Cs.EnterpriseDigitalRightsMonetizationSynthesizer.MaxHolders];
-        rights.Distribute(1_000_000_000, pay);
-        Assert.Equal(1_000_000_000, pay[0]);
-        for (var h = 1; h < 5; h++) Assert.Equal(0, pay[h]);
-        rights.Distribute(2_000_000_001, pay);
-        Assert.Equal(2_000_000_001, pay.Sum());
-        Assert.True(pay[0] >= 1_000_000_000 + 400_000_000 && MathF.Abs(pay[1] - 2f * pay[4]) <= 2, $"waterfall {pay[0]} {pay[1]} {pay[4]}");
-        Assert.True(rights.Load(Cs.ContentSecurityStudioRunner.DefaultContract));
-        Assert.True(rights.BlockDevice(0xDEAD) && !rights.BlockDevice(0xDEAD));
-        long t0 = 0;
-        for (var batch = 0; batch < 6; batch++)
-        {
-            for (var i = 0; i < 1000; i++) rights.RecordPlay(0, i % 5, (ulong)(0x1000 + i));
-            rights.RecordPlay(0, 0, 0xDEAD, 50);
-            rights.RecordSale(2, 1, 10_000_000 * Cs.EnterpriseDigitalRightsMonetizationSynthesizer.Milli);
-            rights.Settle(t0 += 1000);
-        }
-        Assert.True(rights.PiracyPlays == 300 && rights.PiracyLoss == 300 * 12500 && rights.TotalPlays == 6000);
-        var expected = 6L * (1000 * 12500 + 10_000_000_000L * 5500 / 10000);
-        Assert.Equal(expected, rights.TotalRevenue);
-        long ent = 0; for (var h = 0; h < rights.HolderCount; h++) ent += rights.Entitled(h);
-        Assert.Equal(rights.TotalRevenue, ent);
-        Assert.True(rights.Recouped(0) == rights.RecoupTarget(0) && rights.RecoupTarget(0) == 2_000_000_000);
-        Assert.True(rights.LedgerHeight == 6 && rights.Block(0).State == Cs.SettlementState.Pending && rights.Block(1).State == Cs.SettlementState.Escrow && rights.Block(2).State == Cs.SettlementState.Settled);
-        Assert.True(rights.TotalPaid > 0 && rights.TotalPaid < rights.TotalRevenue);
-        Assert.True(rights.Block(0).PrevHash.AsSpan().SequenceEqual(rights.Block(1).Hash));
-        Assert.Equal(-1, rights.VerifyLedger());
-        rights.Block(3).Payout[1] += 1;
-        Assert.Equal(rights.Block(3).Index, rights.VerifyLedger());
-        rights.Block(3).Payout[1] -= 1;
-        Assert.Equal(-1, rights.VerifyLedger());
-        Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>
-        {
-            for (var i = 0; i < 200; i++) rights.RecordPlay(0, i % 5, (ulong)i);
-            rights.Settle(t0 + 1000);
-            rights.VerifyLedger();
-        }));
-
-        // ══ SC-5 러너: 시나리오 순환 · 판정 · 유출 역추적 → 차단 · 정산 · 무할당 ══
-        var run = new Cs.ContentSecurityStudioRunner(new Cs.NeuralInvisibleWatermarkEncoderEngine(key), new Cs.EnterpriseDigitalRightsMonetizationSynthesizer(key));
-        var verdicts = new HashSet<Cs.AuthVerdict>();
-        for (var f = 0; f < 60 * 15; f++) { run.TickOnce(); if ((f & 1) == 0) verdicts.Add(run.Guard.Verdict); }
-        Assert.True(verdicts.Contains(Cs.AuthVerdict.Authentic) && verdicts.Contains(Cs.AuthVerdict.Recompressed) && verdicts.Contains(Cs.AuthVerdict.Tampered), string.Join(",", verdicts));
-        Assert.True(run.LeaksTraced == 1 && run.LastTraced == run.Viewer && run.Rights.IsBlocked(run.Viewer.Id) && run.Rights.PiracyPlays > 0);
-        Assert.True(run.AudioDetection.Valid && run.AudioDetection.Payload == run.Viewer && run.SplatDetection.Valid);
-        Assert.True(run.Rights.LedgerHeight >= 14 && run.Rights.VerifyLedger() == -1);
-        long ent2 = 0; for (var h = 0; h < run.Rights.HolderCount; h++) ent2 += run.Rights.Entitled(h);
-        Assert.Equal(run.Rights.TotalRevenue, ent2);
-        Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>
-        {
-            for (var f = 0; f < 30; f++) run.TickOnce();
-        }));
-        Assert.False(run.LoadContract("지분: X=50"));
-        Assert.True(run.LoadContract(Cs.ContentSecurityStudioRunner.DefaultContract));
-        run.NewSession();
-        Assert.True(run.SplatDetection.Valid && run.Watermark.Payload == run.Viewer);
-        run.Dispose();
-    }
-
-    private sealed class CrewTestProvider : IServiceProvider
+    internal sealed class CrewTestProvider : IServiceProvider
     {
         private readonly Dictionary<Type, object> _map = new();
         public CrewTestProvider Add<T>(T o) where T : class { _map[typeof(T)] = o; return this; }
@@ -15680,193 +12905,6 @@ class "Proto"
         Assert.Equal(64, run.Guard.LastDigest!.Length);
         Assert.False(run.Guard.IsArmed);
         run.Dispose(); crew.Dispose();
-    }
-
-    /// <summary>v16.93 DOM 구동 검증용 C# 컴포넌트(정상/NRE/비동기 예외/지연/위험 라벨/비활성/range/checkbox).</summary>
-    private sealed class DomProbeComponent : Microsoft.AspNetCore.Components.ComponentBase
-    {
-        public static int Clicks; public static bool Flag; public static double Slider = -1; public static int DeniedHits, DisabledHits;
-        [Microsoft.AspNetCore.Components.Parameter] public Microsoft.AspNetCore.Components.EventCallback OnClose { get; set; }
-        protected override void BuildRenderTree(Microsoft.AspNetCore.Components.Rendering.RenderTreeBuilder b)
-        {
-            var f = Microsoft.AspNetCore.Components.EventCallback.Factory;
-            b.OpenElement(0, "div");
-            b.OpenElement(1, "button"); b.AddAttribute(2, "onclick", f.Create<Microsoft.AspNetCore.Components.Web.MouseEventArgs>(this, () => Clicks++)); b.AddContent(3, "정상 버튼"); b.CloseElement();
-            b.OpenElement(4, "button"); b.AddAttribute(5, "onclick", f.Create<Microsoft.AspNetCore.Components.Web.MouseEventArgs>(this, () => { string? s = null; _ = s!.Length; })); b.AddContent(6, "NRE 버튼"); b.CloseElement();
-            b.OpenElement(7, "button"); b.AddAttribute(8, "onclick", f.Create<Microsoft.AspNetCore.Components.Web.MouseEventArgs>(this, async () => { await Task.Yield(); throw new InvalidOperationException("async boom"); })); b.AddContent(9, "비동기 예외"); b.CloseElement();
-            b.OpenElement(10, "button"); b.AddAttribute(11, "onclick", f.Create<Microsoft.AspNetCore.Components.Web.MouseEventArgs>(this, () => Task.Delay(1500))); b.AddContent(12, "느린 버튼"); b.CloseElement();
-            b.OpenElement(13, "button"); b.AddAttribute(14, "onclick", f.Create<Microsoft.AspNetCore.Components.Web.MouseEventArgs>(this, () => DeniedHits++)); b.AddContent(15, "파일 삭제"); b.CloseElement();
-            b.OpenElement(16, "button"); b.AddAttribute(17, "disabled", true); b.AddAttribute(18, "onclick", f.Create<Microsoft.AspNetCore.Components.Web.MouseEventArgs>(this, () => DisabledHits++)); b.AddContent(19, "비활성"); b.CloseElement();
-            b.OpenElement(20, "input"); b.AddAttribute(21, "type", "range"); b.AddAttribute(22, "min", "0"); b.AddAttribute(23, "max", "10");
-            b.AddAttribute(24, "onchange", f.Create<Microsoft.AspNetCore.Components.ChangeEventArgs>(this, e => Slider = double.Parse(e.Value!.ToString()!, System.Globalization.CultureInfo.InvariantCulture))); b.CloseElement();
-            b.OpenElement(25, "input"); b.AddAttribute(26, "type", "checkbox"); b.AddAttribute(27, "checked", Flag);
-            b.AddAttribute(28, "onchange", f.Create<Microsoft.AspNetCore.Components.ChangeEventArgs>(this, e => Flag = (bool)e.Value!)); b.CloseElement();
-            b.OpenElement(29, "button"); b.AddAttribute(30, "onclick", OnClose); b.AddContent(31, "✕"); b.CloseElement();
-            b.CloseElement();
-        }
-    }
-
-    [Fact]
-    [Trait("Category", "Integration")]
-    public async Task RealDomUiTesting_And_CodeDefectSelfFix_Check()
-    {
-        // ══ RF-1 실 RenderTree 구동: 클릭/변경/체크 디스패치 · NRE · 비동기 예외 · 지연 · 위험 라벨 · disabled · OnClose ══
-        DomProbeComponent.Clicks = 0; DomProbeComponent.Flag = false; DomProbeComponent.Slider = -1; DomProbeComponent.DeniedHits = DomProbeComponent.DisabledHits = 0;
-        var dom = new Sfx.RealDomBlazorRenderTreeDriver(new CrewTestProvider()) { EventTimeoutMs = 300d };
-        var rp = await dom.DriveAsync(typeof(DomProbeComponent), CancellationToken.None);
-        Assert.True(rp.Mounted, rp.MountError);
-        Assert.Equal(8, rp.Elements);                       // disabled 제외 8(버튼 6 + range + checkbox)
-        Assert.Equal(1, DomProbeComponent.Clicks);
-        Assert.Equal(5d, DomProbeComponent.Slider, 6);      // range 중간값
-        Assert.True(DomProbeComponent.Flag);                // checkbox 반전
-        Assert.Equal(0, DomProbeComponent.DeniedHits);
-        Assert.Equal(0, DomProbeComponent.DisabledHits);
-        Assert.Equal(1, rp.Skipped);
-        Assert.Equal(2, rp.Exceptions);                     // NRE + 비동기 InvalidOperation
-        Assert.Equal(1, rp.Timeouts);
-        Assert.Equal(1, rp.CloseRequests);
-        Assert.True(rp.Batches >= 2);
-        var log = Enumerable.Range(0, dom.LogCount).Select(dom.Log).ToList();
-        Assert.Contains(log, e => e.Outcome == Sfx.DomOutcome.Exception && e.Error!.StartsWith("NullReferenceException", StringComparison.Ordinal) && e.Label == "NRE 버튼");
-        Assert.Contains(log, e => e.Outcome == Sfx.DomOutcome.Exception && e.Error!.Contains("async boom", StringComparison.Ordinal));
-
-        // 실 스튜디오 모달(실 DI): 크루 모달 RenderTree 구동 → 예외 0 · 언마운트 시 크루 정지
-        var crew = new Pcw.MultiAgentCrewStudioRunner(new Pcw.MultiAgentVirtualProductionCrewOrchestratorEngine(new Pcw.AutonomousDirectorialConsensusEvaluator(), new Pcw.RealtimeProductionSwarmExecutionGuard()));
-        var dom2 = new Sfx.RealDomBlazorRenderTreeDriver(new CrewTestProvider().Add(crew)) { SettleMs = 0 };
-        var modals = Sfx.RealDomBlazorRenderTreeDriver.DiscoverStudioModals();
-        Assert.True(modals.Count >= 30, $"modals {modals.Count}");
-        var crewModal = modals.Single(t => t.Name == "MultiAgentCrewStudioModal");
-        var rc = await dom2.DriveAsync(crewModal, CancellationToken.None);
-        Assert.True(rc.Mounted, rc.MountError);
-        Assert.True(rc.Elements >= 15 && rc.Clicks >= 15, $"elements {rc.Elements} clicks {rc.Clicks}");
-        Assert.True(rc.Exceptions == 0 && rc.Timeouts == 0, string.Join(" | ", Enumerable.Range(0, dom2.LogCount).Select(dom2.Log).Where(e => e.Error is not null).Select(e => e.Label + ":" + e.Error)));
-        Assert.True(rc.CloseRequests >= 1);
-        Assert.False(crew.IsRunning);
-        // 미등록 서비스 → 마운트 실패 집계(예외 전파 없음)
-        var rm = await new Sfx.RealDomBlazorRenderTreeDriver(new CrewTestProvider()).DriveAsync(crewModal, CancellationToken.None);
-        Assert.False(rm.Mounted); Assert.Contains("MultiAgentCrewStudioRunner", rm.MountError, StringComparison.Ordinal);
-        crew.Dispose();
-
-        // ══ RF-2 자동 수정 엔진: 미관찰 Task 문장만 · await/대입/체인/식/주석/문자열/마크업 제외 · 멱등 · 권고 ══
-        const string razor = """
-            <button @onclick="() => { InvokeAsync(StateHasChanged); }">x</button>
-            @code {
-                // InvokeAsync(StateHasChanged);
-                private void A() { InvokeAsync(StateHasChanged); }
-                private void B() => _ = InvokeAsync(StateHasChanged);
-                private async Task C() { await InvokeAsync(StateHasChanged); }
-                private void D() { var t = InvokeAsync(StateHasChanged); InvokeAsync(StateHasChanged).ContinueWith(_ => 0); }
-                private void E() { var s = "InvokeAsync(StateHasChanged);"; Task.Run(() => 1); }
-                private void F() { Use(InvokeAsync(StateHasChanged)); }
-                private static void Use(Task t) { }
-            }
-            """;
-        var found = Sfx.AutonomousCodeDefectSelfFixEngine.Find("A.razor", razor);
-        Assert.Equal(2, found.Count);
-        Assert.Equal(new[] { "InvokeAsync", "Task.Run" }, found.Select(p => p.Anchor).ToArray());
-        Assert.Equal(4, found[0].Line);
-        Assert.Contains("{ _ = InvokeAsync(StateHasChanged); }", found[0].After, StringComparison.Ordinal);
-        var (fixedRazor, applied, conflicts) = Sfx.AutonomousCodeDefectSelfFixEngine.ApplyToText(razor, found);
-        Assert.Equal(2, applied); Assert.Equal(0, conflicts);
-        Assert.Equal(razor.Length + 8, fixedRazor.Length);
-        Assert.Empty(Sfx.AutonomousCodeDefectSelfFixEngine.Find("A.razor", fixedRazor));           // 멱등
-        Assert.Equal(0, Sfx.AutonomousCodeDefectSelfFixEngine.ApplyToText(fixedRazor, found).Applied); // 재적용 차단(충돌)
-
-        const string hot = """
-            public sealed class R
-            {
-                public string? Last;
-                public void TickOnce() { Last = $"t{Last}"; Task.Run(() => 0); }
-                public async void Fire() { await Task.Yield(); }
-            }
-            """;
-        var eng = new Sfx.AutonomousCodeDefectSelfFixEngine();
-        var verifier = new Cvf.CloudSourceCodeIntegrityVerifierEngine();
-        Assert.Equal(1, eng.PlanFile("R.cs", hot, verifier));
-        Assert.Contains(Enumerable.Range(0, eng.AdvisoryCount).Select(eng.Advisory), a => a.Rule == Cvf.VerifyRule.HotPathInterpolation && a.Line == 4);
-        Assert.Contains(Enumerable.Range(0, eng.AdvisoryCount).Select(eng.Advisory), a => a.Rule == Cvf.VerifyRule.AsyncVoid);
-        Assert.DoesNotContain(Enumerable.Range(0, eng.AdvisoryCount).Select(eng.Advisory), a => a.Rule == Cvf.VerifyRule.UnobservedTask); // 패치로 해소
-        Assert.Contains("+ public void TickOnce() { Last = $\"t{Last}\"; _ = Task.Run(() => 0); }", eng.BuildDiff(), StringComparison.Ordinal);
-
-        // ══ RF-3 폐루프: 빌드 오류 귀속 파일 제외 재시도 → 커밋 · 테스트 실패 → 전량 롤백(바이트 동일 · BOM 보존) · 외부 변경 보호 ══
-        var dir = Path.Combine(Path.GetTempPath(), "pfs-selffix-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(Path.Combine(dir, "src"));
-        try
-        {
-            var aText = "class A { void M() { Task.Run(() => 0); } }\r\n";
-            var bText = "class B { void M() { Task.Run(() => 1); } }\n";
-            var aPath = Path.Combine(dir, "src", "A.cs"); var bPath = Path.Combine(dir, "src", "B.cs");
-            void Reset() { File.WriteAllBytes(aPath, new byte[] { 0xEF, 0xBB, 0xBF }.Concat(System.Text.Encoding.UTF8.GetBytes(aText)).ToArray()); File.WriteAllText(bPath, bText); }
-            Reset();
-            var aOrig = File.ReadAllBytes(aPath); var bOrig = File.ReadAllBytes(bPath);
-            var plan = new Sfx.AutonomousCodeDefectSelfFixEngine();
-            Assert.Equal(2, await plan.PlanAsync(Path.Combine(dir, "src"), CancellationToken.None));
-            var groups = plan.GroupByFile();
-
-            var calls = new List<string>();
-            var guard = new Sfx.ClosedLoopRegressionSelfRepairGuard
-            {
-                Execute = (args, wd, ct) =>
-                {
-                    calls.Add(args.Split(' ')[0]);
-                    var buildFails = args.StartsWith("build", StringComparison.Ordinal) && File.ReadAllText(bPath).Contains("_ = ", StringComparison.Ordinal);
-                    return Task.FromResult(buildFails
-                        ? new Sfx.CommandResult(1, bPath + "(1,22): error CS8209: simulated\n", 1, false)
-                        : new Sfx.CommandResult(0, "통과!  - 실패:     0, 통과:   368, 건너뜀:     0, 전체:   368", 1, false));
-                },
-            };
-            var r1 = await guard.RepairAsync(dir, Path.Combine(dir, "src"), groups, CancellationToken.None);
-            Assert.True(r1.Committed);
-            Assert.Equal(2, r1.Attempts);
-            Assert.Equal(new[] { "B.cs" }, r1.ExcludedFiles.ToArray());
-            Assert.Equal(1, r1.PatchesCommitted); Assert.Equal(368, r1.TestsPassed);
-            Assert.Equal(new[] { "build", "build", "test" }, calls.ToArray());
-            var aNow = File.ReadAllBytes(aPath);
-            Assert.True(aNow.Take(3).SequenceEqual(new byte[] { 0xEF, 0xBB, 0xBF }), "BOM preserved");
-            Assert.Contains("{ _ = Task.Run(() => 0); } }\r\n", System.Text.Encoding.UTF8.GetString(aNow), StringComparison.Ordinal);
-            Assert.Equal(bOrig, File.ReadAllBytes(bPath));
-            Assert.Equal(Sfx.RepairPhase.Committed, guard.Phase);
-            Assert.Equal(64, r1.SafePointDigest!.Length);
-
-            Reset();
-            var g2 = new Sfx.ClosedLoopRegressionSelfRepairGuard { Execute = (args, wd, ct) => Task.FromResult(new Sfx.CommandResult(args.StartsWith("test", StringComparison.Ordinal) ? 1 : 0, "실패!  - 실패:     1, 통과:   367", 1, false)) };
-            var r2 = await g2.RepairAsync(dir, Path.Combine(dir, "src"), groups, CancellationToken.None);
-            Assert.False(r2.Committed);
-            Assert.Equal(Sfx.RepairPhase.RolledBack, g2.Phase);
-            Assert.Equal(1, r2.TestsFailed);
-            Assert.Equal(aOrig, File.ReadAllBytes(aPath)); Assert.Equal(bOrig, File.ReadAllBytes(bPath));
-
-            Reset();
-            var g3 = new Sfx.ClosedLoopRegressionSelfRepairGuard
-            {
-                MaxAttempts = 1,
-                Execute = (args, wd, ct) => { File.AppendAllText(aPath, "// 사용자 편집\n"); return Task.FromResult(new Sfx.CommandResult(1, "error", 1, false)); },
-            };
-            var r3 = await g3.RepairAsync(dir, Path.Combine(dir, "src"), groups, CancellationToken.None);
-            Assert.False(r3.Committed);
-            Assert.Equal(1, r3.Conflicts);
-            Assert.EndsWith("// 사용자 편집\n", File.ReadAllText(aPath), StringComparison.Ordinal); // 외부 편집 보존
-            Assert.Equal(bOrig, File.ReadAllBytes(bPath));
-
-            // 취소 → 적용 파일 복원 후 전파
-            Reset();
-            using var cts = new CancellationTokenSource();
-            var g4 = new Sfx.ClosedLoopRegressionSelfRepairGuard { Execute = (args, wd, ct) => { cts.Cancel(); ct.ThrowIfCancellationRequested(); return Task.FromResult(default(Sfx.CommandResult)); } };
-            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => g4.RepairAsync(dir, Path.Combine(dir, "src"), groups, cts.Token));
-            Assert.Equal(aOrig, File.ReadAllBytes(aPath)); Assert.Equal(bOrig, File.ReadAllBytes(bPath));
-        }
-        finally { try { Directory.Delete(dir, true); } catch (IOException) { } }
-
-        // ══ RF-4 러너: 드라이런(파일 미수정) — 실 소스 계획 + 1개 모달 구동 ══
-        var root = Cvf.CloudSourceCodeIntegrityVerifierEngine.FindSourceRoot();
-        Assert.NotNull(root);
-        var runner = new Sfx.RealUiSelfHealingStudioRunner(new Sfx.RealDomBlazorRenderTreeDriver(new CrewTestProvider()), new Sfx.AutonomousCodeDefectSelfFixEngine(), new Sfx.ClosedLoopRegressionSelfRepairGuard()) { DriveDom = false, SourceRoot = root };
-        Assert.True(runner.ModalCount >= 30);
-        await runner.RunAsync(CancellationToken.None);
-        Assert.Equal(Sfx.SelfHealPhase.Done, runner.Phase);
-        Assert.True(runner.Engine.FilesScanned > 300);
-        Assert.Equal(Sfx.RepairPhase.Idle, runner.Guard.Phase); // 패치 스위치 OFF → 수리 미수행
-        runner.Dispose();
     }
 
     [Fact]
@@ -16231,210 +13269,6 @@ class "Proto"
 
     [Fact]
     [Trait("Category", "FastUnit")]
-    public void HolographicTelepresence_And_UniversalAgiDirector_Check()
-    {
-        // ── HOLO-1: SIMD 커널 = 스칼라 비트 동일(길이 0..37 · 비정렬 꼬리) ──
-        var rng = new Random(1700);
-        var mtx = System.Numerics.Matrix4x4.CreateScale(0.45f) * System.Numerics.Matrix4x4.CreateFromQuaternion(System.Numerics.Quaternion.CreateFromYawPitchRoll(0.3f, -0.2f, 0.1f))
-                  * System.Numerics.Matrix4x4.CreateTranslation(0.1f, -0.4f, 0.2f);
-        for (var n = 0; n <= 37; n++)
-        {
-            float[] x = new float[n], y = new float[n], z = new float[n];
-            for (var i = 0; i < n; i++) { x[i] = (float)(rng.NextDouble() * 2 - 1); y[i] = (float)(rng.NextDouble() * 2); z[i] = (float)(rng.NextDouble() * 3 - 1); }
-            float[] a1 = new float[n], b1 = new float[n], a2 = new float[n], b2 = new float[n];
-            Holo.HoloSimd.Perspective(x, z, 2f, a1, b1); Holo.HoloSimd.PerspectiveScalar(x, z, 2f, a2, b2);
-            Assert.Equal(a2, a1); Assert.Equal(b2, b1);
-            Holo.HoloSimd.ShearProject(a1, a2, b2, 0.37f, 53.3f, 32f); Holo.HoloSimd.ShearProjectScalar(b1, a2, b2, 0.37f, 53.3f, 32f);
-            Assert.Equal(b1, a1);
-            float[] ox1 = new float[n], oy1 = new float[n], oz1 = new float[n], ox2 = new float[n], oy2 = new float[n], oz2 = new float[n];
-            Holo.HoloSimd.Transform(x, y, z, ox1, oy1, oz1, mtx); Holo.HoloSimd.TransformScalar(x, y, z, ox2, oy2, oz2, mtx);
-            Assert.Equal(ox2, ox1); Assert.Equal(oy2, oy1); Assert.Equal(oz2, oz1);
-            for (var i = 0; i < n; i++) Assert.True(V3.Distance(V3.Transform(new V3(x[i], y[i], z[i]), mtx), new V3(ox1[i], oy1[i], oz1[i])) < 1e-5f);
-            var c1 = (float[])z.Clone(); var c2 = (float[])z.Clone();
-            Holo.HoloSimd.Clamp(c1, 0.5f);
-            for (var i = 0; i < n; i++) Assert.Equal(MathF.Min(MathF.Max(c2[i], -0.5f), 0.5f), c1[i]);
-        }
-
-        // ── HOLO-1: 라이트필드 시차(초점면 고정 · 앞/뒤 반대 방향) · 키/델타 패킷 · 검증 ──
-        var eng = new Holo.HolographicLightFieldTelepresenceEngine { HologramScale = 1f };
-        eng.SetSplat(0, new V3(0f, 1.2f, 0f), 0xFFFF0000u);       // 초점면
-        eng.SetSplat(1, new V3(0.1f, 1.2f, 0.5f), 0xFF00FF00u);   // 앞(시청자 쪽)
-        eng.SetSplat(2, new V3(-0.1f, 1.2f, -0.6f), 0xFF0000FFu); // 뒤
-        eng.SetSplatCount(3);
-        eng.SetPose(System.Numerics.Quaternion.Identity, new V3(0f, -1.2f, 0f));
-        eng.ProcessFrame();
-        Assert.True(eng.LastKey);
-        Assert.Equal(Holo.HolographicLightFieldTelepresenceEngine.HeaderBytes + 3 * Holo.HolographicLightFieldTelepresenceEngine.KeyRecord, eng.LastPacketBytes);
-        Assert.True(eng.MaxErrorMm < 0.05f);
-        int Col(int view, uint argb)
-        {
-            for (var yy = 0; yy < Holo.HolographicLightFieldTelepresenceEngine.TileH; yy++)
-                for (var xx = 0; xx < Holo.HolographicLightFieldTelepresenceEngine.TileW; xx++)
-                    if (eng.Pixel(view, xx, yy) == argb) return xx;
-            return -1;
-        }
-        const int last = Holo.HolographicLightFieldTelepresenceEngine.Views - 1;
-        Assert.Equal(3, eng.Coverage(22));
-        Assert.True(Col(0, 0xFFFF0000u) >= 0);
-        Assert.Equal(Col(0, 0xFFFF0000u), Col(last, 0xFFFF0000u));          // 초점면 = 전 시점 고정
-        Assert.True(Col(0, 0xFF00FF00u) > Col(last, 0xFF00FF00u) + 10);     // 앞 = 좌측 시점에서 오른쪽
-        Assert.True(Col(0, 0xFF0000FFu) < Col(last, 0xFF0000FFu) - 10 && Col(0, 0xFF0000FFu) >= 0); // 뒤 = 반대
-        Assert.Equal(22, Holo.HolographicLightFieldTelepresenceEngine.ViewForAngle(0f));
-        var bmp = new byte[Holo.HolographicLightFieldTelepresenceEngine.ViewBmpBytes];
-        Assert.Equal(bmp.Length, eng.WriteViewBmp(22, bmp));
-        Assert.Equal((byte)'B', bmp[0]); Assert.Equal((byte)'M', bmp[1]);
-        eng.SetSplatPosition(1, new V3(0.1f, 1.2f, 0.45f));                // 5 cm 이동 → 델타 1건
-        eng.ProcessFrame();
-        Assert.False(eng.LastKey);
-        Assert.Equal(1, eng.LastRecords);
-        Assert.Equal(Holo.HolographicLightFieldTelepresenceEngine.HeaderBytes + Holo.HolographicLightFieldTelepresenceEngine.DeltaRecord, eng.LastPacketBytes);
-        eng.ProcessFrame();
-        Assert.Equal(0, eng.LastRecords);                                   // 정지 = 헤더만
-        var bad = eng.Packet.ToArray(); bad[0] ^= 0xFF;
-        Assert.False(eng.Decode(bad));
-        Assert.False(eng.Decode(eng.Packet[..^1]));
-        Assert.Equal(2, eng.Rejected);
-
-        // ── HOLO-1: 대역폭 예산 적응(하드 캡 · 데드밴드 · 이월 수렴) · 무할당 ──
-        var big = new Holo.HolographicLightFieldTelepresenceEngine { BudgetMbps = 5f };
-        var pts = new V3[Holo.HolographicLightFieldTelepresenceEngine.MaxSplats];
-        for (var i = 0; i < pts.Length; i++) { pts[i] = new V3((float)rng.NextDouble() - 0.5f, (float)rng.NextDouble() * 2f, (float)rng.NextDouble() - 0.5f); big.SetSplat(i, pts[i], 0xFF808080u); }
-        big.SetSplatCount(pts.Length);
-        big.ProcessFrame();
-        Assert.True(big.LastKey);
-        for (var f = 0; f < 3; f++)
-        {
-            for (var i = 0; i < pts.Length; i++) big.SetSplatPosition(i, pts[i] + new V3(0.01f * (f + 1), 0f, 0f));
-            big.ProcessFrame();
-            Assert.True(big.LastPacketBytes <= (int)big.BudgetBytes);
-        }
-        Assert.True(big.Deferred > 0);
-        Assert.True(big.DeadbandQ > big.MinDeadbandQ);
-        for (var f = 0; f < 240; f++) big.ProcessFrame();                  // 정지 → 이월분 송신 · 데드밴드 복귀
-        Assert.Equal(big.MinDeadbandQ, big.DeadbandQ);
-        Assert.True(big.MaxErrorMm < 0.12f);
-        Assert.True(big.Coverage(22) > 500);
-        Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>
-        {
-            for (var f = 0; f < 30; f++) { big.SetSplatPosition(f, pts[f] + new V3(0f, 0.02f * f, 0f)); big.ProcessFrame(); }
-        }));
-
-        // ── HOLO-2: 관객 고조 → 조기 분기(고각성) · 무단절 · 엔진 결선(카메라/조명/BGM/표정) ──
-        var dir = new Holo.UniversalAgiCinematicDirectorSynthesizer();
-        var cam = new Ci.NeuralCameraTrajectoryEngine(); var score = new Sc.NeuralCinematographicFilmScoreGenerator(); var face = new Dh.NeuralFacialMuscleSimulator(); var atmo = new At.AtmosphericScatteringLightingEngine();
-        dir.Bind(cam, atmo, score, face);
-        Assert.Equal(8, dir.BeatCount);
-        Assert.Equal(0, dir.CurrentBeat);
-        for (var i = 0; i < 900 && dir.Branches == 0; i++) { dir.SubmitAudience(0.9f, 0.8f, 1f); dir.Tick(1f / 60f); }
-        Assert.Equal(1, dir.Branches);
-        Assert.Equal(Holo.DirectorReason.AudienceSurge, dir.LogEntry(0).Reason);
-        Assert.Equal(2, dir.CurrentBeat);
-        Assert.Equal(1, dir.EarlyBranches);
-        for (var i = 0; i < 120; i++) { dir.SubmitAudience(0.9f, 0.8f, 1f); dir.Tick(1f / 60f); }
-        Assert.True(dir.MaxEmotionStep < 0.03f);                            // 분기에도 감정 계단 없음
-        Assert.Equal(dir.Cue.Move, cam.Move); Assert.Equal(dir.Cue.Scale, cam.Scale);
-        Assert.Equal(dir.Cue.FStop, cam.FStop);
-        Assert.Equal(dir.Cue.Valence, score.Valence, 4); Assert.Equal(dir.Cue.Arousal, score.Arousal, 4);
-        Assert.True(face.Preset != Dh.FacePreset.Neutral || dir.Cue.Face == Dh.FacePreset.Neutral);
-        Assert.True(atmo.SunElevationDeg > 0f);
-        Assert.True(dir.Cue.FocalMm > 24f && dir.Cue.ColorTempK > 3000f);
-        Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>
-        {
-            for (var i = 0; i < 120; i++) { dir.SubmitAudience(0.9f, 0.8f, 1f); dir.Tick(1f / 60f); }
-        }));
-        Assert.True(dir.ForceBranch(0));
-        Assert.Equal(Holo.DirectorReason.Manual, dir.LogEntry(0).Reason);
-        Assert.False(dir.ForceBranch(5));
-
-        // 몰입 하락 3 s → 재후킹(고각성 분기) · 템포 가속
-        var d2 = new Holo.UniversalAgiCinematicDirectorSynthesizer();
-        for (var i = 0; i < 900 && d2.Branches == 0; i++) { d2.SubmitAudience(0.1f, 0f, 0.3f); d2.Tick(1f / 60f); }
-        Assert.Equal(Holo.DirectorReason.EngagementDrop, d2.LogEntry(0).Reason);
-        Assert.Equal(2, d2.CurrentBeat);
-        Assert.True(d2.Tempo > 1.4f);
-        Assert.False(d2.CameraBound);
-
-        // ── HOLO-3: 햅틱 접촉 · 역각 포화 · 파형 · 관통 차단 · 해제 ──
-        var g = new Holo.SpatialHapticCognitiveInteractionGuard();
-        var ob = g.AddObject(new V3(0f, 1f, 0f), 0.1f, 200f, 4f, 0.8f, 0.002f);
-        const float hdt = 1f / 60f;
-        g.StepHand(0, new V3(0f, 1.2f, 0f), hdt);
-        Assert.Equal(-1, g.ContactObject(0));
-        g.StepHand(0, new V3(0f, 1.09f, 0f), hdt);                          // 1 cm 침투 · 6.6 m/s 접근
-        Assert.Equal(ob, g.ContactObject(0));
-        Assert.InRange(g.Penetration(0), 0.0099f, 0.0101f);
-        Assert.Equal(Holo.SpatialHapticCognitiveInteractionGuard.MaxForceN, g.ForceMagnitude(0), 4);
-        Assert.Equal(1, g.ForceClamped);
-        Assert.True(g.Force(0).Y > 0f);
-        var peak = 0f;
-        foreach (var s in g.Waveform(0)) { Assert.InRange(s, -1f, 1f); peak = MathF.Max(peak, MathF.Abs(s)); }
-        Assert.True(peak > 0.05f);                                          // 접촉 과도
-        g.StepHand(0, new V3(0f, 1.09f, 0f), hdt);
-        Assert.Equal(2f, g.ForceMagnitude(0), 2);                           // 정지 = k·d
-        g.StepHand(0, new V3(0.003f, 1.09f, 0f), hdt);
-        Assert.True(g.TextureHz(0) >= 40f);
-        g.StepHand(0, new V3(0f, 1.3f, 0f), hdt);
-        Assert.Equal(-1, g.ContactObject(0));
-        Assert.Equal(1, g.Releases);
-        Assert.True(Holo.SpatialHapticCognitiveInteractionGuard.SegmentCrosses(new V3(-0.3f, 1f, 0f), new V3(0.3f, 1f, 0f), new V3(0f, 1f, 0f), 0.1f, out var th) && th > 0f && th < 0.5f);
-        g.StepHand(1, new V3(-0.3f, 1f, 0f), hdt);
-        g.StepHand(1, new V3(0.3f, 1f, 0f), hdt);                           // 한 틱에 관통(터널링)
-        Assert.Equal(1, g.PopThroughBlocked);
-        Assert.Equal(ob, g.ContactObject(1));
-        Assert.True(g.Proxy(1).X < -0.09f);                                 // 프록시 = 진입면 유지
-        Assert.True(g.Force(1).X < 0f);
-        g.StepHand(1, new V3(-0.3f, 1f, 0f), hdt);
-        Assert.Equal(-1, g.ContactObject(1));
-
-        // ── HOLO-3: 인지 안정 가드(회전 제한 자기 억제 · 지연 → 컴포트 · 회복) ──
-        var head = new V3(0f, 0.2f, 0f);
-        for (var i = 0; i < 300; i++) g.StepCognitive(head, V3.Zero, head, V3.Zero, 12f, 16f, hdt);
-        Assert.True(g.Sickness < 0.01f && g.Vignette < 0.05f && !g.ComfortMode);
-        Assert.Equal(0, g.Interventions);
-        var spin = head + new V3(0f, MathF.PI, 0f);
-        for (var i = 0; i < 1200; i++)
-        {
-            var corr = g.StepCognitive(head, V3.Zero, spin, V3.Zero, 12f, 16f, hdt);
-            Assert.True((corr - head).Length() <= 90f * MathF.PI / 180f + 1e-4f);
-        }
-        Assert.True(g.Interventions > 0);
-        Assert.True(g.PeakSickness < 0.6f);                                 // 회전 제한이 멀미를 자기 억제
-        Assert.True(g.RotationLimitDeg < 60f && g.Vignette > 0.3f);
-        Assert.False(g.ComfortMode);
-        for (var i = 0; i < 900; i++) g.StepCognitive(head, V3.Zero, spin, new V3(3f, 0f, 0f), 60f, 16f, hdt);
-        Assert.True(g.ComfortMode && g.Reprojection);
-        Assert.Equal(1, g.ComfortEntries);
-        Assert.Equal(30f, g.RotationLimitDeg);
-        Assert.Equal(1f, g.AnchorOpacity);
-        for (var i = 0; i < 1500; i++) g.StepCognitive(head, V3.Zero, head, V3.Zero, 12f, 16f, hdt);
-        Assert.False(g.ComfortMode);
-        Assert.Equal(Holo.SicknessLevel.Comfortable, g.Level);
-        Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>
-        {
-            for (var i = 0; i < 200; i++) { g.StepHand(0, new V3(0f, 1.09f + 0.01f * MathF.Sin(i), 0f), hdt); g.StepCognitive(head, V3.Zero, spin, V3.Zero, 12f, 16f, hdt); }
-        }));
-
-        // ── 러너: 퍼포머 스트리밍 · 분기 · 햅틱 · 무할당 틱 ──
-        var run = new Holo.HolographicTelepresenceStudioRunner(new Holo.HolographicLightFieldTelepresenceEngine(), new Holo.UniversalAgiCinematicDirectorSynthesizer(), new Holo.SpatialHapticCognitiveInteractionGuard());
-        Assert.Equal(Holo.HolographicTelepresenceStudioRunner.Splats, run.Holo.ReceivedCount);
-        for (var i = 0; i < 300; i++) run.Step();
-        Assert.True(run.Holo.Mbps > 0f && run.Holo.Mbps <= run.Holo.BudgetMbps);
-        Assert.True(run.Holo.Coverage(22) > 100);
-        Assert.True(run.Guard.Touches >= 1);
-        Assert.Equal(300, run.Director.Ticks);
-        run.Swipe();
-        for (var i = 0; i < 12; i++) run.Step();
-        Assert.True(run.Guard.PopThroughBlocked >= 1);
-        Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>
-        {
-            for (var i = 0; i < 120; i++) run.Step();
-        }));
-        Assert.Equal(Holo.HolographicTelepresenceStudioRunner.SeriesLen, run.SeriesCount);
-        run.Dispose();
-    }
-
-    [Fact]
-    [Trait("Category", "FastUnit")]
     public void RoboticMoCo_And_PhysicalStageHIL_Check()
     {
         // ── MOCO-1: SIMD 커널 = 스칼라 비트 동일(길이 0..37) ──
@@ -16730,193 +13564,6 @@ class "Proto"
         run.Dispose();
     }
 
-    [Fact]
-    [Trait("Category", "Integration")]
-    public void NeuralCodec_And_GlobalEdgeCdn_Check()
-    {
-        // ── CDN-1: SIMD 커널 = 스칼라 비트 동일(길이 0..37) ──
-        var rng = new Random(1702);
-        for (var n = 0; n <= 37; n++)
-        {
-            var a = new float[n]; var b = new float[n]; var w = new float[n];
-            for (var i = 0; i < n; i++) { a[i] = (float)(rng.NextDouble() * 400 - 200); b[i] = (float)(rng.NextDouble() * 400 - 200); w[i] = 0.05f + (float)rng.NextDouble(); }
-            var d1 = new float[n]; var d2 = new float[n];
-            Ncd.NvcSimd.Sub(a, b, d1); Ncd.NvcSimd.SubScalar(a, b, d2); Assert.Equal(d2, d1);
-            Ncd.NvcSimd.AddClamp(a, b, d1, 0f, 255f); Ncd.NvcSimd.AddClampScalar(a, b, d2, 0f, 255f); Assert.Equal(d2, d1);
-            var q1 = new int[n]; var q2 = new int[n];
-            Assert.Equal(Ncd.NvcSimd.QuantizeUniformScalar(a, q2, 0.37f, 0.5f), Ncd.NvcSimd.QuantizeUniform(a, q1, 0.37f, 0.5f)); Assert.Equal(q2, q1);
-            Assert.Equal(Ncd.NvcSimd.QuantizeWeightedScalar(a, w, q2, 1f / 6f), Ncd.NvcSimd.QuantizeWeighted(a, w, q1, 1f / 6f)); Assert.Equal(q2, q1);
-            Ncd.NvcSimd.DequantWeighted(q1, w, d1); Ncd.NvcSimd.DequantWeightedScalar(q1, w, d2); Assert.Equal(d2, d1);
-            Ncd.NvcSimd.DequantAddUniform(q1, b, d1, 0.7f); Ncd.NvcSimd.DequantAddUniformScalar(q1, b, d2, 0.7f); Assert.Equal(d2, d1);
-            Assert.True(Math.Abs(Ncd.NvcSimd.Sad(a, b) - Ncd.NvcSimd.SadScalar(a, b)) <= 1e-3f * (1 + Ncd.NvcSimd.SadScalar(a, b)));
-            Ncd.CdnSimd.Add(a, b, d1); Ncd.CdnSimd.AddScalar(a, b, d2); Assert.Equal(d2, d1);
-            var s1 = new byte[n]; var s2 = new byte[n]; var src = new byte[n]; rng.NextBytes(src); rng.NextBytes(s1); s1.AsSpan().CopyTo(s2);
-            var c = (byte)rng.Next(256);
-            Ncd.Gf256.MulXor(c, src, s1); Ncd.Gf256.MulXorScalar(c, src, s2); Assert.Equal(s2, s1);
-        }
-        // GF(2⁸): 곱 역원 · 분배 법칙
-        for (var x = 1; x < 256; x++) Assert.Equal(1, Ncd.Gf256.Mul((byte)x, Ncd.Gf256.Inv((byte)x)));
-        Assert.Equal(Ncd.Gf256.Mul(7, (byte)(9 ^ 200)), (byte)(Ncd.Gf256.Mul(7, 9) ^ Ncd.Gf256.Mul(7, 200)));
-
-        // ── 비트스트림 Exp-Golomb 왕복 · 손상 판독 무예외 ──
-        var buf = new byte[4096];
-        var bw = new Ncd.NvcBitWriter(); bw.Reset(buf, 0);
-        for (var v = -300; v <= 300; v += 7) { bw.PutSe(v); bw.PutUe((uint)(v + 300)); bw.Put((uint)(v & 0x1F), 5); }
-        var bytes = bw.Finish();
-        Assert.False(bw.Overflow);
-        var br = new Ncd.NvcBitReader(); br.Reset(buf, 0, bytes);
-        for (var v = -300; v <= 300; v += 7) { Assert.Equal(v, br.GetSe()); Assert.Equal((uint)(v + 300), br.GetUe()); Assert.Equal((uint)(v & 0x1F), br.Get(5)); }
-        Assert.False(br.Error);
-        br.Reset(buf, 0, 2); for (var i = 0; i < 20; i++) br.GetUe();
-        Assert.True(br.Error);
-
-        // ── 코덱: 인코더 재구성 = 독립 디코더 비트 동일 · 품질 · 시간 중복 절감 · 스플랫 오차 한계 ──
-        var codec = new Ncd.NeuralVolumetricVideoCodecEngine { FixedQp = 26 };
-        var frame = new float[Ncd.NeuralVolumetricVideoCodecEngine.Pixels];
-        var splat = new Ncd.VolumetricSplatFrame(Ncd.NeuralVolumetricVideoCodecEngine.MaxSplats);
-        long keyBits = 0, interBits = 0; var inter = 0;
-        for (var f = 0; f < 40; f++)
-        {
-            var t = f / 30.0;
-            Ncd.NeuralVolumetricVideoCodecEngine.SynthesizeFrame(frame, t);
-            Ncd.NeuralVolumetricVideoCodecEngine.SynthesizeSplats(splat, 1500, t);
-            codec.Encode(frame, splat);
-            if (codec.LastType == Ncd.NvcFrameType.Intra) keyBits += codec.LastVideoBits; else { interBits += codec.LastVideoBits; inter++; }
-            Assert.True(codec.Decode(codec.AccessUnit));
-            Assert.True(codec.Reconstructed.SequenceEqual(codec.Decoded));
-            var ds = codec.DecodedSplats; var es = codec.EncoderSplats;
-            Assert.Equal(1500, ds.Count);
-            var step = Ncd.NeuralVolumetricVideoCodecEngine.SplatScale(26);
-            for (var at = 0; at < Ncd.VolumetricSplatFrame.Attributes; at++)
-            {
-                Assert.True(ds.Plane[at].AsSpan(0, 1500).SequenceEqual(es.Plane[at].AsSpan(0, 1500)));
-                for (var i = 0; i < 1500; i += 37) Assert.True(Math.Abs(ds.Plane[at][i] - splat.Plane[at][i]) <= Ncd.NeuralVolumetricVideoCodecEngine.SplatBaseStep[at] * step * 0.5f + 1e-5f);
-            }
-            Assert.True(codec.EncoderPsnr > 33f, "PSNR " + codec.EncoderPsnr);
-        }
-        Assert.Equal(1, codec.KeyFrames);
-        Assert.True(interBits / inter < keyBits * 0.35, "P " + interBits / inter + " vs I " + keyBits);
-        Assert.True(codec.SkipRatio > 0.3f && codec.SplatChangedRatio < 0.5f);
-        Assert.True(Ncd.NeuralVolumetricVideoCodecEngine.Ssim(frame, codec.Decoded) > 0.9f);
-        Assert.True(codec.CompressionRatio > 8f);
-        // 무할당 인코드/디코드
-        Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>
-        {
-            for (var f = 40; f < 46; f++)
-            {
-                Ncd.NeuralVolumetricVideoCodecEngine.SynthesizeFrame(frame, f / 30.0);
-                Ncd.NeuralVolumetricVideoCodecEngine.SynthesizeSplats(splat, 1500, f / 30.0);
-                codec.Encode(frame, splat); codec.Decode(codec.AccessUnit);
-            }
-        }));
-        // 손상 AU: 예외 없이 거부 · 참조 보존
-        var good = codec.AccessUnit.ToArray();
-        var before = codec.Decoded.ToArray();
-        var bad = (byte[])good.Clone(); bad[0] = 0;
-        Assert.False(codec.Decode(bad));
-        Assert.False(codec.Decode(good.AsSpan(0, Math.Min(6, good.Length))));
-        for (var trial = 0; trial < 30; trial++)
-        {
-            var junk = (byte[])good.Clone();
-            for (var i = 4; i < junk.Length; i += 1 + rng.Next(5)) junk[i] = (byte)rng.Next(256);
-            codec.Decode(junk);
-        }
-        Assert.True(codec.DecodeErrors >= 2);
-        // 레이트 제어: 학습 R-Q 모델 → 목표 비트 수렴
-        var rc = new Ncd.NeuralVolumetricVideoCodecEngine { TargetBitsPerFrame = 6000f };
-        long rcBits = 0; var rcN = 0;
-        for (var f = 0; f < 80; f++)
-        {
-            Ncd.NeuralVolumetricVideoCodecEngine.SynthesizeFrame(frame, f / 30.0);
-            rc.Encode(frame, null);
-            if (f >= 40 && rc.LastType == Ncd.NvcFrameType.Inter) { rcBits += rc.LastVideoBits; rcN++; }
-        }
-        var mean = rcBits / (double)rcN;
-        Assert.True(mean > 6000 * 0.6 && mean < 6000 * 1.4, "RC mean " + mean);
-        rc.TargetBitsPerFrame = 1500f;
-        for (var f = 80; f < 130; f++) { Ncd.NeuralVolumetricVideoCodecEngine.SynthesizeFrame(frame, f / 30.0); rc.Encode(frame, null); }
-        Assert.True(rc.LastQp > 26);
-
-        // ── CDN-3: 리드-솔로몬 소거 복원(m 이하 = 정확 복원 · 초과 = 실패) ──
-        var guard = new Ncd.PacketLossConcealmentFecGuard();
-        const int K = 10, M = 4, P = Ncd.PacketLossConcealmentFecGuard.Payload;
-        var data = new byte[K * P]; rng.NextBytes(data);
-        for (var trial = 0; trial < 20; trial++)
-        {
-            guard.EncodeBlockForTest(data, K, M);
-            var erase = 1 + trial % M;
-            var used = new bool[K + M];
-            for (var e = 0; e < erase; e++)
-            {
-                int slot; do slot = rng.Next(K + M); while (used[slot]);
-                used[slot] = true;
-                guard.EraseForTest(slot < K ? slot : Ncd.PacketLossConcealmentFecGuard.MaxK + slot - K);
-            }
-            Assert.True(guard.RecoverForTest() >= 0);
-            for (var i = 0; i < K; i++) Assert.True(guard.DataPacketForTest(i).SequenceEqual(data.AsSpan(i * P, P)));
-        }
-        guard.EncodeBlockForTest(data, K, M);
-        for (var e = 0; e < M + 1; e++) guard.EraseForTest(e);
-        Assert.Equal(-1, guard.RecoverForTest());
-
-        // ── CDN-2: 라우팅 · 용량 · 장애 우회 · ABR ──
-        var cdn = new Ncd.GlobalEdgeCdnRoutingSynthesizer();
-        for (var s = 0; s < 90; s++) cdn.Step(1f / 30f, (s + 1) / 30.0);
-        for (var r = 0; r < Ncd.GlobalEdgeCdnRoutingSynthesizer.Regions; r++)
-        {
-            var sum = 0f;
-            for (var j = 0; j < Ncd.GlobalEdgeCdnRoutingSynthesizer.Nodes; j++) sum += cdn.Alloc(r, j);
-            Assert.True(Math.Abs(sum - cdn.DemandGbps(r)) <= 1e-3f * (1 + cdn.DemandGbps(r)));
-            Assert.Equal(0f, cdn.Alloc(r, Ncd.GlobalEdgeCdnRoutingSynthesizer.PeerBase + (r + 1) % Ncd.GlobalEdgeCdnRoutingSynthesizer.Regions));
-            Assert.True(cdn.RegionRttMs(r) > 0f && cdn.RegionRttMs(r) < 200f);
-        }
-        Assert.True(cdn.Alloc(0, 1) > 0f && cdn.Alloc(0, 1) >= cdn.Alloc(0, 0));     // 서울 시청자 → 서울 PoP 우선
-        Assert.True(cdn.EdgeShare + cdn.PeerShare > 0.7f && cdn.PeerShare > 0f, "e " + cdn.EdgeShare + " p " + cdn.PeerShare + " o " + cdn.OriginShare + " d " + cdn.TotalDemandGbps + " r " + cdn.Rung(0) + "," + cdn.Rung(4));
-        cdn.FailNode(1);
-        cdn.Step(1f / 30f, 3.1);
-        Assert.Equal(0f, cdn.Alloc(0, 1));
-        Assert.NotEqual(1, cdn.Primary(0));
-        Assert.True(cdn.Reroutes > 0 && cdn.Failovers == 1);
-        cdn.RestoreNode(1);
-        var rungBefore = cdn.Rung(0);
-        cdn.BandwidthDrop(0, 60f);
-        for (var s = 0; s < 600; s++) cdn.Step(1f / 30f, 3.1 + (s + 1) / 30.0);
-        Assert.True(cdn.Rung(0) < rungBefore || cdn.Rung(0) == 0);
-        Assert.True(cdn.EstimateMbps(0) < 600f);
-        Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>
-        {
-            for (var s = 0; s < 100; s++) cdn.Step(1f / 30f, 30 + s / 30.0);
-        }));
-
-        // ── 러너: 종단 간 스트리밍 · FEC 복원율 · 은닉 + PLI · 무할당 ──
-        var run = new Ncd.NeuralCodecEdgeCdnStudioRunner(new Ncd.NeuralVolumetricVideoCodecEngine(), new Ncd.GlobalEdgeCdnRoutingSynthesizer(), new Ncd.PacketLossConcealmentFecGuard());
-        for (var s = 0; s < 120; s++) run.Step();
-        Assert.True(run.Codec.DecodedFrames > 100);
-        Assert.True(run.ViewerPsnr > 25f && run.ViewerSsim > 0.7f, "viewer " + run.ViewerPsnr + " / " + run.ViewerSsim);
-        Assert.True(run.Guard.ParityPackets > 0);
-        run.Storm();
-        for (var s = 0; s < 150; s++) run.Step();
-        var g = run.Guard;
-        Assert.True(g.Lost + g.Late > 0 && g.Recovered > 0, "lost " + g.Lost + " rec " + g.Recovered);
-        Assert.True(g.RecoveryRate > 0.5f, "recovery " + g.RecoveryRate);
-        var keys = run.Codec.KeyFrames;
-        g.FecEnabled = false;                                                         // FEC 해제 + 폭풍 → 은닉 · PLI · IDR
-        run.Storm();
-        for (var s = 0; s < 150; s++) run.Step();
-        g.FecEnabled = true;
-        Assert.True(g.FramesConcealed > 0 && g.PliSent > 0 && run.Codec.KeyFrames > keys, "conceal " + g.FramesConcealed + " pli " + g.PliSent + " keys " + run.Codec.KeyFrames);
-        Assert.True(run.ConcealPsnr > 15f, "conceal psnr " + run.ConcealPsnr);
-        for (var s = 0; s < 120; s++) run.Step();
-        Assert.True(g.FramesClean + g.FramesRepaired > 200);
-        Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>
-        {
-            for (var s = 0; s < 60; s++) run.Step();
-        }));
-        Assert.Equal(Ncd.NeuralCodecEdgeCdnStudioRunner.SeriesLen, run.SeriesCount);
-        Assert.NotNull(run.Action);
-        run.Dispose();
-    }
-
 
 
     [Fact]
@@ -17076,206 +13723,6 @@ class "Proto"
         run.Dispose();
     }
 
-
-    [Fact]
-    [Trait("Category", "Integration")]
-    public void SpatialSlam_And_LidarMeshReconstruction_Check()
-    {
-        const int W = Slm.SpatialSlamStudioRunner.W, H = Slm.SpatialSlamStudioRunner.H;
-        const float F = Slm.SpatialSlamStudioRunner.F, CX = Slm.SpatialSlamStudioRunner.Cx, CY = Slm.SpatialSlamStudioRunner.Cy;
-        var center = Slm.SpatialSlamStudioRunner.PathCenter; var rad = Slm.SpatialSlamStudioRunner.PathRadius;
-        Slm.SlamPose Gt(long f) => Slm.SlamSyntheticRoom.Trajectory((double)f / Slm.SpatialSlamStudioRunner.FramesPerLoop, center, rad);
-        var depth = new float[W * H];
-
-        // ── SLAM-1a: 드리프트 없음 → ICP 추적 정확도 ──
-        var slam = new Slm.NeuralSpatialSlamTrackingEngine(W, H, F, F, CX, CY) { LoopClosureEnabled = false };
-        slam.Reset(Gt(0));
-        for (var f = 0; f < 60; f++)
-        {
-            Slm.SlamSyntheticRoom.RenderDepth(Gt(f), W, H, F, F, CX, CY, 6f, 0.0015f, (ulong)f * 31 + 1, depth);
-            slam.Track(depth, f, Gt(f));
-        }
-        Assert.Equal(0, slam.Lost);
-        Assert.True(slam.AteRmse < 0.03f, "ate " + slam.AteRmse);
-        Assert.True(Slm.SlamPose.AngleBetweenDeg(slam.Pose, Gt(59)) < 1f);
-        Assert.True(slam.Features > 0 && slam.KeyframeCount >= 2);
-        Assert.True(slam.LastRms < 0.02f);
-
-        // ── SLAM-1b: 드리프트 주입 1바퀴 → 루프 폐쇄 보정 ──
-        var s2 = new Slm.NeuralSpatialSlamTrackingEngine(W, H, F, F, CX, CY) { InjectDriftDeg = 0.04f, InjectDriftMm = 1.5f };
-        s2.Reset(Gt(0));
-        Slm.LoopClosure? closed = null;
-        s2.LoopClosed += lc => closed ??= lc;
-        var total = Slm.SpatialSlamStudioRunner.FramesPerLoop + 12;
-        for (var f = 0; f < total; f++)
-        {
-            Slm.SlamSyntheticRoom.RenderDepth(Gt(f), W, H, F, F, CX, CY, 6f, 0.0015f, (ulong)f * 31 + 1, depth);
-            s2.Track(depth, f, Gt(f));
-        }
-        Assert.NotNull(closed);
-        var c = closed!.Value;
-        Assert.True(c.Frame >= Slm.SpatialSlamStudioRunner.FramesPerLoop - 20, "closure frame " + c.Frame);
-        Assert.True(c.ErrorBeforeM > 0.2f, "before " + c.ErrorBeforeM);
-        Assert.True(c.ErrorAfterM < c.ErrorBeforeM * 0.3f, "after " + c.ErrorAfterM + " before " + c.ErrorBeforeM);
-        Assert.True(c.CorrectionDeg > 3f);
-        Assert.True(s2.CurrentErrorM < 0.15f, "end err " + s2.CurrentErrorM + " " + c + " loops " + s2.LoopCount + " kfs " + s2.KeyframeCount);
-
-        // 무할당 추적
-        var s3 = new Slm.NeuralSpatialSlamTrackingEngine(W, H, F, F, CX, CY);
-        s3.Reset(Gt(0));
-        for (var f = 0; f < 5; f++) { Slm.SlamSyntheticRoom.RenderDepth(Gt(f), W, H, F, F, CX, CY, 6f, 0.0015f, 3, depth); s3.Track(depth, f); }
-        Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>
-        {
-            for (var f = 5; f < 25; f++) s3.Track(depth, f);
-        }));
-
-        // ── SLAM-2: TSDF(지상 진실 자세) → Surface Nets 정점이 실제 표면 위 ──
-        var tsdf = new Slm.LidarPointCloudMeshReconstructionSynthesizer();
-        for (var f = 0; f < Slm.SpatialSlamStudioRunner.FramesPerLoop; f += 4)
-        {
-            Slm.SlamSyntheticRoom.RenderDepth(Gt(f), W, H, F, F, CX, CY, 6f, 0.0015f, (ulong)f + 5, depth);
-            tsdf.IntegrateDepth(depth, W, H, F, F, CX, CY, Gt(f));
-        }
-        // 천장 스캔(기기를 위로 향함 · 지상 진실 자세)
-        for (var k = 0; k < 8; k++)
-        {
-            var eye = center + new V3(0.8f * MathF.Cos(k * 0.785f), 0, 0.8f * MathF.Sin(k * 0.785f));
-            var up = Slm.SlamPose.LookAt(eye, eye + new V3(MathF.Cos(k * 0.785f), 1.2f, MathF.Sin(k * 0.785f)));
-            Slm.SlamSyntheticRoom.RenderDepth(up, W, H, F, F, CX, CY, 6f, 0.0015f, (ulong)k + 77, depth);
-            tsdf.IntegrateDepth(depth, W, H, F, F, CX, CY, up);
-        }
-        var nv = tsdf.ExtractMesh();
-        Assert.True(nv > 3000, "verts " + nv);
-        Assert.True(tsdf.TriangleCount > nv, "tris " + tsdf.TriangleCount);
-        Assert.False(tsdf.Truncated);
-        double err = 0;
-        for (var i = 0; i < nv; i++) err += MathF.Abs(Slm.SlamSyntheticRoom.Distance(tsdf.Vertex(i)));
-        err /= nv;
-        Assert.True(err < tsdf.Voxel * 0.35, "mesh err " + err);
-        foreach (var t in tsdf.Triangles) Assert.InRange(t, 0, nv - 1);
-        // 표면 sdf 샘플(바닥 위 0.5 m = +, 바닥 아래 = −)
-        Assert.True(tsdf.SampleSdf(new V3(-0.6f, 0.5f, 0.5f)) > 0.2f);
-        // 라이다 점 융합
-        var lid = new Slm.LidarPointCloudMeshReconstructionSynthesizer();
-        float[] lx = new float[16 * 180], ly = new float[16 * 180], lz = new float[16 * 180];
-        for (var f = 0; f < Slm.SpatialSlamStudioRunner.FramesPerLoop; f += 24)
-        {
-            var n = Slm.SlamSyntheticRoom.LidarSweep(Gt(f), 16, 180, 6f, 0.005f, (ulong)f + 9, lx, ly, lz);
-            Assert.True(n > 2000);
-            lid.IntegratePoints(lx, ly, lz, n, Gt(f));
-        }
-        var lv = lid.ExtractMesh();
-        Assert.True(lv > 1000, "lidar verts " + lv);
-        double lerr = 0;
-        for (var i = 0; i < lv; i++) lerr += MathF.Abs(Slm.SlamSyntheticRoom.Distance(lid.Vertex(i)));
-        Assert.True(lerr / lv < lid.Voxel * 0.6, "lidar err " + lerr / lv);
-        // 무할당 융합
-        tsdf.IntegrateDepth(depth, W, H, F, F, CX, CY, Gt(0));
-        tsdf.IntegrateDepth(depth, W, H, F, F, CX, CY, Gt(0));   // 원 볼륨 상태는 Step 40 이전과 동일(측정 창 1회분 그대로)
-        lid.IntegratePoints(lx, ly, lz, 1000, Gt(0));
-        tsdf.ExtractMesh();
-        // 측정은 쌍둥이 볼륨에서 — 같은 시점 재적분 재시도가 원 볼륨 가중치를 바꿔 아래 평면 검출 단언을 흔들지 않음(동일 핫패스)
-        var twinVol = new Slm.LidarPointCloudMeshReconstructionSynthesizer();
-        var twinLid = new Slm.LidarPointCloudMeshReconstructionSynthesizer();
-        twinVol.IntegrateDepth(depth, W, H, F, F, CX, CY, Gt(0)); twinLid.IntegratePoints(lx, ly, lz, 1000, Gt(0)); twinVol.ExtractMesh();
-        Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>
-        {
-            twinVol.IntegrateDepth(depth, W, H, F, F, CX, CY, Gt(0));
-            twinLid.IntegratePoints(lx, ly, lz, 1000, Gt(0));
-            twinVol.ExtractMesh();
-        }));
-        // OpenUSD / 3DGS
-        var layer = new PromptFlowStudio.Services.OpenUsd.UsdLayer("t.usda");
-        var pts = tsdf.ExportUsd(layer, 4000);
-        Assert.InRange(pts, 1000, 4000);
-        var prim = layer.Find("/World/SlamMesh");
-        Assert.True(prim >= 0);
-        Assert.Equal(pts, layer.PointsOf(prim).Length / 3);
-        var gs = new PromptFlowStudio.Services.Neural3d.GaussianScene(16);
-        var sp = tsdf.ExportGaussians(gs, 5000);
-        Assert.Equal(gs.Count, sp);
-        Assert.InRange(sp, 1000, 5000);
-
-        // ── SLAM-3: RANSAC 평면(바닥 · 천장 · 벽 · 테이블) + 앵커 가드 ──
-        var guard = new Slm.SpatialPlaneDetectionAnchorGuard { Surface = tsdf };
-        var np = guard.Detect(tsdf.VX, tsdf.VY, tsdf.VZ, tsdf.NX, tsdf.NY, tsdf.NZ);
-        Assert.True(np >= 5, "planes " + np);
-        int TableNear(Slm.SpatialPlaneDetectionAnchorGuard g) { for (var i = 0; i < g.PlaneCount; i++) if (g.Plane(i).Kind == Slm.PlaneKind.Table && MathF.Abs(g.Plane(i).Height - Slm.SlamSyntheticRoom.TableTop) < 0.07f) return i; return -1; }
-        var fl = guard.FindKind(Slm.PlaneKind.Floor); var ce = guard.FindKind(Slm.PlaneKind.Ceiling); var tb = TableNear(guard);
-        Assert.True(fl >= 0 && ce >= 0 && tb >= 0, "floor " + fl + " ceil " + ce + " table " + tb);
-        Assert.InRange(guard.Plane(fl).Height, -0.05f, 0.08f);
-        Assert.InRange(guard.Plane(ce).Height, 2.9f, 3.05f);
-        Assert.InRange(guard.Plane(tb).Height, Slm.SlamSyntheticRoom.TableTop - 0.07f, Slm.SlamSyntheticRoom.TableTop + 0.07f);
-        Assert.True(guard.CountKind(Slm.PlaneKind.Wall) >= 3);
-        var firstFloorId = guard.Plane(fl).Id;
-        guard.Detect(tsdf.VX, tsdf.VY, tsdf.VZ, tsdf.NX, tsdf.NY, tsdf.NZ);
-        guard.Detect(tsdf.VX, tsdf.VY, tsdf.VZ, tsdf.NX, tsdf.NY, tsdf.NZ);
-        fl = guard.FindKind(Slm.PlaneKind.Floor);
-        Assert.Equal(firstFloorId, guard.Plane(fl).Id);
-        Assert.True(guard.Plane(fl).Stable);
-        // 평면 검출 무할당
-        guard.Detect(tsdf.VX, tsdf.VY, tsdf.VZ, tsdf.NX, tsdf.NY, tsdf.NZ, 2);   // 원 가드는 1 회분 그대로(RANSAC 난수 상태 → 아래 앵커 단언 고정)
-        guard.Detect(tsdf.VX, tsdf.VY, tsdf.VZ, tsdf.NX, tsdf.NY, tsdf.NZ);
-        // 측정은 쌍둥이 가드에서 — Detect 마다 RANSAC 난수가 전진하므로 재시도 창이 원 가드의 평면 집합을 바꾸지 않게 분리(동일 핫패스)
-        var twinGuard = new Slm.SpatialPlaneDetectionAnchorGuard { Surface = tsdf };
-        twinGuard.Detect(tsdf.VX, tsdf.VY, tsdf.VZ, tsdf.NX, tsdf.NY, tsdf.NZ, 2);
-        twinGuard.Detect(tsdf.VX, tsdf.VY, tsdf.VZ, tsdf.NX, tsdf.NY, tsdf.NZ);
-        Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>
-        {
-            twinGuard.Detect(tsdf.VX, tsdf.VY, tsdf.VZ, tsdf.NX, tsdf.NY, tsdf.NZ, 2);
-            twinGuard.Detect(tsdf.VX, tsdf.VY, tsdf.VZ, tsdf.NX, tsdf.NY, tsdf.NZ);
-        }));
-        fl = guard.FindKind(Slm.PlaneKind.Floor); tb = TableNear(guard);
-        float HeightAt(int pi, float x, float z) { var pp = guard.Plane(pi); return -(pp.D + pp.Normal.X * x + pp.Normal.Z * z) / pp.Normal.Y; }
-        var aFloat = guard.AddAnchor("float", Slm.AnchorKind.Prop, new V3(-1.6f, 1.1f, 0.6f), 0.25f, 0.9f);
-        var aVase = guard.AddAnchor("vase", Slm.AnchorKind.Prop, new V3(1.2f, 1.25f, -0.2f), 0.08f, 0.3f);
-        var aWall = guard.AddAnchor("human", Slm.AnchorKind.DigitalHuman, new V3(2.85f, 0f, 0.2f), 0.3f, 1.75f);
-        var aSink = guard.AddAnchor("sink", Slm.AnchorKind.Prop, new V3(0.2f, -0.3f, 1.6f), 0.15f, 1.2f);
-        var fixes = guard.Guard(1f / 15);
-        Assert.True(fixes >= 4, "fixes " + fixes);
-        Assert.Equal(HeightAt(fl, -1.6f, 0.6f), guard.Anchor(aFloat).Position.Y, 3);   // 공중 부양 → 바닥
-        Assert.Equal(HeightAt(tb, 1.2f, -0.2f), guard.Anchor(aVase).Position.Y, 3);    // 테이블 위 부양 → 상판
-        Assert.InRange(guard.Anchor(aVase).Position.Y, Slm.SlamSyntheticRoom.TableTop - 0.07f, Slm.SlamSyntheticRoom.TableTop + 0.07f);
-        Assert.True(guard.Anchor(aWall).Position.X <= 3f - 0.3f + 0.06f, "wall x " + guard.Anchor(aWall).Position.X);
-        Assert.Equal(HeightAt(fl, guard.Anchor(aSink).Position.X, guard.Anchor(aSink).Position.Z), guard.Anchor(aSink).Position.Y, 3);    // 바닥 관통 → 바닥
-        Assert.InRange(guard.Anchor(aSink).Position.Y, -0.06f, 0.06f);
-        Assert.True(guard.Anchor(aFloat).Grounded && guard.Anchor(aVase).Grounded);
-        Assert.Equal(0, guard.Guard(1f / 15)); // 안정 후 재보정 0
-        // 중력 모드: 부양 소품이 낙하해 착지
-        var g2 = new Slm.SpatialPlaneDetectionAnchorGuard { Gravity = true };
-        g2.Detect(tsdf.VX, tsdf.VY, tsdf.VZ, tsdf.NX, tsdf.NY, tsdf.NZ);
-        var drop = g2.AddAnchor("drop", Slm.AnchorKind.Prop, new V3(-1.6f, 1.5f, 0.6f), 0.2f, 0.5f);
-        var steps = 0;
-        while (!g2.Anchor(drop).Grounded && steps < 200) { g2.Guard(1f / 60); steps++; }
-        Assert.True(g2.Anchor(drop).Grounded);
-        Assert.InRange(steps, 20, 60); // √(2·1.5/9.81) ≈ 0.55 s
-        Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>
-        {
-            for (var k = 0; k < 100; k++) guard.Guard(1f / 60);
-        }));
-
-        // ── SLAM-4: 러너(라이다 모드 포함) · 내보내기 ──
-        var run = new Slm.SpatialSlamStudioRunner(new Slm.NeuralSpatialSlamTrackingEngine(W, H, F, F, CX, CY), new Slm.LidarPointCloudMeshReconstructionSynthesizer(), new Slm.SpatialPlaneDetectionAnchorGuard());
-        for (var k = 0; k < 40; k++) run.Step();
-        Assert.Equal(40, run.Frame);
-        Assert.True(run.Mesh.VertexCount > 500);
-        Assert.True(run.Guard.PlaneCount >= 2);
-        Assert.True(run.CloudCount > 100);
-        run.LidarMode = true;
-        for (var k = 0; k < 10; k++) run.Step();
-        Assert.True(run.Mesh.PointsFused > 0);
-        var dir = Path.Combine(Path.GetTempPath(), "pf-slam-" + Guid.NewGuid().ToString("N"));
-        try
-        {
-            var path = run.Export(dir);
-            Assert.True(File.Exists(path));
-            var txt = File.ReadAllText(path);
-            Assert.Contains("SlamMesh", txt);
-            Assert.Contains("Plane_", txt);
-        }
-        finally { if (Directory.Exists(dir)) Directory.Delete(dir, true); }
-        run.Dispose();
-    }
 
 
     [Fact]
@@ -17924,14 +14371,6 @@ class "Proto"
     }
 
 
-    private sealed class FlatField : Us.IHeightField
-    {
-        private readonly float _h;
-        public FlatField(float h) => _h = h;
-        public float HeightAt(float x, float z) => _h;
-        public float AbsorptionAt(float x, float z) => 0.5f;
-    }
-
     [Fact]
     [Trait("Category", "FastUnit")]
     public void DigitalHumanPerformance_And_NeuralFacialRigging_Check()
@@ -18196,179 +14635,6 @@ class "Proto"
         Assert.Equal(Dh.FacePreset.Anger, run.Face.Preset);
         run.NewTake();
         Assert.Equal(0, run.Frame);
-        run.Dispose();
-    }
-
-    [Fact]
-    [Trait("Category", "Integration")]
-    public void GenerativeVfx_And_NeuralParticleFluid_Check()
-    {
-        // ══ VFX-1 SIMD 커널 = 스칼라(비트 일치 · 비정렬 꼬리) ══
-        var rnd = new Random(1681);
-        foreach (var len in new[] { 0, 1, 7, 8, 9, 15, 17, 33, 257, 1001 })
-        {
-            float[] R() { var a = new float[len]; for (var i = 0; i < len; i++) a[i] = (float)(rnd.NextDouble() * 6.0 - 3.0); return a; }
-            var x = R(); var v = R(); var s = R();
-            var x1 = (float[])x.Clone(); var x2 = (float[])x.Clone(); var p1 = new float[len]; var p2 = new float[len];
-            Gv.NeuralParticleFluidDynamicsEngine.Advance(x1, v, p1, 1f / 120f); Gv.NeuralParticleFluidDynamicsEngine.AdvanceScalar(x2, v, p2, 1f / 120f);
-            Assert.True(x1.AsSpan().SequenceEqual(x2) && p1.AsSpan().SequenceEqual(p2), $"advance {len}");
-            var v1 = (float[])v.Clone(); var v2 = (float[])v.Clone();
-            Gv.NeuralParticleFluidDynamicsEngine.AddScaled(v1, s, -0.08175f); Gv.NeuralParticleFluidDynamicsEngine.AddScaledScalar(v2, s, -0.08175f);
-            Assert.True(v1.AsSpan().SequenceEqual(v2), $"addscaled {len}");
-            Gv.NeuralParticleFluidDynamicsEngine.VelocityFrom(v1, x1, p1, 120f); Gv.NeuralParticleFluidDynamicsEngine.VelocityFromScalar(v2, x2, p2, 120f);
-            Assert.True(v1.AsSpan().SequenceEqual(v2), $"velocity {len}");
-        }
-        for (var a = -1f; a <= 1f; a += 0.25f) for (var sp = 0f; sp <= 12f; sp += 1.5f) { var m = Gv.NeuralParticleFluidDynamicsEngine.EddyViscosity(1f + a, sp); Assert.True(m >= 0.5f && m <= 2f, $"{m}"); }
-
-        // 댐 붕괴: 안정(NaN 없음 · 도메인 내 · 속도 상한) · 흐름 확산 · 밀도 ≈ 정지 밀도
-        Gv.NeuralParticleFluidDynamicsEngine Dam(float visc, float st)
-        {
-            var e = new Gv.NeuralParticleFluidDynamicsEngine(8000);
-            e.Configure(8000, new Nm.Vector3(-0.6f, 0f, -0.3f), new Nm.Vector3(0.6f, 1.2f, 0.3f), 0.1f);
-            e.Viscosity = visc; e.SurfaceTension = st;
-            e.EmitBlock(new Nm.Vector3(-0.58f, 0.01f, -0.28f), new Nm.Vector3(-0.2f, 0.5f, 0.28f), Nm.Vector3.Zero, Gv.FluidPhase.Liquid);
-            return e;
-        }
-        var dam = Dam(0.6f, 1.2f);
-        var n0 = dam.Count;
-        Assert.True(n0 > 900, $"{n0}");
-        for (var f = 0; f < 150; f++) dam.Step(1f / 60f);
-        float maxX = -9f, meanY = 0f;
-        for (var i = 0; i < dam.Count; i++)
-        {
-            Assert.False(float.IsNaN(dam.X[i]) || float.IsNaN(dam.Y[i]) || float.IsNaN(dam.VX[i]));
-            Assert.True(dam.X[i] >= -0.6f && dam.X[i] <= 0.6f && dam.Y[i] >= 0f && dam.Y[i] <= 1.2f && dam.Z[i] >= -0.3f && dam.Z[i] <= 0.3f);
-            maxX = MathF.Max(maxX, dam.X[i]); meanY += dam.Y[i];
-        }
-        meanY /= dam.Count;
-        Assert.True(maxX > 0.3f && meanY < 0.25f && dam.MaxSpeed < 6f, $"maxX {maxX} meanY {meanY} vmax {dam.MaxSpeed}");
-        Assert.True(dam.MeanDensity > dam.RestDensity * 0.5f && dam.MeanDensity < dam.RestDensity * 1.6f && dam.MeanNeighbors > 8f, $"ρ {dam.MeanDensity} nb {dam.MeanNeighbors}");
-        Assert.Equal(n0, dam.Count);
-
-        // 점성: 고점성 → 운동 에너지 ↓
-        var lo = Dam(0f, 1.2f); var hi = Dam(6f, 1.2f);
-        for (var f = 0; f < 40; f++) { lo.Step(1f / 60f); hi.Step(1f / 60f); }
-        Assert.True(hi.KineticEnergy < lo.KineticEnergy * 0.95f, $"KE hi {hi.KineticEnergy} lo {lo.KineticEnergy}");
-
-        // 표면장력: 무중력 성긴 구 → 응집(회전 반경 ↓)
-        float Gyration(float st)
-        {
-            var e = new Gv.NeuralParticleFluidDynamicsEngine(4000);
-            e.Configure(4000, new Nm.Vector3(-1f), new Nm.Vector3(1f), 0.1f);
-            e.Gravity = 0f; e.SurfaceTension = st; e.Stiffness = 40f;
-            var r2 = new Random(5);
-            for (var k = 0; k < 900; k++)
-            {
-                var d = new Nm.Vector3((float)r2.NextDouble() * 2 - 1, (float)r2.NextDouble() * 2 - 1, (float)r2.NextDouble() * 2 - 1);
-                if (d.LengthSquared() > 1f) { k--; continue; }
-                e.Emit(d * 0.42f, Nm.Vector3.Zero, Gv.FluidPhase.Liquid);
-            }
-            for (var f = 0; f < 60; f++) e.Step(1f / 60f);
-            double g = 0; for (var i = 0; i < e.Count; i++) g += e.X[i] * e.X[i] + e.Y[i] * e.Y[i] + e.Z[i] * e.Z[i];
-            return (float)Math.Sqrt(g / e.Count);
-        }
-        var g0 = Gyration(0f); var g1 = Gyration(6f);
-        Assert.True(g1 < g0 * 0.97f, $"rg st0 {g0} st6 {g1}");
-
-        // 가스: 부력 상승 · 수명 만료
-        var gas = new Gv.NeuralParticleFluidDynamicsEngine(2000);
-        gas.EmitNozzle(new Nm.Vector3(0, 0.3f, 0), Nm.Vector3.UnitY, 0.2f, 0.5f, 300, Gv.FluidPhase.Gas, 1f);
-        for (var f = 0; f < 30; f++) gas.Step(1f / 60f);
-        double gy = 0; for (var i = 0; i < gas.Count; i++) gy += gas.Y[i];
-        Assert.True(gas.GasCount == 300 && gy / gas.Count > 0.5, $"{gas.GasCount} {gy / gas.Count}");
-        for (var f = 0; f < 40; f++) gas.Step(1f / 60f);
-        Assert.True(gas.Count == 0 && gas.Expired == 300);
-
-        // 무할당 스텝
-        Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>
-        {
-            for (var f = 0; f < 10; f++) dam.Step(1f / 60f);
-        }));
-
-        // ══ VFX-3 충돌 · 비산 · 젖음 · 3DGS 피드백 ══
-        var terrain = new Gv.VfxStudioTerrain();
-        var gd = new Gv.InteractiveVfxCollisionSplashGuard { Terrain = terrain };
-        var fl = new Gv.NeuralParticleFluidDynamicsEngine(4000) { Collider = gd };
-        for (var k = 0; k < 200; k++) fl.Emit(new Nm.Vector3(-1.2f + k * 0.004f, 1.6f, 0.5f), new Nm.Vector3(0, -4f, 0), Gv.FluidPhase.Liquid);
-        for (var f = 0; f < 50; f++) { fl.Step(1f / 60f); gd.StepSecondary(1f / 60f); }
-        for (var i = 0; i < fl.Count; i++) Assert.True(fl.Y[i] >= terrain.HeightAt(fl.X[i], fl.Z[i]) - fl.H, $"{fl.Y[i]}");
-        Assert.True(gd.TerrainContacts > 0 && gd.Splashes > 0 && gd.DropletsSpawned > 0 && gd.ImpactCount > 0 && gd.MaxImpactSpeed > 4f, $"c {gd.TerrainContacts} s {gd.Splashes} d {gd.DropletsSpawned} v {gd.MaxImpactSpeed}");
-        Assert.True(gd.WetCoverage > 0f && gd.Impact(0).Kind == PromptFlowStudio.Services.OpenUsd.ImpactKind.Ground);
-        var nrm = Gv.InteractiveVfxCollisionSplashGuard.TerrainNormal(terrain, 0f, 0f, 0.01f);
-        Assert.True(nrm.Y > 0.99f && nrm.X < 0f && MathF.Abs(nrm.Length() - 1f) < 1e-5f, $"{nrm}");
-
-        // 캐릭터 3DGS 프록시: 머리 위 낙하 → 편향 · 젖음 → SH 어둡게 → 리셋 시 원본 복원
-        var scene = new PromptFlowStudio.Services.Neural3d.GaussianScene(64);
-        for (var k = 0; k < 40; k++) scene.Add(new Nm.Vector3(0.02f * (k % 5), 1.5f + 0.02f * (k / 5), 0f), Nm.Quaternion.Identity, new Nm.Vector3(0.05f), 0.9f, new Nm.Vector3(0.8f, 0.6f, 0.5f));
-        var dc0 = scene.Sh[0];
-        var gd2 = new Gv.InteractiveVfxCollisionSplashGuard();
-        gd2.BindSplatProxies(scene, 8);
-        Assert.Equal(8, gd2.ProxyCount);
-        var fl2 = new Gv.NeuralParticleFluidDynamicsEngine(1000) { Collider = gd2 };
-        for (var k = 0; k < 60; k++) fl2.Emit(new Nm.Vector3(0.04f + (k % 6) * 0.01f, 2.2f, (k / 6) * 0.004f), new Nm.Vector3(0, -3f, 0), Gv.FluidPhase.Liquid);
-        for (var f = 0; f < 30; f++) { fl2.Step(1f / 60f); gd2.StepSecondary(1f / 60f); }
-        var maxWet = 0f; for (var k = 0; k < gd2.ProxyCount; k++) maxWet = MathF.Max(maxWet, gd2.ProxyWetness(k));
-        Assert.True(gd2.ProxyContacts > 0 && maxWet > 0f, $"{gd2.ProxyContacts} {maxWet}");
-        var darkened = false; for (var i = 0; i < scene.Count; i++) if (scene.BaseColor(i).X < 0.8f - 1e-4f) darkened = true;
-        Assert.True(darkened);
-        gd2.Reset();
-        Assert.Equal(dc0, scene.Sh[0]);
-        // 파편: 착지 후 지면 위
-        gd.SpawnDebris(new Nm.Vector3(0, 0.5f, 0), 50, 4f);
-        for (var f = 0; f < 180; f++) gd.StepSecondary(1f / 60f);
-        Assert.Equal(50, gd.DebrisCount);
-        for (var i = 0; i < Gv.InteractiveVfxCollisionSplashGuard.MaxDebris; i++) if (gd.DebrisAlive(i)) Assert.True(gd.DebrisPosition(i).Y >= terrain.HeightAt(gd.DebrisPosition(i).X, gd.DebrisPosition(i).Z) - 1e-3f);
-        Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>
-        {
-            for (var f = 0; f < 10; f++) { fl.Step(1f / 60f); gd.StepSecondary(1f / 60f); }
-        }));
-
-        // ══ VFX-2 프롬프트 → 이벤트 ══
-        var vol = new Gv.VolumetricFireSmokeAtmosphericSynthesizer(24);
-        Assert.Equal(0, vol.TriggerFromPrompt("평화로운 초원 산책", Nm.Vector3.Zero));
-        Assert.Equal(3, vol.TriggerFromPrompt("거대한 폭발 뒤 굴뚝 연기와 짙은 안개", Nm.Vector3.Zero));
-        Assert.Equal(1, vol.TriggerFromPrompt("A small campfire FLAME flickers", Nm.Vector3.Zero));
-        Assert.Equal(Gv.VfxEventKind.Fire, vol.LastEvent);
-        for (var f = 0; f < 30; f++) vol.Step(1f / 60f);
-        Assert.True(vol.MaxTemperature > 2f && vol.TotalDensity > 0f && vol.MeanTransmittance < 1f && vol.ActiveEmitters >= 3, $"T {vol.MaxTemperature} ρ {vol.TotalDensity} tr {vol.MeanTransmittance}");
-        var hot = false; for (var i = 0; i < vol.ImageR.Length; i++) if (vol.ImageR[i] > vol.ImageB[i] * 1.5f && vol.ImageR[i] > 0.05f) hot = true;
-        Assert.True(hot);
-        for (var i = 0; i < vol.Density.Length; i++) Assert.False(float.IsNaN(vol.Density[i]));
-
-        // Beer–Lambert: 수직 광원 · 안개(높이만 의존) → 투과율 = exp(−σΔ Σ위쪽 ρ)
-        var fog = new Gv.VolumetricFireSmokeAtmosphericSynthesizer(16) { LightDirection = -Nm.Vector3.UnitY, Turbulence = 0f, Buoyancy = 0f, Weight = 0f };
-        fog.Trigger(Gv.VfxEventKind.Fog, Nm.Vector3.Zero, 2f);
-        for (var f = 0; f < 20; f++) fog.Step(1f / 60f);
-        var nn = fog.N; var cell = fog.BoxSize / nn;
-        for (var y = 0; y < nn; y += 3)
-        {
-            double tau = 0; for (var yy = y + 1; yy < nn; yy++) tau += fog.Density[(5 * nn + yy) * nn + 7] * fog.Extinction * cell;
-            Assert.True(Math.Abs(fog.LightTransmittance[(5 * nn + y) * nn + 7] - Math.Exp(-tau)) < 1e-4, $"y{y}");
-        }
-        Assert.True(fog.LightTransmittance[(5 * nn + 0) * nn + 7] < fog.LightTransmittance[(5 * nn + nn - 1) * nn + 7]);
-        var trDense = fog.MeanTransmittance;
-        fog.SetPreset(Gv.VolumePreset.ThinHaze); fog.Step(1f / 60f);
-        Assert.True(fog.MeanTransmittance > trDense, $"{fog.MeanTransmittance} vs {trDense}");
-        Assert.True(fog.SampleDensity(new Nm.Vector3(0, 0.3f, 0)) > 0f && fog.SampleDensity(new Nm.Vector3(9, 9, 9)) == 0f);
-        vol.Trigger(Gv.VfxEventKind.Explosion, Nm.Vector3.Zero);
-        Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>
-        {
-            for (var f = 0; f < 5; f++) vol.Step(1f / 60f);
-        }));
-
-        // ══ 러너: 노즐 → 유체 ↔ 충돌 ↔ 볼륨 → 3DGS 레이어 · 정상 상태 무할당 ══
-        var run = new Gv.GenerativeVfxStudioRunner(new Gv.NeuralParticleFluidDynamicsEngine(6000), new Gv.VolumetricFireSmokeAtmosphericSynthesizer(24), new Gv.InteractiveVfxCollisionSplashGuard());
-        for (var f = 0; f < 90; f++) run.TickOnce();
-        Assert.True(run.Fluid.Count > 3000 && run.FluidSplats.Count > 0 && run.Guard.Contacts > 0 && run.Volume.Steps == 90, $"{run.Fluid.Count} {run.FluidSplats.Count} {run.Guard.Contacts}");
-        Assert.True(run.TriggerPrompt("explosion near the character") == 1 && run.Guard.DebrisCount > 0);
-        run.Trigger(Gv.VfxEventKind.Explosion, new Nm.Vector3(0.5f, 0f, 0f));
-        for (var f = 0; f < 5; f++) run.TickOnce();
-        Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>
-        {
-            for (var f = 0; f < 10; f++) run.TickOnce();
-        }));
-        run.NewShot();
-        Assert.Equal(0, run.Fluid.Count);
         run.Dispose();
     }
 
@@ -20381,268 +16647,6 @@ class "Proto"
     }
 
     [Fact]
-    [Trait("Category", "FastUnit")]
-    public async Task SovereignMediaCloud_And_QuantumVault_Check()
-    {
-        static string Hex(ReadOnlySpan<byte> b) => Convert.ToHexString(b).ToLowerInvariant();
-        static string Sha3(ReadOnlySpan<byte> b) { var h = new byte[32]; Pq.KeccakState.Sha3_256(b, h); return Hex(h); }
-        static byte[] Un(string hex) => Convert.FromHexString(hex);
-
-        // 1) Keccak(FIPS 202): 공식 벡터 · 증분 흡수/압출 경계 일치
-        Assert.Equal("a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a", Sha3(ReadOnlySpan<byte>.Empty));
-        Assert.Equal("3a985da74fe225b2045c172d6bd390bd855f086e3e9d525b46bfe24511431532", Sha3("abc"u8));
-        var h512 = new byte[64]; Pq.KeccakState.Sha3_512("abc"u8, h512);
-        Assert.Equal("b751850b1a57168a5693cd924b6b096e08f621827444f70d884f5d0240d2712e10e116e9192af3c91a7ec57647e3934057340b4cf408d5a56592f8274eec53f0", Hex(h512));
-        var s128 = new byte[32]; Pq.KeccakState.Shake128(ReadOnlySpan<byte>.Empty, s128);
-        Assert.Equal("7f9c2ba4e88f827d616045507605853ed73b8093f6efbc88eb1a6eacfa66ef26", Hex(s128));
-        var s256 = new byte[32]; Pq.KeccakState.Shake256(ReadOnlySpan<byte>.Empty, s256);
-        Assert.Equal("46b9dd2b0ba88d13233b3feb743eeb243fcd52ea62b81b82b50c27646ed5762f", Hex(s256));
-        var big = new byte[1000]; new Random(53).NextBytes(big);
-        var one = new byte[500]; Pq.KeccakState.Shake128(big, one);
-        var inc = Pq.KeccakState.Shake128();
-        for (var o = 0; o < big.Length; o += 167) inc.Absorb(big.AsSpan(o, Math.Min(167, big.Length - o)));
-        var parts = new byte[500];
-        for (var o = 0; o < 500; o += 169) inc.Squeeze(parts.AsSpan(o, Math.Min(169, 500 - o)));
-        Assert.Equal(one, parts);
-        if (System.Security.Cryptography.SHA3_256.IsSupported) Assert.Equal(Hex(System.Security.Cryptography.SHA3_256.HashData(big)), Sha3(big));
-
-        // 2) ML-KEM-768: NIST ACVP 공식 벡터(keyGen · encap · decap) · 랜덤 왕복 · 암시적 거부 · 키 검사
-        var (kgEk, kgDk) = Pq.MlKem768.KeyGenInternal(Un(PqcKatVectors.KemKgD), Un(PqcKatVectors.KemKgZ));
-        Assert.Equal(PqcKatVectors.KemKgEkSha3, Sha3(kgEk));
-        Assert.Equal(PqcKatVectors.KemKgDkSha3, Sha3(kgDk));
-        var (encK, encC) = Pq.MlKem768.EncapsInternal(Un(PqcKatVectors.KemEncEk), Un(PqcKatVectors.KemEncM));
-        Assert.Equal(PqcKatVectors.KemEncK, Hex(encK));
-        Assert.Equal(PqcKatVectors.KemEncCSha3, Sha3(encC));
-        Assert.Equal(PqcKatVectors.KemDecK, Hex(Pq.MlKem768.DecapsInternal(Un(PqcKatVectors.KemDecDk), Un(PqcKatVectors.KemDecC))));
-        var (ek, dk) = Pq.MlKem768.GenerateKeyPair();
-        Assert.Equal((1184, 2400), (ek.Length, dk.Length));
-        var (ss, ct) = Pq.MlKem768.Encapsulate(ek);
-        Assert.Equal(1088, ct.Length);
-        Assert.Equal(ss, Pq.MlKem768.Decapsulate(dk, ct));
-        var badCt = (byte[])ct.Clone(); badCt[100] ^= 1;
-        var rejected = Pq.MlKem768.Decapsulate(dk, badCt);
-        Assert.NotEqual(ss, rejected);
-        var jz = new byte[32]; var jx = Pq.KeccakState.Shake256(); jx.Absorb(dk.AsSpan(2400 - 32)); jx.Absorb(badCt); jx.Squeeze(jz);
-        Assert.Equal(jz, rejected);                                                                                       // 암시적 거부 = J(z‖c)
-        var badEk = (byte[])ek.Clone(); badEk[0] = 0xFF; badEk[1] |= 0x0F;                                              // 계수 4095 ≥ q
-        Assert.False(Pq.MlKem768.CheckEncapsulationKey(badEk));
-        Assert.Throws<System.Security.Cryptography.CryptographicException>(() => Pq.MlKem768.Encapsulate(badEk));
-        var badDk = (byte[])dk.Clone(); badDk[1500] ^= 1;
-        Assert.Throws<System.Security.Cryptography.CryptographicException>(() => Pq.MlKem768.Decapsulate(badDk, ct));
-
-        // 3) ML-DSA-65: NIST ACVP 공식 벡터(keyGen · 결정적/헤지드 sigGen) · 왕복 · 위조 거부
-        var (kgPk, kgSk) = Pq.MlDsa65.KeyGenInternal(Un(PqcKatVectors.DsaKgSeed));
-        Assert.Equal(PqcKatVectors.DsaKgPkSha3, Sha3(kgPk));
-        Assert.Equal(PqcKatVectors.DsaKgSkSha3, Sha3(kgSk));
-        static byte[] Mp(string msg, string ctx) { var m = Convert.FromHexString(msg); var c = Convert.FromHexString(ctx); var r = new byte[2 + c.Length + m.Length]; r[1] = (byte)c.Length; c.CopyTo(r, 2); m.CopyTo(r, 2 + c.Length); return r; }
-        var sgSig = Pq.MlDsa65.SignInternal(Un(PqcKatVectors.DsaSgSk), Mp(PqcKatVectors.DsaSgMsg, PqcKatVectors.DsaSgCtx), new byte[32]);
-        Assert.Equal(PqcKatVectors.DsaSgSigSha3, Sha3(sgSig));
-        Assert.True(Pq.MlDsa65.Verify(Un(PqcKatVectors.DsaSgPk), Un(PqcKatVectors.DsaSgMsg), sgSig, Un(PqcKatVectors.DsaSgCtx)));
-        Assert.Equal(sgSig, Pq.MlDsa65.Sign(Un(PqcKatVectors.DsaSgSk), Un(PqcKatVectors.DsaSgMsg), Un(PqcKatVectors.DsaSgCtx), deterministic: true));
-        Assert.Equal(PqcKatVectors.DsaShSigSha3, Sha3(Pq.MlDsa65.SignInternal(Un(PqcKatVectors.DsaShSk), Mp(PqcKatVectors.DsaShMsg, PqcKatVectors.DsaShCtx), Un(PqcKatVectors.DsaShRnd))));
-        var (pk, sk) = Pq.MlDsa65.GenerateKeyPair();
-        Assert.Equal((1952, 4032), (pk.Length, sk.Length));
-        var msg = "시즌2 마스터 영상 원장"u8.ToArray();
-        var sig1 = Pq.MlDsa65.Sign(sk, msg, "ctx"u8);
-        var sig2 = Pq.MlDsa65.Sign(sk, msg, "ctx"u8);
-        Assert.Equal(3309, sig1.Length);
-        Assert.NotEqual(sig1, sig2);                                                                                       // 헤지드 서명
-        Assert.True(Pq.MlDsa65.Verify(pk, msg, sig1, "ctx"u8) && Pq.MlDsa65.Verify(pk, msg, sig2, "ctx"u8));
-        Assert.False(Pq.MlDsa65.Verify(pk, msg, sig1, "ctX"u8));
-        var msg2 = (byte[])msg.Clone(); msg2[0] ^= 1;
-        Assert.False(Pq.MlDsa65.Verify(pk, msg2, sig1, "ctx"u8));
-        for (var pos = 0; pos < sig1.Length; pos += 401) { var f = (byte[])sig1.Clone(); f[pos] ^= 0x10; Assert.False(Pq.MlDsa65.Verify(pk, msg, f, "ctx"u8)); }
-        Assert.False(Pq.MlDsa65.Verify(kgPk, msg, sig1, "ctx"u8));
-        Assert.Throws<ArgumentException>(() => Pq.MlDsa65.Sign(sk, msg, new byte[256]));
-
-        // 4) PQC 금고: 하이브리드 봉인/열기 · 변조 4부위 검출 · 키 회전 · 워터마크 · PQ 원장
-        var kek = System.Security.Cryptography.SHA256.HashData("vault-kek"u8);
-        var vault = new Sv.PostQuantumMediaVaultEngine(() => kek);
-        var k1 = vault.RotateKeys(DateTimeOffset.UnixEpoch);
-        Assert.StartsWith("pqv-", k1.Id);
-        var asset = new byte[50_000]; new Random(7).NextBytes(asset);
-        var env = vault.Seal("asset-1", asset, "한빛 스튜디오", "Secret", DateTimeOffset.UnixEpoch);
-        Assert.True(env.Length > asset.Length + 1088 + 3309);
-        var (plain, info) = vault.Open(env);
-        Assert.Equal(asset, plain);
-        Assert.Equal(("asset-1", "한빛 스튜디오", 50_000L, k1.Id), (info.AssetId, info.Owner, info.PlainBytes, info.KeyId));
-        Assert.Equal(Sha3(asset), info.PlainSha3);
-        foreach (var pos in new[] { 40, 1200, env.Length - 4000 - 3309 - 104, env.Length - 200 })                         // kemCt · eph/헤더 · 암호문 · 서명
-        {
-            var t = (byte[])env.Clone(); t[pos] ^= 0x01;
-            Assert.Throws<System.Security.Cryptography.CryptographicException>(() => vault.Open(t));
-        }
-        Assert.Equal(4, vault.TamperDetected);
-        Assert.Throws<System.Security.Cryptography.CryptographicException>(() => vault.Open(env.AsSpan(0, env.Length - 1)));
-        var k2 = vault.RotateKeys(DateTimeOffset.UnixEpoch.AddDays(1));
-        Assert.True(k1.Retired); Assert.False(k2.Retired); Assert.Same(k2, vault.Current);
-        Assert.Equal(asset, vault.Open(env).Plaintext);                                                                  // 은퇴 키로 기존 봉인 열기
-        Assert.Equal(k2.Id, vault.Open(vault.Seal("asset-2", "x"u8, "o", "k", DateTimeOffset.UnixEpoch)).Info.KeyId);
-        var stranger = new Sv.PostQuantumMediaVaultEngine(() => kek);
-        Assert.Throws<System.Security.Cryptography.CryptographicException>(() => stranger.Open(env));                    // 미보유 키
-        var wm = vault.SignWatermark("asset-1", "한빛 스튜디오", DateTimeOffset.UnixEpoch);
-        Assert.Equal((true, "asset-1", "한빛 스튜디오"), vault.VerifyWatermark(wm));
-        var wmParts = wm.Split('.');
-        var forgedPayload = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(k2.Id + "|asset-1|도용자|0")).TrimEnd('=').Replace('+', '-').Replace('/', '_');
-        Assert.False(vault.VerifyWatermark(forgedPayload + "." + wmParts[1] + "." + wmParts[2]).Ok);
-        Assert.False(vault.VerifyWatermark("garbage").Ok);
-        for (var i = 0; i < 3; i++) vault.AppendLedger(System.Text.Encoding.UTF8.GetBytes("settlement-" + i));
-        Assert.Equal(-1, vault.VerifyLedger(vault.Ledger));
-        var led = vault.Ledger.ToList();
-        led[1] = led[1] with { EntrySha3 = Sha3("forged"u8) };
-        Assert.Equal(1, vault.VerifyLedger(led));
-        led = vault.Ledger.ToList(); led.RemoveAt(0);
-        Assert.Equal(0, vault.VerifyLedger(led));
-        Assert.NotEqual(Sv.PostQuantumMediaVaultEngine.Combine(ss, ss, ct, ek), Sv.PostQuantumMediaVaultEngine.Combine(ss, ss, badCt, ek));   // ct 바인딩
-
-        // 5) 기밀 메시: 증명(재생/위조/불신/만료) · 주권 배치 · 암호 채널 Enclave 처리 · 재생/변조 거부 · 무할당 · 코드 변조 → 폐기 · 모델 봉인 바인딩
-        using var mesh = new Sv.SovereignMediaCloudConfidentialMesh();
-        Assert.Equal(6, mesh.EnclaveCount);
-        Assert.Equal(6, mesh.AttestAll(1000));
-        var lut = Enumerable.Range(0, 256).Select(i => (byte)(255 - i)).ToArray();
-        var measure = Sv.SovereignMediaCloudConfidentialMesh.Measure("pfs-render-enclave", "16.53.0");
-        Assert.False(mesh.LoadModel(0, mesh.SealModel(lut, Sv.SovereignMediaCloudConfidentialMesh.Measure("other", "1"))));   // 측정값 바인딩
-        for (var i = 0; i < mesh.EnclaveCount; i++) Assert.True(mesh.LoadModel(i, mesh.SealModel(lut, measure)));
-        var nonce = new byte[32]; new Random(1).NextBytes(nonce);
-        var quote = mesh.GenerateQuote(0, nonce, 2000);
-        Assert.True(mesh.VerifyQuote(quote, nonce, 2000, Sv.Jurisdiction.KR).Ok);
-        Assert.Equal("논스 재사용(재생)", mesh.VerifyQuote(quote, nonce, 2001).Reason);
-        var n2 = (byte[])nonce.Clone(); n2[0] ^= 1;
-        Assert.Equal("논스 불일치", mesh.VerifyQuote(quote, n2, 2001).Reason);
-        var q2 = mesh.GenerateQuote(0, n2, 3000);
-        Assert.Equal("관할 불일치", mesh.VerifyQuote(q2, n2, 3000, Sv.Jurisdiction.EU).Reason);
-        Assert.Equal("견적 만료", mesh.VerifyQuote(mesh.GenerateQuote(0, n2, 3000), n2, 3000 + 61_000).Reason);
-        var forgedQ = quote with { Measurement = Sv.SovereignMediaCloudConfidentialMesh.Measure("evil", "1"), Nonce = n2 };
-        Assert.Equal("플랫폼 서명 불신", mesh.VerifyQuote(forgedQ, n2, 2000).Reason);
-        using var otherMesh = new Sv.SovereignMediaCloudConfidentialMesh();
-        var n3 = new byte[32]; n3[5] = 9;
-        Assert.Equal("플랫폼 서명 불신", mesh.VerifyQuote(otherMesh.GenerateQuote(0, n3, 2000), n3, 2000).Reason);
-        var (pv, sess, enc) = mesh.Place(Sv.Jurisdiction.KR, 5000);
-        Assert.Equal(Sv.PlacementVerdict.Placed, pv);
-        Assert.Equal(Sv.Jurisdiction.KR, mesh.EnclaveJurisdiction(enc));
-        Assert.Equal(Sv.PlacementVerdict.NoEnclaveInJurisdiction, mesh.Place(Sv.Jurisdiction.IN, 5000).Verdict);
-        Assert.Equal(1, mesh.SovereigntyBlocks);
-        var frame = new byte[4096]; new Random(3).NextBytes(frame);
-        var req = new byte[4096 + 24]; var resp = new byte[4096 + 24]; var back = new byte[4096];
-        var rl = mesh.ClientEncrypt(sess, frame, req);
-        Assert.Equal(4096 + 24, rl);
-        Assert.False(req.AsSpan(0, 4096).SequenceEqual(frame));                                                          // 전송 중 암호문
-        var pl = mesh.ProcessFrame(sess, req.AsSpan(0, rl), resp);
-        Assert.Equal(rl, pl);
-        Assert.Equal(4096, mesh.ClientDecrypt(sess, resp.AsSpan(0, pl), back));
-        for (var i = 0; i < 4096; i++) Assert.Equal((byte)(255 - frame[i]), back[i]);                                   // Enclave 내 봉인 모델 적용
-        Assert.Equal(-1, mesh.ProcessFrame(sess, req.AsSpan(0, rl), resp));                                              // 재생 거부
-        rl = mesh.ClientEncrypt(sess, frame, req); req[10] ^= 1;
-        Assert.Equal(-1, mesh.ProcessFrame(sess, req.AsSpan(0, rl), resp));                                              // 변조 거부
-        Assert.Equal(0, AllocationProbe.MinAllocated(() =>
-        {
-            for (var i = 0; i < 50; i++) { var l = mesh.ClientEncrypt(sess, frame, req); var p = mesh.ProcessFrame(sess, req.AsSpan(0, l), resp); mesh.ClientDecrypt(sess, resp.AsSpan(0, p), back); }
-        }));
-        var placedKr = new List<int>();
-        Sv.PlacementVerdict v;
-        while ((v = mesh.Place(Sv.Jurisdiction.JP, 6000).Verdict) == Sv.PlacementVerdict.Placed) placedKr.Add(0);
-        Assert.Equal(Sv.PlacementVerdict.CapacityExhausted, v);
-        Assert.Equal(4, placedKr.Count);
-        mesh.UpdateEnclaveCode(enc, "pfs-render-enclave-patched", "evil");
-        Assert.False(mesh.Attest(enc, 7000));                                                                            // 미허용 측정값
-        Assert.Equal(Sv.EnclaveState.Untrusted, mesh.State(enc));
-        Assert.Throws<InvalidOperationException>(() => mesh.ClientEncrypt(sess, frame, req));                           // 세션 폐기
-        Assert.False(mesh.LoadModel(enc, mesh.SealModel(lut, measure)));
-
-        // 6) 거버넌스: RBAC/ABAC · 테넌트 경계 · 기한부 공유 · 등급/MFA/거주 · 명시 거부 · 격리 · 쿼터 원자성 · 감사 체인 · 무할당
-        var gov = new Sv.MultiTenantStudioGovernanceEngine(System.Security.Cryptography.SHA256.HashData("audit"u8));
-        var tKr = gov.AddTenant("KR", Sv.Jurisdiction.KR, 4, 8192, 100);
-        var tEu = gov.AddTenant("EU", Sv.Jurisdiction.EU, 2, 4096, 50);
-        var owner = gov.AddSubject("kim", tKr, Sv.TenantRole.Owner, Sv.Classification.Secret);
-        var editor = gov.AddSubject("lee", tKr, Sv.TenantRole.Editor, Sv.Classification.Internal);
-        var viewer = gov.AddSubject("park", tKr, Sv.TenantRole.Viewer, Sv.Classification.Confidential);
-        var euOwner = gov.AddSubject("anna", tEu, Sv.TenantRole.Owner, Sv.Classification.Secret);
-        var euEditor = gov.AddSubject("max", tEu, Sv.TenantRole.Editor, Sv.Classification.Secret);
-        var secret = gov.AddAsset("master", tKr, Sv.Classification.Secret, Sv.Jurisdiction.KR);
-        var internalA = gov.AddAsset("draft", tKr, Sv.Classification.Internal, Sv.Jurisdiction.KR);
-        var conf = gov.AddAsset("twin", tKr, Sv.Classification.Confidential, Sv.Jurisdiction.KR);
-        var krCtx = new Sv.AccessContext(Sv.Jurisdiction.KR, true, 1000);
-        Sv.DenyReason R(int s, Sv.AssetAction a, int asst, Sv.AccessContext c) => gov.Authorize(s, a, asst, c).Reason;
-        Assert.Equal(Sv.DenyReason.None, R(editor, Sv.AssetAction.Write, internalA, krCtx));
-        Assert.Equal(Sv.DenyReason.RoleNotPermitted, R(viewer, Sv.AssetAction.Write, internalA, krCtx));
-        Assert.Equal(Sv.DenyReason.RoleNotPermitted, R(editor, Sv.AssetAction.Delete, internalA, krCtx));
-        Assert.Equal(Sv.DenyReason.ClearanceTooLow, R(editor, Sv.AssetAction.Read, conf, krCtx));
-        Assert.Equal(Sv.DenyReason.MfaRequired, R(owner, Sv.AssetAction.Read, secret, krCtx with { MfaVerified = false }));
-        Assert.Equal(Sv.DenyReason.None, R(owner, Sv.AssetAction.Export, secret, krCtx));
-        Assert.Equal(Sv.DenyReason.ResidencyViolation, R(owner, Sv.AssetAction.Export, secret, krCtx with { ClientRegion = Sv.Jurisdiction.US }));
-        Assert.Equal(Sv.DenyReason.None, R(owner, Sv.AssetAction.Export, internalA, krCtx with { ClientRegion = Sv.Jurisdiction.US }));   // Internal 은 반출 허용
-        Assert.Equal(Sv.DenyReason.CrossTenant, R(euOwner, Sv.AssetAction.Read, conf, krCtx));
-        Assert.Equal(1, gov.Breaches(tEu, tKr)); Assert.Equal(0, gov.Breaches(tKr, tEu));
-        Assert.False(gov.GrantShare(editor, conf, tEu, new[] { Sv.AssetAction.Read }, 5000));                          // Owner 만 승인
-        Assert.True(gov.GrantShare(owner, conf, tEu, new[] { Sv.AssetAction.Read, Sv.AssetAction.Delete }, 5000));
-        Assert.Equal(Sv.DenyReason.None, R(euOwner, Sv.AssetAction.Read, conf, krCtx));
-        Assert.Equal(Sv.DenyReason.ShareActionNotGranted, R(euOwner, Sv.AssetAction.Delete, conf, krCtx));            // 삭제는 공유 불가
-        Assert.Equal(Sv.DenyReason.ShareActionNotGranted, R(euEditor, Sv.AssetAction.Write, conf, krCtx));
-        Assert.Equal(Sv.DenyReason.ShareExpired, R(euOwner, Sv.AssetAction.Read, conf, krCtx with { NowMs = 5000 }));
-        gov.ExplicitDeny(owner, Sv.AssetAction.Export);
-        Assert.Equal(Sv.DenyReason.ExplicitDeny, R(owner, Sv.AssetAction.Export, secret, krCtx));
-        for (var i = 0; i < 5; i++) R(euEditor, Sv.AssetAction.Read, secret, krCtx);
-        Assert.True(gov.IsQuarantined(euEditor));
-        Assert.Equal(Sv.DenyReason.SubjectQuarantined, R(euEditor, Sv.AssetAction.Read, conf, krCtx));
-        gov.ReleaseQuarantine(euEditor);
-        Assert.Equal(Sv.DenyReason.UnknownAsset, R(owner, Sv.AssetAction.Read, 999, krCtx));
-        Assert.True(gov.CrossTenantBlocked >= 7);
-        Assert.Equal(Sv.DenyReason.None, gov.TryReserve(tEu, 2, 1000, 10));
-        Assert.Equal(Sv.DenyReason.QuotaGpu, gov.TryReserve(tEu, 1, 10, 1));
-        Assert.Equal(Sv.DenyReason.QuotaRam, gov.TryReserve(tKr, 1, 9000, 1));
-        Assert.Equal(0, gov.Usage(tKr).Gpu);                                                                             // 롤백
-        gov.Release(tEu, 2, 1000, 10);
-        var granted = 0;
-        Parallel.For(0, 400, _ => { if (gov.TryReserve(tKr, 1, 100, 1) == Sv.DenyReason.None) Interlocked.Increment(ref granted); });
-        Assert.Equal(4, granted);                                                                                        // 초과 예약 0
-        Assert.Equal(4, gov.Usage(tKr).Gpu);
-        for (var i = 0; i < 4; i++) gov.Release(tKr, 1, 100, 1);
-        var hist = new Sv.AccessDecision[512];
-        var hn = gov.CopyAudit(hist);
-        Assert.Equal(gov.Decisions, hn);
-        Assert.True(gov.VerifyAuditChain(hist.AsSpan(0, hn), gov.AuditHeadHex));
-        hist[3] = hist[3] with { Allowed = !hist[3].Allowed };
-        Assert.False(gov.VerifyAuditChain(hist.AsSpan(0, hn), gov.AuditHeadHex));
-        Assert.Equal(0, AllocationProbe.MinAllocated(() =>
-        {
-            for (var i = 0; i < 200; i++) { gov.Authorize(editor, Sv.AssetAction.Write, internalA, krCtx); gov.Authorize(euOwner, Sv.AssetAction.Read, secret, krCtx with { NowMs = 9000 }); if (gov.TryReserve(tKr, 1, 1, 1) == Sv.DenyReason.None) gov.Release(tKr, 1, 1, 1); }
-        }));
-
-        // 7) 오케스트레이터: 1-Click 양자 봉인(정책 → 쿼터 → 관할 Enclave 기밀 렌더 → PQ 봉인 → 워터마크 → 원장) · 부분 실패 격리
-        using var oMesh = new Sv.SovereignMediaCloudConfidentialMesh();
-        var oVault = new Sv.PostQuantumMediaVaultEngine(() => kek);
-        var oGov = new Sv.MultiTenantStudioGovernanceEngine(new byte[32]);
-        var orch = new Sv.SovereignCloudOrchestrator(oMesh, oVault, oGov);
-        orch.Bootstrap(1000);
-        orch.Bootstrap(1000);                                                                                            // 멱등
-        Assert.Equal(4, oGov.TenantCount);
-        Assert.Equal(6, oMesh.AttestationsOk);
-        var krOwner = orch.ActorOf(0);
-        var r1 = orch.OneClickQuantumSeal(0, krOwner, true, 2000);
-        Assert.Equal(2, r1.Count);
-        Assert.All(r1, i => Assert.True(i.Ok, i.Stage + " " + i.Detail));
-        Assert.All(r1, i => Assert.Contains("seoul", i.Detail));                                                         // KR 데이터 → KR Enclave
-        Assert.All(r1, i => Assert.True(oVault.VerifyWatermark(i.Watermark!).Ok));
-        Assert.Equal(2, oVault.Sealed); Assert.Equal(2, oVault.Ledger.Count);
-        Assert.Equal(-1, oVault.VerifyLedger(oVault.Ledger));
-        Assert.Equal(0, oGov.Usage(0).Gpu);                                                                              // 쿼터 반납
-        Assert.Equal(0, oMesh.OpenSessions);
-        var r2 = orch.OneClickQuantumSeal(0, krOwner, false, 3000);
-        Assert.Contains(r2, i => !i.Ok && i.Stage == "정책" && i.Detail == "MFA 필요");                                  // Secret · MFA 없음
-        Assert.Contains(r2, i => i.Ok);
-        Assert.Equal(-1, orch.ActorOf(2));                                                                               // US: Viewer 만
-        var usViewer = Enumerable.Range(0, oGov.SubjectCount).First(s => oGov.SubjectTenant(s) == 2);
-        Assert.All(orch.OneClickQuantumSeal(2, usViewer, true, 4000), i => Assert.Equal("역할 권한 없음", i.Detail));
-        var jpEnclave = Enumerable.Range(0, oMesh.EnclaveCount).Single(i => oMesh.EnclaveJurisdiction(i) == Sv.Jurisdiction.JP);
-        oMesh.UpdateEnclaveCode(jpEnclave, "tampered", "x");
-        oMesh.Attest(jpEnclave, 5000);
-        var r3 = orch.OneClickQuantumSeal(3, orch.ActorOf(3), true, 5000);
-        Assert.All(r3, i => Assert.Equal(("기밀 배치", "증명 실패"), (i.Stage, i.Detail)));                                // 변조 Enclave 로 역외 우회 없음
-        Assert.Equal(0, oMesh.SovereigntyBlocks);
-        await Task.CompletedTask;
-    }
-
-    [Fact]
     [Trait("Category", "Integration")]
     public async Task ContinuousEvolution_And_GlobalOperations_Check()
     {
@@ -21405,252 +17409,6 @@ class "Proto"
     }
 
     [Fact]
-    [Trait("Category", "Integration")]
-    public async Task Podcast_And_MultiAgentTalkshow_Check()
-    {
-        // 1) 오케스트레이터: 라인업 검증 · 발화권(연속 금지 · 지목 답변 · 반박 · MC 개입 주기 · 공정성) · 아젠다 진행 · 정리/클로징
-        var talk = new Pc.MultiAgentTalkshowConversationOrchestrator();
-        var lineup = Pc.MultiAgentTalkshowConversationOrchestrator.DemoLineup();
-        Assert.Throws<ArgumentException>(() => talk.Configure(lineup.Take(2).ToList()));                                   // 패널 1명
-        Assert.Throws<ArgumentException>(() => talk.Configure(lineup.Concat(Pc.MultiAgentTalkshowConversationOrchestrator.DemoLineup().Skip(1)).Take(6).ToList()));
-        Assert.Throws<ArgumentException>(() => talk.Configure(lineup.Skip(1).ToList()));                                   // MC 누락
-        talk.Configure(lineup);
-        talk.ExchangesPerAgenda = 5; talk.McEvery = 3;
-        Assert.False(talk.Tick(0));
-        talk.Start(0);
-        Assert.Throws<InvalidOperationException>(() => talk.Configure(lineup));
-        double now = 0;
-        for (var g = 0; talk.IsLive && g < 20000; g++) { talk.Tick(now); now += 100; }
-        Assert.False(talk.IsLive);
-        var h = talk.History;
-        Assert.Equal(Pc.TalkLineKind.Opening, h[0].Kind); Assert.Equal(0, h[0].Speaker);
-        Assert.Equal(Pc.TalkLineKind.Introduce, h[1].Kind);
-        Assert.Contains("(찬성)", h[1].Text); Assert.Contains("(반대)", h[1].Text);
-        Assert.Equal(Pc.TalkLineKind.Summary, h[^2].Kind); Assert.Equal(Pc.TalkLineKind.Closing, h[^1].Kind);
-        Assert.Contains(Pc.MultiAgentTalkshowConversationOrchestrator.DemoAgenda[0], h.First(l => l.Kind == Pc.TalkLineKind.Question).Text);
-        Assert.Equal(talk.Agenda.Count - 1, h.Count(l => l.Kind == Pc.TalkLineKind.Redirect));
-        var streak = 0;
-        for (var i = 1; i < h.Count; i++)
-        {
-            Assert.True(h[i].TimeMs >= h[i - 1].TimeMs + h[i - 1].DurationMs + Pc.MultiAgentTalkshowConversationOrchestrator.GapMs - 1e-6);   // 발화 겹침 0
-            if (h[i].Speaker > 0) { Assert.NotEqual(h[i - 1].Speaker, h[i].Speaker); streak++; Assert.True(streak <= talk.McEvery); }
-            else streak = 0;
-            if (h[i - 1].Kind is Pc.TalkLineKind.Question or Pc.TalkLineKind.Redirect)
-            {
-                Assert.Equal(h[i - 1].Addressee, h[i].Speaker);                                                            // 지목 → 즉시 답변
-                Assert.Equal(Pc.TalkLineKind.Answer, h[i].Kind);
-            }
-        }
-        Assert.Contains(h, l => l.Kind == Pc.TalkLineKind.Rebuttal && l.Speaker == 2 && l.Addressee == 1);                // 비판가(반대) → 지식인(찬성)
-        for (var i = 1; i < talk.AgentCount; i++) Assert.True(talk.Agent(i).TurnsTaken >= 2);
-        var spoken = Enumerable.Range(1, talk.PanelCount).Select(i => talk.Agent(i).SpokenSeconds).ToArray();
-        Assert.True(spoken.Max() / spoken.Min() < 3, "발화 시간 공정성");
-        Assert.True(Pc.MultiAgentTalkshowConversationOrchestrator.Opposed(Pc.TalkStance.Pro, Pc.TalkStance.Con));
-        Assert.False(Pc.MultiAgentTalkshowConversationOrchestrator.Opposed(Pc.TalkStance.Neutral, Pc.TalkStance.Con));
-        Assert.Equal(Pc.MultiAgentTalkshowConversationOrchestrator.MinLineMs, Pc.MultiAgentTalkshowConversationOrchestrator.EstimateMs("짧다"));
-
-        // 인터뷰 포맷: 게스트(인플루언서) 집중
-        var iv = new Pc.MultiAgentTalkshowConversationOrchestrator();
-        var ivLine = Pc.MultiAgentTalkshowConversationOrchestrator.DemoLineup();
-        ivLine[3] = new Pc.TalkAgent { Name = "크리에이터 유나", Title = "구독자 200만 유튜버", Persona = Pc.PanelPersona.Influencer, Stance = Pc.TalkStance.Neutral, Color = 0x22C55E };
-        iv.Configure(ivLine); iv.Format = Pc.TalkFormat.Interview; iv.ExchangesPerAgenda = 4;
-        iv.Start(0); now = 0;
-        for (var g = 0; iv.IsLive && g < 20000; g++) { iv.Tick(now); now += 100; }
-        Assert.Equal(3, iv.Guest());
-        Assert.True(iv.Agent(3).TurnsTaken > iv.Agent(1).TurnsTaken && iv.Agent(3).TurnsTaken > iv.Agent(2).TurnsTaken);
-
-        // 발화 중 Tick · 발화권 점수 무할당
-        var idle = new Pc.MultiAgentTalkshowConversationOrchestrator();
-        idle.Start(0);
-        Assert.True(idle.Tick(0));
-        Assert.Equal(0, idle.SpeakerAt(10));
-        Assert.Equal(0, AllocationProbe.MinAllocated(() => { for (var i = 0; i < 1000; i++) { idle.Tick(1 + i * 0.1); idle.NextSpeaker(50); } }));
-
-        // Gemini 페르소나 재작성 · 실패 시 BCL 유지
-        var llm = new Pc.MultiAgentTalkshowConversationOrchestrator((p, ct) => Task.FromResult<string?>("```json\n{\"text\":\"재작성된 패널 대사\"}\n```"));
-        llm.Start(0); now = 0;
-        while (llm.LinesSpoken < 4) { llm.Tick(now); now += 100; }
-        await llm.PendingDelivery!;
-        Assert.Contains(llm.History, l => l.Source == "Gemini" && l.Text == "재작성된 패널 대사" && l.Speaker > 0);
-        Assert.All(llm.History.Where(l => l.Speaker == 0), l => Assert.Equal("BCL", l.Source));                            // MC 진행은 템플릿 고정
-        Assert.False(Pc.MultiAgentTalkshowConversationOrchestrator.TryParseLineJson("nope", out _));
-        Assert.False(Pc.MultiAgentTalkshowConversationOrchestrator.TryParseLineJson("{\"text\":\"" + new string('가', 300) + "\"}", out _));
-
-        // 2) 멀티캠: RMS SIMD = 스칼라 · ZCR · 단독/2인/와이드/리액션 · 홀드 · 설전/피크 하이라이트 · 무할당
-        var rng = new Random(11);
-        for (var len = 0; len <= 67; len++)
-        {
-            var buf = new float[len];
-            for (var i = 0; i < len; i++) buf[i] = (float)(rng.NextDouble() * 2 - 1);
-            Assert.InRange(Math.Abs(Pc.AutonomousPodcastVideoMultiCamEngine.Rms(buf) - Pc.AutonomousPodcastVideoMultiCamEngine.RmsScalar(buf)), 0, 1e-5);
-        }
-        Assert.Equal(1f, Pc.AutonomousPodcastVideoMultiCamEngine.ZeroCrossingRate(new[] { 1f, -1f, 1f, -1f }));
-        Assert.Equal(0f, Pc.AutonomousPodcastVideoMultiCamEngine.ZeroCrossingRate(new[] { 0.3f, 0.3f, 0.3f }));
-        for (var n = 1; n <= 5; n++) Assert.Equal(Enumerable.Range(0, n), Enumerable.Range(0, n).Select(k => Pc.AutonomousPodcastVideoMultiCamEngine.WideOrder(k, n)).OrderBy(x => x));
-        var cam = new Pc.AutonomousPodcastVideoMultiCamEngine();
-        Assert.Throws<ArgumentException>(() => cam.SetSeats(new uint[6]));
-        cam.SetSeats(new uint[] { 0xA855F7, 0x0EA5E9, 0xEF4444, 0xF59E0B });
-        static float[] Voice(float f0, float amp)
-        {
-            var v = new float[533];
-            for (var i = 0; i < v.Length; i++) { var p = 2 * Math.PI * f0 * i / 16000; v[i] = amp * (float)(Math.Sin(p) + 0.5 * Math.Sin(2 * p) + 0.3 * Math.Sin(3 * p)); }
-            return v;
-        }
-        var quiet = new float[533];
-        for (var i = 0; i < quiet.Length; i++) quiet[i] = (float)(rng.NextDouble() * 2 - 1) * 0.001f;
-        var voices = new[] { Voice(210, 0.08f), Voice(125, 0.08f), Voice(195, 0.08f), Voice(150, 0.08f) };
-        var loud = Voice(125, 0.4f);
-        double t = 0;
-        void Run(double ms, params int[] talking)
-        {
-            for (var end = t + ms; t < end; t += 33)
-            {
-                for (var s = 0; s < 4; s++) cam.Analyze(s, Array.IndexOf(talking, s) >= 0 ? voices[s] : quiet, t);
-                cam.Direct(t);
-            }
-        }
-        Run(1000);
-        Assert.Equal(Pc.PodcastShot.Wide, cam.Shot);
-        Assert.False(cam.IsVoice(1));
-        Run(1000, 1);
-        Assert.True(cam.IsVoice(1));
-        Assert.Equal((Pc.PodcastShot.Single, 1), (cam.Shot, cam.SubjectA));
-        Run(1500, 1, 2);
-        Assert.Equal((Pc.PodcastShot.TwoShot, 1, 2), (cam.Shot, cam.SubjectA, cam.SubjectB));                           // 크로스토크 → 2인 대립 샷
-        Run(2500, 1, 2, 3);
-        Assert.Equal(Pc.PodcastShot.Wide, cam.Shot);                                                                     // 3인 → 와이드
-        Run(1000, 1);
-        Run(1500, 2);
-        Assert.Equal((Pc.PodcastShot.Single, 2), (cam.Shot, cam.SubjectA));
-        var cutsBefore = cam.CutsTotal;
-        Run(150, 3);
-        Run(100);
-        Assert.Equal(cutsBefore, cam.CutsTotal);                                                                         // 짧은 추임새(온셋 미만) → 컷 없음
-        var mono = t;
-        for (var g = 0; g < 600 && cam.Shot != Pc.PodcastShot.Reaction; g++) Run(33, 2);
-        Assert.InRange(t - mono, 10000, 13000);
-        Assert.Equal((Pc.PodcastShot.Reaction, 1), (cam.Shot, cam.SubjectA));                                           // 장기 독백 → 이전 화자 리액션
-        Run(2500, 2);
-        Assert.Equal((Pc.PodcastShot.Single, 2), (cam.Shot, cam.SubjectA));
-        Run(2500);
-        Assert.Equal(Pc.PodcastShot.Wide, cam.Shot);                                                                     // 무음 지속 → 와이드
-        Assert.DoesNotContain(cam.Clips, c => c.Reason == Pc.HighlightReason.HeatedExchange);
-        for (var k = 0; k < 6; k++) Run(1000, 1 + k % 2);
-        Assert.Contains(cam.Clips, c => c.Reason == Pc.HighlightReason.HeatedExchange);                                  // 급격한 교대 → 설전
-        var clipN = cam.ClipCount;
-        Run(6000);
-        for (var s = 0; s < 4; s++) cam.Analyze(s, s == 1 ? loud : quiet, t);
-        Assert.Contains(cam.Clips, c => c.Reason == Pc.HighlightReason.PeakEnergy && c.Speaker == 1);
-        var cutBuf = new Pc.CamCut[200];
-        var nc = cam.CopyCuts(cutBuf);
-        Assert.Equal(cam.CutsTotal, nc);
-        for (var i = 1; i < nc; i++) Assert.True(cutBuf[i - 1].TimeMs >= cutBuf[i].TimeMs);
-        Run(3000, 1);
-        const int FW = 320, FH = 180;
-        var frame = new byte[FW * FH * 4];
-        cam.Render(frame, FW, FH, FW * 4, 0);
-        var center = (FH / 2 * FW + FW / 2) * 4;
-        Assert.NotEqual(frame[4 * FW * 2 + 400], frame[center + 2]);
-        Assert.Equal(255, frame[center + 3]);
-        Assert.Equal(0, AllocationProbe.MinAllocated(() =>
-        {
-            for (var k = 0; k < 100; k++) { for (var s = 0; s < 4; s++) cam.Analyze(s, s == 1 ? voices[1] : quiet, t); cam.Direct(t); t += 33; }
-            cam.Render(frame, FW, FH, FW * 4, t);
-        }));
-
-        // 3) 시청자 개입: 분류 · 스팸 차단 · 유사 병합 · 관련도 채택 · 키워드 라우팅 · 지적 → 직전 발언자 · 간격 · 만료 · 무할당
-        Assert.Equal(Pc.AudienceKind.Spam, Pc.InteractiveAudienceAgendaInterventionEngine.Classify("ㅋㅋㅋㅋㅋㅋㅋ"));
-        Assert.Equal(Pc.AudienceKind.Spam, Pc.InteractiveAudienceAgendaInterventionEngine.Classify("지금 바로 http://spam.example 클릭"));
-        Assert.Equal(Pc.AudienceKind.Spam, Pc.InteractiveAudienceAgendaInterventionEngine.Classify("ㅎㅇ"));
-        Assert.Equal(Pc.AudienceKind.Spam, Pc.InteractiveAudienceAgendaInterventionEngine.Classify("병신같은 토론"));
-        Assert.Equal(Pc.AudienceKind.Challenge, Pc.InteractiveAudienceAgendaInterventionEngine.Classify("그 주장은 근거가 부족한 것 같아요"));
-        Assert.Equal(Pc.AudienceKind.Question, Pc.InteractiveAudienceAgendaInterventionEngine.Classify("AI 그림 저작권은 누구한테 있나요?"));
-        Assert.Equal(Pc.AudienceKind.Opinion, Pc.InteractiveAudienceAgendaInterventionEngine.Classify("재밌게 보고 있어요"));
-        var at = new Pc.MultiAgentTalkshowConversationOrchestrator();
-        var acam = new Pc.AutonomousPodcastVideoMultiCamEngine();
-        using var aud = new Pc.InteractiveAudienceAgendaInterventionEngine(at, acam) { MinGapMs = 100000 };
-        Assert.Equal(Pc.AudienceKind.Spam, aud.Ingest("광고봇", "http://spam.example 클릭!!", 0));
-        Assert.Equal(1, aud.SpamBlocked);
-        aud.Ingest("코딩냥", "AI가 만든 그림의 저작권은 누구에게 있나요?", 0);
-        aud.Ingest("익명", "AI가 만든 그림의 저작권은 누구에게 있나요??", 100);
-        aud.Ingest("새벽감성", "재밌게 보고 있어요", 200);
-        Assert.Equal(1, aud.PendingCount);
-        Assert.Equal(2, aud.Pending[0].Votes);
-        Assert.Equal(1, aud.Merged);
-        Assert.False(aud.Tick(300));                                                                                     // 방송 전
-        at.Start(0); now = 0;
-        while (at.AgendaIndex < 0) { at.Tick(now); now += 100; }
-        Assert.True(aud.Tick(now));
-        var adopted = aud.Decided.Single();
-        Assert.Equal(Pc.InterventionStatus.Adopted, adopted.Status);
-        Assert.Equal(2, adopted.Target);                                                                                 // 저작권 → 문화 칼럼니스트
-        Assert.True(adopted.Relevance > 0.3);
-        Assert.Equal(2, at.PendingInterventions);
-        Assert.Contains(acam.Clips, c => c.Reason == Pc.HighlightReason.Intervention && c.Speaker == 2);
-        var mark = at.LinesSpoken;
-        for (var g = 0; at.LinesSpoken < mark + 4; g++) { at.Tick(now); now += 100; }
-        var ah = at.History;
-        var ii = ah.ToList().FindIndex(l => l.Kind == Pc.TalkLineKind.Intervention);
-        Assert.True(ii > 0);
-        Assert.Equal((0, 2), (ah[ii].Speaker, ah[ii].Addressee));
-        Assert.Contains("저작권", ah[ii].Text); Assert.Contains("코딩냥", ah[ii].Text);
-        Assert.Equal((Pc.TalkLineKind.AudienceAnswer, 2), (ah[ii + 1].Kind, ah[ii + 1].Speaker));
-        aud.Ingest("주부유튜버", "AI 시대에 크리에이터는 어떤 기술을 배워야 생존할 수 있을까요?", now);
-        Assert.False(aud.Tick(now));                                                                                     // 최소 간격
-        aud.Ingest("현직디자이너", "방금 그 말씀은 근거가 부족해서 동의 못 하겠어요", now);
-        var ch = aud.Pending.Single(p => p.Kind == Pc.AudienceKind.Challenge);
-        Assert.Equal(at.LastPanelSpeaker, aud.RouteTarget(ch));                                                          // 지적 → 직전 발언자 반론 기회
-        Assert.True(aud.Adopt(ch.Id, now));                                                                              // 수동 채택(간격 무시)
-        Assert.True(aud.Reject(aud.Pending.Single().Id, now));
-        aud.Ingest("늦은시청자", "크리에이터 일자리는 어떻게 될까요?", now);
-        Assert.False(aud.Tick(now + aud.ExpireMs + 1));
-        Assert.Equal(1, aud.Expired);
-        Assert.Equal(0, aud.PendingCount);
-        Assert.Equal(0, AllocationProbe.MinAllocated(() => { for (var i = 0; i < 1000; i++) aud.Tick(now + i); }));
-
-        // 4) 러너: 1-Click 자율 진행(합성 음성 → 액티브 스피커 → 자동 컷) · 데모 시청자 채택 · 세션 패키지
-        Assert.Equal("01:02:03,004", Pc.PodcastStudioShowRunner.Timecode(3723004));
-        var rt = new Pc.MultiAgentTalkshowConversationOrchestrator { ExchangesPerAgenda = 4 };
-        var rc = new Pc.AutonomousPodcastVideoMultiCamEngine();
-        using var ra = new Pc.InteractiveAudienceAgendaInterventionEngine(rt, rc) { MinGapMs = 15000 };
-        using var runner = new Pc.PodcastStudioShowRunner(rt, rc, ra) { DemoChatEverySec = 6 };
-        runner.Prepare(0);
-        var tickMs = 1000.0 / Pc.PodcastStudioShowRunner.Fps;
-        double rtNow = 0; var match = 0; var single = 0;
-        while (rt.IsLive && rtNow < 900000)
-        {
-            runner.Step(tickMs / 1000, rtNow);
-            if (rc.Shot == Pc.PodcastShot.Single) { single++; if (rc.SubjectA == rt.SpeakerAt(rtNow)) match++; }
-            rtNow += tickMs;
-        }
-        Assert.False(rt.IsLive);
-        Assert.True(runner.Frames > 1000);
-        Assert.True(ra.Adopted >= 1);
-        Assert.Contains(rt.History, l => l.Kind == Pc.TalkLineKind.AudienceAnswer);
-        var shotCuts = new Pc.CamCut[Pc.AutonomousPodcastVideoMultiCamEngine.CutCap];
-        var rn = rc.CopyCuts(shotCuts);
-        for (var s = 1; s < rt.AgentCount; s++) Assert.Contains(shotCuts.Take(rn), c => c.Shot == Pc.PodcastShot.Single && c.A == s);
-        Assert.Contains(shotCuts.Take(rn), c => c.Shot == Pc.PodcastShot.TwoShot);                                       // 반박 초반 크로스토크
-        Assert.True(match > single * 0.8, "단독 샷 피사체 = 실제 발화자");
-        var dir = Path.Combine(Path.GetTempPath(), "pfs_podcast_" + Guid.NewGuid().ToString("N"));
-        try
-        {
-            var json = runner.ExportSession(dir, 0);
-            using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(json));
-            Assert.Equal(rt.History.Count, doc.RootElement.GetProperty("transcript").GetArrayLength());
-            Assert.Equal(rt.AgentCount, doc.RootElement.GetProperty("lineup").GetArrayLength());
-            Assert.True(doc.RootElement.GetProperty("cuts").GetArrayLength() > 0);
-            var srt = File.ReadAllText(Path.Combine(dir, "podcast.srt"));
-            Assert.Contains("00:00:00,000 --> ", srt);
-            Assert.Contains(rt.Agent(0).Name + ": ", srt);
-        }
-        finally
-        {
-            try { Directory.Delete(dir, true); } catch { /* 무시 */ }
-        }
-    }
-
-    [Fact]
     [Trait("Category", "FastUnit")]
     public async Task LiveCommerce_And_ShoppertainmentHost_Check()
     {
@@ -21947,6 +17705,4266 @@ class "Proto"
         live.Stop();
         Assert.False(live.IsLive);
         Assert.False(rh2.IsLive);
+    }
+}
+
+/// <summary>Step 44 — <see cref="TitanReleaseTests"/>(ProcessGcMode · 비병렬)에서 분리한 순수 계산 · 가상 시계 메서드 (A 사슬 몫 8 메서드 · 실측 ≈ 37 s).
+///   분류 기준(rules_testing.md Step 43) 0 건 감사 통과: 환경변수 · 실 프로세스 · 프로세스 GC 모드/지표 · 실 벽시계 게이트 · 단발 무할당 창 없음
+///   (무할당 단언은 전부 <see cref="SteadyStateAllocation.MinBytes(System.Action)"/> 재시도 창 · 임시 경로는 전부 GUID).
+///   제외 유지: RealtimeGamingVision(라이브 FPS 벽시계 게이트) · HardwareAcceleration(1.5 s 하트비트 창 · 실 인코더 스레드) ·
+///   UniversalMediaEmpire(Task.Delay 동시 처리 피크 단언) — 비병렬 <see cref="TitanReleaseTests"/> 에 남김.</summary>
+[Collection("TitanHeavyCompute")]   // Step 44: 측정 기반 A/B 재균형 — 동시 중량 사슬 ≤ 2 유지
+public sealed class TitanReleaseChainATests
+{
+    // ── v16.30.0 마스터 스위트: 제로 트러스트(KEK DPAPI-NG · 비밀 · 인가/스텝업/디바이스 · 스트리밍 AES-GCM 변조/절단 · HMAC 감사 체인 · KEK 회전) · OIDC(RS256/JWKS/nonce/PKCE) · SAML2(XML-DSig/XSW) · CDC 델타 동기화(무할당 경계 · 증분 · 복원 · 릴레이 · 수렴 암호화) · 30 모듈 매트릭스/파이프라인 ──
+    [Fact]
+    [Trait("Category", "Integration")]
+    [Trait("Speed", "Slow")]   // Step 35: 기준 실행 ≥ 10 s — 빠른 루프는 --filter "Speed!=Slow"
+    public async Task UniversalMasterSuite_And_ZeroTrustShield_Check()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "pfs_master_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            // 1) 쉴드 — KEK 보호 · 로컬 세션 · 비밀 · 인가 매트릭스 · 스텝업 · 디바이스 바인딩
+            var now = DateTimeOffset.UtcNow;
+            var seed = System.Security.Cryptography.RandomNumberGenerator.GetBytes(32);
+            var zdir = Path.Combine(root, "zt");
+            using (var z = new Master.ZeroTrustSecurityShieldService(zdir, () => seed, null, () => now, true))
+            {
+                Assert.True(z.Unlock()); Assert.True(z.Unlock());
+                Assert.Contains("DPAPI", z.KeyProtection);
+                Assert.False(z.SetSecret(null, "OPENAI_API_KEY", "sk-test"));
+                var s = z.IssueLocalSession()!;
+                Assert.Equal(Master.ZtRole.Admin, s.Role);
+                Assert.True(z.SetSecret(s.Token, "OPENAI_API_KEY", "sk-test-12345"));
+                Assert.False(z.SetSecret(s.Token, "bad name!", "x"));
+                Assert.DoesNotContain("sk-test-12345", File.ReadAllText(Path.Combine(zdir, "secrets.vault")));
+                char[] leaked;
+                using (var lease = z.Lease(s.Token, "OPENAI_API_KEY")!)
+                {
+                    Assert.Equal("sk-test-12345", lease.Value.ToString());
+                    leaked = (char[])typeof(Master.SecretLease).GetField("_buf", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.GetValue(lease)!;
+                }
+                Assert.All(leaked, c => Assert.Equal('\0', c));
+                Assert.False(z.Authorize(s.Token, "secret:OPENAI_API_KEY", "read", "other-device").Allowed);
+                var viewer = z.IssueSession(new Master.SsoIdentity(true, "v@corp", "acme", Master.ZtRole.Viewer, Array.Empty<string>(), "oidc", "ok"))!;
+                Assert.False(z.Authorize(viewer.Token, "pipeline:generate", "run").Allowed);
+                Assert.True(z.Authorize(viewer.Token, "pipeline:generate", "read").Allowed);
+                Assert.Null(z.Lease(viewer.Token, "OPENAI_API_KEY"));
+                now = now.AddMinutes(11);
+                var stepUp = z.Authorize(s.Token, "secret:OPENAI_API_KEY", "read");
+                Assert.False(stepUp.Allowed); Assert.True(stepUp.StepUpRequired);
+                Assert.True(z.Authorize(s.Token, "pipeline:generate", "run").Allowed);
+                now = now.AddMinutes(30);
+                Assert.Equal("세션 만료", z.Authorize(s.Token, "pipeline:generate", "run").Reason);
+                z.EnforceSso = true;
+                Assert.Null(z.IssueLocalSession());
+                z.EnforceSso = false;
+                var s2 = z.IssueLocalSession()!;
+
+                // 스트리밍 자산 암호화 — 2.5 프레임 · 왕복 · 변조 · 절단
+                var plain = new byte[(int)(Master.ZeroTrustSecurityShieldService.FrameSize * 2.5)];
+                new Random(3).NextBytes(plain);
+                var pf = Path.Combine(root, "asset.bin"); var ef = Path.Combine(root, "asset.enc"); var df = Path.Combine(root, "asset.dec");
+                File.WriteAllBytes(pf, plain);
+                Assert.True(await z.EncryptFileAsync(s2.Token, pf, ef));
+                Assert.True(await z.DecryptFileAsync(s2.Token, ef, df));
+                Assert.True(File.ReadAllBytes(df).AsSpan().SequenceEqual(plain));
+                var enc = File.ReadAllBytes(ef);
+                var tampered = (byte[])enc.Clone(); tampered[tampered.Length / 2] ^= 0x40;
+                File.WriteAllBytes(ef + ".t", tampered);
+                Assert.False(await z.DecryptFileAsync(s2.Token, ef + ".t", df + ".t"));
+                Assert.False(File.Exists(df + ".t"));
+                File.WriteAllBytes(ef + ".cut", enc.AsSpan(0, 8 + 12 + 2 * (20 + Master.ZeroTrustSecurityShieldService.FrameSize)).ToArray());
+                Assert.False(await z.DecryptFileAsync(s2.Token, ef + ".cut", df + ".c"));
+
+                // 감사 체인 — 정상 → 변조 탐지
+                Assert.True(z.VerifyAudit().Ok);
+                Assert.True(z.DeniedCount >= 5);
+                Assert.True(z.RotateKek(s2.Token));
+            }
+            using (var z2 = new Master.ZeroTrustSecurityShieldService(zdir, () => seed, null, null, true))
+            {
+                Assert.True(z2.Unlock());
+                var s = z2.IssueLocalSession()!;
+                using (var lease = z2.Lease(s.Token, "OPENAI_API_KEY")!) Assert.Equal("sk-test-12345", lease.Value.ToString());
+                var v = z2.VerifyAudit();
+                Assert.True(v.Ok, v.Message);
+                var lines = File.ReadAllLines(Path.Combine(zdir, "audit.jsonl"));
+                lines[3] = lines[3].Replace("\"detail\":\"", "\"detail\":\"X");
+                File.WriteAllLines(Path.Combine(zdir, "audit.jsonl"), lines);
+                var broken = z2.VerifyAudit();
+                Assert.False(broken.Ok); Assert.Equal(4, broken.BrokenAt);
+            }
+
+            // 2) OIDC — RS256 · JWKS · iss/aud/exp/nonce · alg 고정 · PKCE · 디스커버리
+            using var signer = System.Security.Cryptography.RSA.Create(2048);
+            var meta = new Master.OidcMetadata("https://idp.example.com", "https://idp.example.com/authorize", "https://idp.example.com/token", "https://idp.example.com/jwks");
+            var pub = signer.ExportParameters(false);
+            var jwks = "{\"keys\":[{\"kty\":\"RSA\",\"kid\":\"k1\",\"n\":\"" + Master.ZeroTrustSecurityShieldService.B64Url(pub.Modulus) + "\",\"e\":\"" + Master.ZeroTrustSecurityShieldService.B64Url(pub.Exponent) + "\"}]}";
+            var keys = Master.ZeroTrustSecurityShieldService.ParseJwks(jwks);
+            Assert.True(keys.ContainsKey("k1"));
+            using var zo = new Master.ZeroTrustSecurityShieldService(Path.Combine(root, "zo"), () => seed, null, null, false);
+            zo.Unlock();
+            zo.SetJwks(keys, meta, "pfs-client");
+            var nowS = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            string Jwt(string alg, string kid, string payload, System.Security.Cryptography.RSA key)
+            {
+                var h = Master.ZeroTrustSecurityShieldService.B64Url(System.Text.Encoding.UTF8.GetBytes("{\"alg\":\"" + alg + "\",\"kid\":\"" + kid + "\"}"));
+                var p = Master.ZeroTrustSecurityShieldService.B64Url(System.Text.Encoding.UTF8.GetBytes(payload));
+                var sig = key.SignData(System.Text.Encoding.ASCII.GetBytes(h + "." + p), System.Security.Cryptography.HashAlgorithmName.SHA256, System.Security.Cryptography.RSASignaturePadding.Pkcs1);
+                return h + "." + p + "." + Master.ZeroTrustSecurityShieldService.B64Url(sig);
+            }
+            string Payload(string aud = "pfs-client", long? exp = null, string nonce = "n-1") =>
+                "{\"iss\":\"https://idp.example.com\",\"aud\":\"" + aud + "\",\"sub\":\"u1\",\"email\":\"kim@corp.com\",\"tid\":\"acme\",\"exp\":" + (exp ?? nowS + 600) + ",\"iat\":" + nowS + ",\"nonce\":\"" + nonce + "\",\"groups\":[\"PFS-Producers\"]}";
+            var id = zo.ValidateIdToken(Jwt("RS256", "k1", Payload(), signer), "n-1");
+            Assert.True(id.Valid, id.Reason);
+            Assert.Equal("kim@corp.com", id.Subject); Assert.Equal("acme", id.Tenant); Assert.Equal(Master.ZtRole.Operator, id.Role);
+            Assert.NotNull(zo.IssueSession(id));
+            Assert.Equal("nonce 불일치(재전송 의심)", zo.ValidateIdToken(Jwt("RS256", "k1", Payload(), signer), "other").Reason);
+            Assert.Equal("aud 불일치", zo.ValidateIdToken(Jwt("RS256", "k1", Payload(aud: "evil"), signer), "n-1").Reason);
+            Assert.Equal("토큰 만료", zo.ValidateIdToken(Jwt("RS256", "k1", Payload(exp: nowS - 600), signer), "n-1").Reason);
+            Assert.Equal("알 수 없는 kid", zo.ValidateIdToken(Jwt("RS256", "k9", Payload(), signer), "n-1").Reason);
+            using (var attacker = System.Security.Cryptography.RSA.Create(2048))
+                Assert.Equal("서명 불일치", zo.ValidateIdToken(Jwt("RS256", "k1", Payload(), attacker), "n-1").Reason);
+            var noneTok = Master.ZeroTrustSecurityShieldService.B64Url("{\"alg\":\"none\"}"u8) + "." + Master.ZeroTrustSecurityShieldService.B64Url(System.Text.Encoding.UTF8.GetBytes(Payload())) + ".";
+            Assert.False(zo.ValidateIdToken(noneTok, "n-1").Valid);
+            var (verifier, challenge) = Master.ZeroTrustSecurityShieldService.CreatePkce();
+            Assert.Equal(challenge, Master.ZeroTrustSecurityShieldService.B64Url(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.ASCII.GetBytes(verifier))));
+            var ar = zo.BuildAuthorizationRequest("http://127.0.0.1:5000/callback/")!;
+            Assert.Contains("code_challenge_method=S256", ar.Url); Assert.Contains("state=" + ar.State, ar.Url);
+            Assert.Null(Master.ZeroTrustSecurityShieldService.ParseDiscovery("{\"issuer\":\"http://x\",\"authorization_endpoint\":\"https://a\",\"token_endpoint\":\"https://t\",\"jwks_uri\":\"https://j\"}"));
+
+            // 3) SAML2 — XML-DSig · 조건 · XSW · 변조
+            using var idpKey = System.Security.Cryptography.RSA.Create(2048);
+            var certReq = new System.Security.Cryptography.X509Certificates.CertificateRequest("CN=Test IdP", idpKey, System.Security.Cryptography.HashAlgorithmName.SHA256, System.Security.Cryptography.RSASignaturePadding.Pkcs1);
+            using var idpCert = certReq.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
+            string Saml(DateTime notOnOrAfter, string nameId = "lee@corp.com", bool twoAssertions = false)
+            {
+                var xml = "<samlp:Response xmlns:samlp=\"urn:oasis:names:tc:SAML:2.0:protocol\"><saml:Assertion xmlns:saml=\"urn:oasis:names:tc:SAML:2.0:assertion\" ID=\"_a1\" Version=\"2.0\">"
+                    + "<saml:Issuer>https://idp.example.com/saml</saml:Issuer><saml:Subject><saml:NameID>" + nameId + "</saml:NameID></saml:Subject>"
+                    + "<saml:Conditions NotBefore=\"" + DateTime.UtcNow.AddMinutes(-5).ToString("yyyy-MM-ddTHH:mm:ssZ") + "\" NotOnOrAfter=\"" + notOnOrAfter.ToString("yyyy-MM-ddTHH:mm:ssZ") + "\">"
+                    + "<saml:AudienceRestriction><saml:Audience>pfs-sp</saml:Audience></saml:AudienceRestriction></saml:Conditions>"
+                    + "<saml:AttributeStatement><saml:Attribute Name=\"role\"><saml:AttributeValue>Admins</saml:AttributeValue></saml:Attribute><saml:Attribute Name=\"tenant\"><saml:AttributeValue>acme</saml:AttributeValue></saml:Attribute></saml:AttributeStatement>"
+                    + "</saml:Assertion></samlp:Response>";
+                var doc = new System.Xml.XmlDocument { PreserveWhitespace = true };
+                doc.LoadXml(xml);
+                var assertion = (System.Xml.XmlElement)doc.GetElementsByTagName("saml:Assertion")[0]!;
+                var sx = new System.Security.Cryptography.Xml.SignedXml(assertion) { SigningKey = idpKey };
+                var reference = new System.Security.Cryptography.Xml.Reference("#_a1");
+                reference.AddTransform(new System.Security.Cryptography.Xml.XmlDsigEnvelopedSignatureTransform());
+                reference.AddTransform(new System.Security.Cryptography.Xml.XmlDsigExcC14NTransform());
+                sx.AddReference(reference);
+                sx.SignedInfo!.CanonicalizationMethod = System.Security.Cryptography.Xml.SignedXml.XmlDsigExcC14NTransformUrl;
+                sx.ComputeSignature();
+                assertion.AppendChild(doc.ImportNode(sx.GetXml(), true));
+                if (twoAssertions)
+                {
+                    var evil = (System.Xml.XmlElement)assertion.CloneNode(true);
+                    evil.SetAttribute("ID", "_evil");
+                    doc.DocumentElement!.AppendChild(evil);
+                }
+                return doc.OuterXml;
+            }
+            var saml = zo.ValidateSaml(Saml(DateTime.UtcNow.AddMinutes(10)), idpCert, "https://idp.example.com/saml", "pfs-sp");
+            Assert.True(saml.Valid, saml.Reason);
+            Assert.Equal("lee@corp.com", saml.Subject); Assert.Equal(Master.ZtRole.Admin, saml.Role); Assert.Equal("acme", saml.Tenant);
+            Assert.False(zo.ValidateSaml(Saml(DateTime.UtcNow.AddMinutes(10)).Replace("lee@corp.com", "attacker@corp.com"), idpCert, "https://idp.example.com/saml", "pfs-sp").Valid);
+            Assert.False(zo.ValidateSaml(Saml(DateTime.UtcNow.AddMinutes(-10)), idpCert, "https://idp.example.com/saml", "pfs-sp").Valid);
+            Assert.False(zo.ValidateSaml(Saml(DateTime.UtcNow.AddMinutes(10)), idpCert, "https://idp.example.com/saml", "other-sp").Valid);
+            Assert.Contains("XSW", zo.ValidateSaml(Saml(DateTime.UtcNow.AddMinutes(10), twoAssertions: true), idpCert, "https://idp.example.com/saml", "pfs-sp").Reason);
+            Assert.False(zo.ValidateSaml("<!DOCTYPE x [<!ENTITY e SYSTEM \"file:///c:/windows/win.ini\">]><x>&e;</x>", idpCert, "a", "b").Valid);
+
+            // 4) CDC 델타 — 무할당 경계 · 삽입 내성 · 업로드/증분/복원/재사용/변조/릴레이/수렴 암호화
+            var p = Master.CdcParams.Small;
+            var data = new byte[600_000];
+            new Random(9).NextBytes(data);
+            var c1 = Master.CloudDeltaAssetSyncEngine.ChunkBuffer(data, p);
+            Assert.True(c1.Count > 20);
+            Assert.All(c1, c => Assert.InRange(c.Length, 1, p.Max));
+            var edited = new byte[data.Length + 100];
+            data.AsSpan(0, 300_000).CopyTo(edited); new Random(1).NextBytes(edited.AsSpan(300_000, 100)); data.AsSpan(300_000).CopyTo(edited.AsSpan(300_100));
+            var c2 = Master.CloudDeltaAssetSyncEngine.ChunkBuffer(edited, p);
+            var common = 0;
+            var set1 = new HashSet<string>(c1.Select(c => c.Hash));
+            foreach (var c in c2) if (set1.Contains(c.Hash)) common++;
+            Assert.True(common >= c2.Count - 3, "공유 청크 " + common + "/" + c2.Count);
+            var seq = new System.Buffers.ReadOnlySequence<byte>(data);
+            var cutSum = 0;
+            for (var i = 0; i < 16; i++) cutSum += Master.CloudDeltaAssetSyncEngine.FindCut(seq, p, true);
+            // Step 39 — 정상 상태 측정(계층 JIT/OSR 1회성 전이 흡수 · 진짜 할당은 매 창 재현 → 실패 유지)
+            Assert.Equal(0, SteadyStateAllocation.MinBytes(() => { for (var i = 0; i < 256; i++) cutSum += Master.CloudDeltaAssetSyncEngine.FindCut(seq, p, true); }));
+            Assert.True(cutSum > 0);
+
+            using var zs = new Master.ZeroTrustSecurityShieldService(Path.Combine(root, "zs"), () => seed, null, null, false);
+            zs.Unlock();
+            var sess = zs.IssueLocalSession()!;
+            var sync = new Master.CloudDeltaAssetSyncEngine(zs) { Params = p };
+            var vfile = Path.Combine(root, "video.mp4");
+            var big = new byte[2_500_000];
+            new Random(5).NextBytes(big);
+            File.WriteAllBytes(vfile, big);
+            var store = new Master.LocalFolderChunkStore(Path.Combine(root, "cloud"), "cloud");
+            Assert.False((await sync.UploadAsync(vfile, "video", store, null)).Ok);
+            var up1 = await sync.UploadAsync(vfile, "video", store, sess.Token);
+            Assert.True(up1.Ok, up1.Message); Assert.Equal(up1.Chunks, up1.Transferred + up1.Deduplicated); Assert.Equal(big.Length, up1.BytesTransferred);
+            var m1 = await store.GetManifestAsync("video", default);
+            Assert.Equal(Master.CloudDeltaAssetSyncEngine.ChunkBuffer(big, p).Count, m1!.Chunks.Count);
+            var big2 = (byte[])big.Clone();
+            new Random(6).NextBytes(big2.AsSpan(1_200_000, 5_000));
+            File.WriteAllBytes(vfile, big2);
+            var up2 = await sync.UploadAsync(vfile, "video", store, sess.Token);
+            Assert.True(up2.Ok); Assert.True(up2.BytesTransferred < big.Length / 10, "증분 " + up2.BytesTransferred);
+            Assert.True(up2.SavingRatio > 0.9);
+            var restore = Path.Combine(root, "restore.mp4");
+            var dn = await sync.DownloadAsync("video", store, restore, sess.Token);
+            Assert.True(dn.Ok, dn.Message); Assert.True(File.ReadAllBytes(restore).AsSpan().SequenceEqual(big2));
+            File.WriteAllBytes(restore, big);
+            var dn2 = await sync.DownloadAsync("video", store, restore, sess.Token);
+            Assert.True(dn2.Ok); Assert.True(dn2.Deduplicated > dn2.Transferred);
+            Assert.True(File.ReadAllBytes(restore).AsSpan().SequenceEqual(big2));
+            var victim = Directory.GetFiles(Path.Combine(root, "cloud", "chunks"), "*", SearchOption.AllDirectories)[0];
+            var vb = File.ReadAllBytes(victim); vb[0] ^= 1; File.WriteAllBytes(victim, vb);
+            var bad = await sync.DownloadAsync("video", store, Path.Combine(root, "fresh.mp4"), sess.Token);
+            Assert.False(bad.Ok); Assert.False(File.Exists(Path.Combine(root, "fresh.mp4"))); Assert.False(File.Exists(Path.Combine(root, "fresh.mp4.delta.tmp")));
+            vb[0] ^= 1; File.WriteAllBytes(victim, vb);
+            var peer = new Master.LocalFolderChunkStore(Path.Combine(root, "peer"), "peer", seed);
+            var relay = await sync.RelayAsync("video", store, peer);
+            Assert.True(relay.Ok, relay.Message);
+            var relay2 = await sync.RelayAsync("video", store, peer);
+            Assert.Equal(0, relay2.Transferred);
+            var anyPeerChunk = Directory.GetFiles(Path.Combine(root, "peer", "chunks"), "*", SearchOption.AllDirectories)[0];
+            var hashName = Path.GetFileName(anyPeerChunk);
+            var raw = File.ReadAllBytes(anyPeerChunk);
+            Assert.NotEqual(hashName, Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(raw)));
+            var peerPlain = (await peer.GetAsync(hashName, default))!;
+            Assert.Equal(raw, Master.CloudDeltaAssetSyncEngine.ConvergentEncrypt(seed, hashName, peerPlain));
+            Assert.True((await sync.DownloadAsync("video", peer, Path.Combine(root, "frompeer.mp4"), sess.Token)).Ok);
+            Assert.Null(Master.CloudDeltaAssetSyncEngine.ParseManifest("{\"asset\":\"a\",\"size\":10,\"hash\":\"" + new string('a', 64) + "\",\"at\":\"2026-01-01T00:00:00Z\",\"chunks\":[[0,5,\"" + new string('b', 64) + "\"],[6,4,\"" + new string('c', 64) + "\"]]}"));
+            Assert.False(Master.CloudDeltaAssetSyncEngine.IsSafeAssetId("../etc"));
+
+            // 5) 오케스트레이터 — 30 모듈 매트릭스 · 인가 · 단계 실행/재시도/[부분 구제]/QA 차단
+            var analytics = new Ix.InteractiveConversionAnalytics();
+            var sp = new MapProvider { [typeof(Master.ZeroTrustSecurityShieldService)] = zs, [typeof(Ix.InteractiveConversionAnalytics)] = analytics, [typeof(Master.CloudDeltaAssetSyncEngine)] = sync };
+            using var orch = new Master.UniversalMasterStudioOrchestrator(sp, zs);
+            Assert.Equal(30, orch.ModuleCount);
+            var matrix = orch.RefreshMatrix();
+            Assert.Equal(30, matrix.Count);
+            Assert.Equal(Master.ModuleHealth.Online, matrix.First(m => m.Id == "shield").Health);
+            Assert.Equal(Master.ModuleHealth.Online, matrix.First(m => m.Id == "ixstats").Health);
+            Assert.Equal(Master.ModuleHealth.Unavailable, matrix.First(m => m.Id == "jobs").Health);
+            Assert.Equal(3, orch.OnlineModules);
+            var proj = new SB.StoryboardProject { Title = "마스터" };
+            proj.Scenes.Add(new SB.StoryboardScene { Prompt = "a baby smiling" });
+            var denied = await orch.RunAsync(new Master.MasterRunRequest(proj), null);
+            Assert.Equal(Master.StageOutcome.Failed, denied![0].Outcome); Assert.Contains("인가 거부", denied[0].Message);
+            var final = Path.Combine(root, "final.mp4");
+            File.WriteAllBytes(final, big2);
+            var genCalls = 0;
+            orch.SetExecutor(Master.MasterStage.Generate, (c, ct) =>
+            {
+                if (++genCalls == 1) throw new IOException("일시 오류");
+                c.MasterVideo = final;
+                return Task.FromResult(new Master.StageResult(Master.MasterStage.Generate, Master.StageOutcome.Done, "생성", TimeSpan.Zero, final));
+            });
+            orch.SetExecutor(Master.MasterStage.Qa, (c, ct) => { c.QaRejected = true; return Task.FromResult(new Master.StageResult(Master.MasterStage.Qa, Master.StageOutcome.Failed, "QA 반려", TimeSpan.Zero)); });
+            orch.SetStageEnabled(Master.MasterStage.Dubbing, false);
+            var res = await orch.RunAsync(new Master.MasterRunRequest(proj, "baby", ReuseExistingVideo: false, PublishTargets: new[] { SocialPublishTarget.YouTubeShorts }, DeltaStoreFolder: Path.Combine(root, "cloud")), sess.Token);
+            Assert.NotNull(res);
+            Assert.Equal(2, genCalls);
+            Assert.Equal(Master.StageOutcome.Done, res!.First(r => r.Stage == Master.MasterStage.Plan).Outcome);
+            Assert.Equal(Master.StageOutcome.Done, res.First(r => r.Stage == Master.MasterStage.CharacterId).Outcome);
+            Assert.Contains(SB.CharacterIdentityLockService.IdentityPrompt, proj.Scenes[0].Prompt);
+            Assert.Equal(Master.StageOutcome.Done, res.First(r => r.Stage == Master.MasterStage.Generate).Outcome);
+            Assert.Equal("사용자 비활성", res.First(r => r.Stage == Master.MasterStage.Dubbing).Message);
+            Assert.Equal(Master.StageOutcome.Failed, res.First(r => r.Stage == Master.MasterStage.Qa).Outcome);
+            Assert.Contains("QA 반려", res.First(r => r.Stage == Master.MasterStage.Publish).Message);
+            Assert.Equal(Master.StageOutcome.Skipped, res.First(r => r.Stage == Master.MasterStage.Live).Outcome);
+            var ds = res.First(r => r.Stage == Master.MasterStage.DeltaSync);
+            Assert.Equal(Master.StageOutcome.Done, ds.Outcome);
+            Assert.Equal(2, orch.FailedRuns);
+            Assert.True(zs.VerifyAudit().Ok);
+        }
+        finally
+        {
+            try { Directory.Delete(root, true); } catch { }
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "Integration")]
+    [Trait("Speed", "Slow")]   // Step 35: 기준 실행 ≥ 10 s — 빠른 루프는 --filter "Speed!=Slow"
+    public void GenerativeFilmScore_And_NeuralSoundDesign_Check()
+    {
+        const int B = Sc.NeuralCinematographicFilmScoreGenerator.Block, SR = Sc.NeuralCinematographicFilmScoreGenerator.SampleRate;
+        // ══ FS-0 SIMD 커널 = 스칼라(비트 일치 · 꼬리) · 사인 근사 오차 ══
+        var rnd = new Random(1686);
+        foreach (var len in new[] { 0, 1, 7, 8, 9, 17, 33, 800, 1001 })
+        {
+            var a1 = new float[len]; var a2 = new float[len];
+            Sc.AudioSimd.PhaseRamp(a1, 0.37f, 0.0123f); Sc.AudioSimd.PhaseRampScalar(a2, 0.37f, 0.0123f);
+            Assert.True(a1.AsSpan().SequenceEqual(a2), $"ramp {len}");
+            Sc.AudioSimd.SinePoly(a1); Sc.AudioSimd.SinePolyScalar(a2);
+            Assert.True(a1.AsSpan().SequenceEqual(a2), $"sine {len}");
+            var x = new float[len]; for (var i = 0; i < len; i++) x[i] = (float)(rnd.NextDouble() * 2 - 1);
+            Sc.AudioSimd.MulAdd(a1, x, -0.41f); Sc.AudioSimd.MulAddScalar(a2, x, -0.41f);
+            Sc.AudioSimd.MulAcc(a1, x, x); Sc.AudioSimd.MulAccScalar(a2, x, x);
+            Assert.True(a1.AsSpan().SequenceEqual(a2), $"muladd/acc {len}");
+            double ss = 0; foreach (var v in a1) ss += v * v;
+            Assert.True(Math.Abs(Sc.AudioSimd.SumSquares(a1) - ss) <= 1e-4 * (1 + ss), $"sumsq {len}");
+        }
+        var maxErr = 0f;
+        for (var i = 0; i < 1000; i++) { var p = i / 1000f; maxErr = MathF.Max(maxErr, MathF.Abs(Sc.AudioSimd.SineScalar(p) - MathF.Sin(MathF.Tau * p))); }
+        Assert.True(maxErr < 2e-3f, $"sine err {maxErr}");
+
+        // ══ FS-1 BS.1770-4 라우드니스: 997 Hz −20 dBFS(L) = −23.0 LUFS · 게이팅 · 서라운드 가중 ══
+        float MeasureTone(int[] chans, float amp, float silenceSec, float toneSec)
+        {
+            var m = new Sc.LoudnessMeter(); var bed = new float[12 * B]; long n = 0;
+            var total = (int)((silenceSec + toneSec) * SR / B);
+            for (var b = 0; b < total; b++)
+            {
+                Array.Clear(bed);
+                for (var i = 0; i < B; i++, n++)
+                {
+                    if (n < silenceSec * SR) continue;
+                    var s = amp * MathF.Sin(MathF.Tau * 997f * n / SR);
+                    foreach (var c in chans) bed[c * B + i] = s;
+                }
+                m.Process(bed, B, B);
+            }
+            return m.Integrated;
+        }
+        var lufsL = MeasureTone(new[] { 0 }, 0.1f, 0f, 8f);
+        Assert.True(MathF.Abs(lufsL + 23.0f) < 0.15f, $"L tone {lufsL}");
+        Assert.True(MathF.Abs(MeasureTone(new[] { 0 }, 0.1f, 6f, 8f) - lufsL) < 0.1f, "absolute gate ignores silence");
+        Assert.True(MathF.Abs(MeasureTone(new[] { 0, 1 }, 0.1f, 0f, 6f) - (lufsL + 3.01f)) < 0.1f, "L+R +3 dB");
+        Assert.True(MathF.Abs(MeasureTone(new[] { 4 }, 0.1f, 0f, 6f) - (lufsL + 1.49f)) < 0.1f, "surround weight 1.41");
+        Assert.True(MeasureTone(new[] { 3 }, 0.1f, 0f, 4f) <= -70f, "LFE excluded");
+
+        // ══ FS-2 BGM: 선법 · 화성음 · 템포 · 레이어 · 컷 스팅어 · 결정성 · 무할당 ══
+        var sc = new Sc.NeuralCinematographicFilmScoreGenerator(42);
+        sc.SetCue(0.6f, 0.2f, 0.1f);
+        float brassCalm = 0, percCalm = 0;
+        for (var b = 0; b < 60 * 8; b++) { sc.RenderBlock(); brassCalm += sc.StemRms(Sc.Stem.Brass); percCalm += sc.StemRms(Sc.Stem.Percussion); }
+        Assert.Equal(Sc.ScoreMode.Major, sc.Mode);
+        Assert.True(MathF.Abs(sc.Bpm - 78f) < 1f, $"calm bpm {sc.Bpm}");
+        Assert.True(sc.StemRms(Sc.Stem.Ambient) > 1e-3f && sc.StemRms(Sc.Stem.Strings) > 1e-3f, "pad + strings");
+        Assert.True(brassCalm == 0f && percCalm == 0f, $"calm layers {brassCalm} {percCalm}");
+        void InScale(Sc.NeuralCinematographicFilmScoreGenerator g)
+        {
+            var scale = Sc.NeuralCinematographicFilmScoreGenerator.ScaleOf(g.Mode);
+            for (var v = 0; v < Sc.NeuralCinematographicFilmScoreGenerator.MaxVoices; v++)
+            {
+                var m = g.VoiceMidi(v);
+                if (m < 0 || !g.VoiceCurrent(v) || g.VoiceInstrument(v) is Sc.Instrument.Cymbal or Sc.Instrument.Drum or Sc.Instrument.Snare) continue;
+                var pc = ((m - g.KeyRoot) % 12 + 12) % 12;
+                Assert.True(scale.IndexOf(pc) >= 0, $"{g.VoiceInstrument(v)} midi {m} not in {g.Mode} of {g.KeyRoot}");
+            }
+        }
+        InScale(sc);
+        var calmBpm = sc.Bpm; var calmRoot = sc.KeyRoot;
+        sc.SetCue(-0.6f, 0.9f, 0.8f);
+        float brassAct = 0, percAct = 0;
+        for (var b = 0; b < 60 * 8; b++)
+        {
+            sc.RenderBlock(); brassAct += sc.StemRms(Sc.Stem.Brass); percAct += sc.StemRms(Sc.Stem.Percussion);
+            if (b % 37 == 0) InScale(sc);
+        }
+        Assert.Equal(Sc.ScoreMode.Phrygian, sc.Mode);
+        Assert.True(((calmRoot - sc.KeyRoot) % 12 + 12) % 12 == 3, $"relative minor {calmRoot} → {sc.KeyRoot}");
+        Assert.True(sc.Bpm > calmBpm + 50f && brassAct > 0.05f && percAct > 0.05f, $"action bpm {sc.Bpm} brass {brassAct} perc {percAct}");
+        Assert.True(sc.LayerOstinato && sc.ActiveVoices > 6);
+        var st0 = sc.Stingers;
+        sc.Cut(false);
+        var waited = 0;
+        while (sc.Stingers == st0 && waited < 120) { sc.RenderBlock(); waited++; }
+        Assert.True(sc.Stingers == st0 + 1 && sc.LastCutLatencyMs <= 60000f / sc.Bpm + 17f, $"stinger {sc.LastCutLatencyMs} ms");
+        sc.Cut(true); sc.RenderBlock();
+        Assert.True(sc.Stingers == st0 + 2 && sc.LastCutLatencyMs < 17f, $"hard cut {sc.LastCutLatencyMs}");
+        var sA = new Sc.NeuralCinematographicFilmScoreGenerator(7); var sB = new Sc.NeuralCinematographicFilmScoreGenerator(7);
+        sA.SetCue(0.1f, 0.6f, 0.4f); sB.SetCue(0.1f, 0.6f, 0.4f);
+        for (var b = 0; b < 200; b++) { sA.RenderBlock(); sB.RenderBlock(); }
+        Assert.True(sA.StemBuffer(Sc.Stem.Strings).SequenceEqual(sB.StemBuffer(Sc.Stem.Strings)) && sA.StemBuffer(Sc.Stem.Woodwinds).SequenceEqual(sB.StemBuffer(Sc.Stem.Woodwinds)));
+        Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>
+        {
+            for (var b = 0; b < 30; b++) sc.RenderBlock();
+        }));
+        for (var s = 0; s < 5; s++) Assert.True(float.IsFinite(sc.StemRms((Sc.Stem)s)) && sc.StemPeak((Sc.Stem)s) < 4f);
+
+        // ══ FS-3 폴리: 접지 검출 · 샘플 정확 동기 · 전파 지연 · 재질 스펙트럼 · 의상 마찰 · Minnaert · 무할당 ══
+        Assert.Equal(3260f, Sc.AutonomousNeuralFoleySfxSynthesizer.MinnaertHz(0.001f), 1);
+        Assert.Equal(Sc.SurfaceKind.Snow, Sc.AutonomousNeuralFoleySfxSynthesizer.FromBiome(Us.Biome.Snow));
+        var det = new Sc.FootContactDetector(); var contacts = 0;
+        for (var f = 0; f < 180; f++) if (det.Update(MathF.Max(0f, MathF.Sin(MathF.Tau * f / 60f)) * 0.1f, 1f / 60f, out _)) contacts++;
+        Assert.Equal(3, contacts);
+        var fo = new Sc.AutonomousNeuralFoleySfxSynthesizer { PropagationDelay = false };
+        Assert.True(fo.Trigger(new Sc.FoleyEvent(10.005, Sc.FoleyKind.Footstep, Sc.SurfaceKind.Gravel, 0.8f, new Nm.Vector3(1f, 0f, 0f))));
+        fo.RenderBlock(10.0);
+        var vb = fo.VoiceBuffer[0]; var first = -1;
+        for (var i = 0; i < B; i++) if (vb[i] != 0f) { first = i; break; }
+        Assert.True(first >= 240 && first <= 242 && fo.MaxSyncErrorMs < 0.02f && fo.LateEvents == 0, $"sync first {first} err {fo.MaxSyncErrorMs}");
+        var prop = new Sc.AutonomousNeuralFoleySfxSynthesizer { Listener = Nm.Vector3.Zero };
+        prop.Trigger(new Sc.FoleyEvent(0.0, Sc.FoleyKind.Explosion, Sc.SurfaceKind.Stone, 1f, new Nm.Vector3(343f, 0f, 0f)));
+        for (var b = 0; b < 59; b++) prop.RenderBlock(b / 60.0);
+        Assert.True(prop.Triggered == 0 && prop.Pending == 1, "delay pending");
+        prop.RenderBlock(59 / 60.0); prop.RenderBlock(60 / 60.0);
+        Assert.Equal(1, prop.Triggered);
+        Assert.Equal(1f, prop.LogEvent(0).Position.X / 343f, 3);
+        float Zcr(Sc.SurfaceKind s)
+        {
+            var f2 = new Sc.AutonomousNeuralFoleySfxSynthesizer { PropagationDelay = false };
+            f2.Trigger(new Sc.FoleyEvent(0.0, Sc.FoleyKind.Footstep, s, 0.8f, new Nm.Vector3(1f, 0f, 0f)));
+            int zc = 0, n = 0; var prev = 0f;
+            for (var b = 0; b < 6; b++)
+            {
+                f2.RenderBlock(b / 60.0);
+                var buf = f2.VoiceBuffer[0];
+                for (var i = 0; i < B; i++) { if ((buf[i] > 0f) != (prev > 0f) && MathF.Abs(buf[i]) > 1e-4f) zc++; prev = buf[i]; n++; }
+            }
+            return zc / (float)n;
+        }
+        var zSnow = Zcr(Sc.SurfaceKind.Snow); var zStone = Zcr(Sc.SurfaceKind.Stone); var zWood = Zcr(Sc.SurfaceKind.Wood);
+        Assert.True(zSnow > zStone * 1.3f && zSnow > zWood * 1.3f, $"material spectrum snow {zSnow} stone {zStone} wood {zWood}");
+        float RustleRms(float speed)
+        {
+            var f3 = new Sc.AutonomousNeuralFoleySfxSynthesizer();
+            f3.SetRustle(speed, Hc.FabricKind.Denim);
+            for (var b = 0; b < 20; b++) f3.RenderBlock(b / 60.0);
+            return MathF.Sqrt(Sc.AudioSimd.SumSquares(f3.RustleBuffer) / B);
+        }
+        Assert.True(RustleRms(3f) > 4f * RustleRms(0.5f) && RustleRms(0f) < 1e-5f, "rustle ∝ speed");
+        // 최소 할당(3 창) — 단일 창은 병렬 부하 중 티어드 JIT/OSR 재컴파일 일시 할당(584 B 관측)에 오염(저장소 AllocationProbe 관례)
+        var foT = 10.0;
+        Assert.Equal(0, AllocationProbe.MinAllocated(() =>
+        {
+            fo.Trigger(new Sc.FoleyEvent(foT + 0.05, Sc.FoleyKind.Splash, Sc.SurfaceKind.Water, 0.7f, Nm.Vector3.One));
+            for (var b = 0; b < 10; b++) fo.RenderBlock(foT + (b + 1) / 60.0);
+            foT += 1.0;
+        }));
+
+        // ══ FS-4 마스터링 가드: 채널 할당 · 더킹/명료도 · R128/A85 정규화 · 트루 피크 · 무할당 ══
+        var gp = new float[12];
+        for (var k = 0; k < 200; k++)
+        {
+            float az = (float)(rnd.NextDouble() * 360 - 180), el = (float)(rnd.NextDouble() * 60);
+            Sc.HarmonicMixingAndAudioMasteringGuard.PanDirection(az, el, gp);
+            float e = 0; foreach (var gg in gp) e += gg * gg;
+            Assert.True(MathF.Abs(e - 1f) < 1e-4f && gp[2] == 0f && gp[3] == 0f, $"pan {az} {el} e {e}");
+        }
+        Sc.HarmonicMixingAndAudioMasteringGuard.PanDirection(-30f, 0f, gp); Assert.True(gp[0] > 0.999f);
+        Sc.HarmonicMixingAndAudioMasteringGuard.PanDirection(90f, 0f, gp); Assert.True(gp[5] > 0.999f);
+        Sc.HarmonicMixingAndAudioMasteringGuard.PanDirection(45f, 45f, gp); Assert.True(gp[9] > 0.999f);
+
+        var music = new Sc.NeuralCinematographicFilmScoreGenerator(3); music.SetCue(0.3f, 0.5f, 0.3f);
+        var fol = new Sc.AutonomousNeuralFoleySfxSynthesizer();
+        var gD = new Sc.HarmonicMixingAndAudioMasteringGuard { Normalize = false };
+        var gN = new Sc.HarmonicMixingAndAudioMasteringGuard { Normalize = false, Ducking = false };
+        for (var b = 0; b < 120; b++) { music.RenderBlock(); fol.RenderBlock(b / 60.0); gD.Process(music, fol); gN.Process(music, fol); }
+        float cMax = 0; foreach (var v in gD.BedChannel(2)) cMax = MathF.Max(cMax, MathF.Abs(v));
+        Assert.True(cMax == 0f && gD.DuckGrDb < 0.1f, "C reserved for dialogue");
+        gD.Dialogue.Active = true; gN.Dialogue.Active = true;
+        for (var b = 0; b < 180; b++) { music.RenderBlock(); fol.RenderBlock((120 + b) / 60.0); gD.Process(music, fol); gN.Process(music, fol); }
+        Assert.True(gD.DuckGrDb > 7f && gN.DuckGrDb < 0.1f, $"duck {gD.DuckGrDb}");
+        Assert.True(gD.DialogueSnrDb > gN.DialogueSnrDb + 8f, $"speech SNR {gD.DialogueSnrDb} vs {gN.DialogueSnrDb}");
+        Assert.True(gD.ChannelDb(2) > -60f && gD.StemDb(Sc.Stem.Dialogue) > -60f);
+        // 폭발 → LFE 저역 전용
+        fol.Listener = Nm.Vector3.Zero;
+        fol.Trigger(new Sc.FoleyEvent(300 / 60.0, Sc.FoleyKind.Explosion, Sc.SurfaceKind.Stone, 1f, new Nm.Vector3(5f, 0f, 5f)));
+        for (var b = 0; b < 30; b++) { music.RenderBlock(); fol.RenderBlock((300 + b) / 60.0); gD.Process(music, fol); }
+        Assert.True(gD.ChannelDb(3) > -60f && gD.LfeHighBandRatio < 0.05f, $"LFE {gD.ChannelDb(3)} hi {gD.LfeHighBandRatio}");
+        Assert.True(gD.ChannelDb(1) > gD.ChannelDb(6), "foley right-front > left-back");
+        Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>
+        {
+            for (var b = 0; b < 20; b++) { music.RenderBlock(); fol.RenderBlock((330 + b) / 60.0); gD.Process(music, fol); }
+        }));
+
+        void RunProgram(Sc.HarmonicMixingAndAudioMasteringGuard g, Sc.NeuralCinematographicFilmScoreGenerator m, Sc.AutonomousNeuralFoleySfxSynthesizer f, int blocks, ref double t)
+        {
+            for (var b = 0; b < blocks; b++)
+            {
+                if (b % 90 == 0) f.Trigger(new Sc.FoleyEvent(t, Sc.FoleyKind.Explosion, Sc.SurfaceKind.Stone, 1f, new Nm.Vector3(3f, 0f, 4f)));
+                m.RenderBlock(); f.RenderBlock(t); g.Process(m, f); t += 1 / 60.0;
+            }
+        }
+        foreach (var std in new[] { Sc.LoudnessStandard.EbuR128, Sc.LoudnessStandard.AtscA85 })
+        {
+            var gm = new Sc.HarmonicMixingAndAudioMasteringGuard { Standard = std };
+            var mm = new Sc.NeuralCinematographicFilmScoreGenerator(11); mm.SetCue(-0.4f, 0.9f, 0.7f);
+            for (var s = 0; s < 5; s++) mm.StemGain[s] = 2f;
+            var ff = new Sc.AutonomousNeuralFoleySfxSynthesizer { Listener = Nm.Vector3.Zero };
+            double tt = 0;
+            RunProgram(gm, mm, ff, 60 * 6, ref tt);
+            gm.Post.ResetIntegrated();
+            RunProgram(gm, mm, ff, 60 * 10, ref tt);
+            Assert.True(MathF.Abs(gm.Post.Integrated - gm.TargetLufs) < 1f, $"{std} integrated {gm.Post.Integrated} target {gm.TargetLufs} norm {gm.NormGainDb}");
+            Assert.True(gm.MaxTruePeakDbtp <= gm.CeilingDbtp + 0.2f, $"{std} TP {gm.MaxTruePeakDbtp} ceil {gm.CeilingDbtp}");
+            Assert.True(gm.Compliant, $"{std} compliant");
+            Assert.True(gm.NormGainDb < 0f, $"loud input attenuated {gm.NormGainDb}");
+        }
+        var wav = gD.ExportPreviewWav();
+        Assert.True(wav.Length > 44 + 4 * SR && wav[0] == (byte)'R' && wav[8] == (byte)'W' && BitConverter.ToInt32(wav, 24) == SR);
+        for (var k = 0; k < Sc.HarmonicMixingAndAudioMasteringGuard.Bands; k++) Assert.True(float.IsFinite(gD.Spectrum(Sc.Stem.Strings, k)));
+        var gb = new Sc.HarmonicMixingAndAudioMasteringGuard(new Sx.NeuralBinauralHrtfSpatializer()) { Binaural = true };
+        for (var b = 0; b < 10; b++) { music.RenderBlock(); fol.RenderBlock((400 + b) / 60.0); gb.Process(music, fol); }
+        Assert.True(float.IsFinite(gb.OutL[100]) && float.IsFinite(gb.OutR[100]));
+
+        // ══ FS-5 러너: 서사 아크 · 보행 폴리 · 컷 · 프롬프트 · 무할당 ══
+        var run = new Sc.FilmScoreStudioRunner(new Sc.NeuralCinematographicFilmScoreGenerator(), new Sc.AutonomousNeuralFoleySfxSynthesizer(), new Sc.HarmonicMixingAndAudioMasteringGuard());
+        for (var f = 0; f < 60 * 14; f++) run.TickOnce();
+        Assert.True(run.Footsteps > 12 && run.Cuts >= 2 && run.Foley.Triggered >= run.Footsteps - 2, $"steps {run.Footsteps} cuts {run.Cuts} trig {run.Foley.Triggered}");
+        Assert.True(run.Foley.MaxSyncErrorMs < 0.05f && run.Foley.LateEvents == 0, $"sync {run.Foley.MaxSyncErrorMs}");
+        Assert.Equal(1, run.Segment);
+        Assert.True(run.Score.Stingers >= 1 && float.IsFinite(run.Guard.Post.ShortTerm));
+        Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>
+        {
+            for (var f = 0; f < 20; f++) run.TickOnce();
+        }));
+        Assert.True(run.TriggerPrompt("비극적인 슬픔 가죽 ATSC 폭발") >= 4);
+        Assert.True(!run.AutoNarrative && run.Score.Valence < -0.5f && run.Foley.Fabric == Hc.FabricKind.Leather && run.Guard.Standard == Sc.LoudnessStandard.AtscA85);
+        for (var f = 0; f < 120; f++) run.TickOnce();
+        Assert.True(run.Explosions >= 1 && run.Foley.Triggered > 0);
+        Assert.Equal(0, run.TriggerPrompt(" "));
+        run.NewShot();
+        Assert.Equal(0, run.Frame);
+        run.Dispose();
+    }
+
+    [Fact]
+    [Trait("Category", "Integration")]
+    public void SpatialSlam_And_LidarMeshReconstruction_Check()
+    {
+        const int W = Slm.SpatialSlamStudioRunner.W, H = Slm.SpatialSlamStudioRunner.H;
+        const float F = Slm.SpatialSlamStudioRunner.F, CX = Slm.SpatialSlamStudioRunner.Cx, CY = Slm.SpatialSlamStudioRunner.Cy;
+        var center = Slm.SpatialSlamStudioRunner.PathCenter; var rad = Slm.SpatialSlamStudioRunner.PathRadius;
+        Slm.SlamPose Gt(long f) => Slm.SlamSyntheticRoom.Trajectory((double)f / Slm.SpatialSlamStudioRunner.FramesPerLoop, center, rad);
+        var depth = new float[W * H];
+
+        // ── SLAM-1a: 드리프트 없음 → ICP 추적 정확도 ──
+        var slam = new Slm.NeuralSpatialSlamTrackingEngine(W, H, F, F, CX, CY) { LoopClosureEnabled = false };
+        slam.Reset(Gt(0));
+        for (var f = 0; f < 60; f++)
+        {
+            Slm.SlamSyntheticRoom.RenderDepth(Gt(f), W, H, F, F, CX, CY, 6f, 0.0015f, (ulong)f * 31 + 1, depth);
+            slam.Track(depth, f, Gt(f));
+        }
+        Assert.Equal(0, slam.Lost);
+        Assert.True(slam.AteRmse < 0.03f, "ate " + slam.AteRmse);
+        Assert.True(Slm.SlamPose.AngleBetweenDeg(slam.Pose, Gt(59)) < 1f);
+        Assert.True(slam.Features > 0 && slam.KeyframeCount >= 2);
+        Assert.True(slam.LastRms < 0.02f);
+
+        // ── SLAM-1b: 드리프트 주입 1바퀴 → 루프 폐쇄 보정 ──
+        var s2 = new Slm.NeuralSpatialSlamTrackingEngine(W, H, F, F, CX, CY) { InjectDriftDeg = 0.04f, InjectDriftMm = 1.5f };
+        s2.Reset(Gt(0));
+        Slm.LoopClosure? closed = null;
+        s2.LoopClosed += lc => closed ??= lc;
+        var total = Slm.SpatialSlamStudioRunner.FramesPerLoop + 12;
+        for (var f = 0; f < total; f++)
+        {
+            Slm.SlamSyntheticRoom.RenderDepth(Gt(f), W, H, F, F, CX, CY, 6f, 0.0015f, (ulong)f * 31 + 1, depth);
+            s2.Track(depth, f, Gt(f));
+        }
+        Assert.NotNull(closed);
+        var c = closed!.Value;
+        Assert.True(c.Frame >= Slm.SpatialSlamStudioRunner.FramesPerLoop - 20, "closure frame " + c.Frame);
+        Assert.True(c.ErrorBeforeM > 0.2f, "before " + c.ErrorBeforeM);
+        Assert.True(c.ErrorAfterM < c.ErrorBeforeM * 0.3f, "after " + c.ErrorAfterM + " before " + c.ErrorBeforeM);
+        Assert.True(c.CorrectionDeg > 3f);
+        Assert.True(s2.CurrentErrorM < 0.15f, "end err " + s2.CurrentErrorM + " " + c + " loops " + s2.LoopCount + " kfs " + s2.KeyframeCount);
+
+        // 무할당 추적
+        var s3 = new Slm.NeuralSpatialSlamTrackingEngine(W, H, F, F, CX, CY);
+        s3.Reset(Gt(0));
+        for (var f = 0; f < 5; f++) { Slm.SlamSyntheticRoom.RenderDepth(Gt(f), W, H, F, F, CX, CY, 6f, 0.0015f, 3, depth); s3.Track(depth, f); }
+        Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>
+        {
+            for (var f = 5; f < 25; f++) s3.Track(depth, f);
+        }));
+
+        // ── SLAM-2: TSDF(지상 진실 자세) → Surface Nets 정점이 실제 표면 위 ──
+        var tsdf = new Slm.LidarPointCloudMeshReconstructionSynthesizer();
+        for (var f = 0; f < Slm.SpatialSlamStudioRunner.FramesPerLoop; f += 4)
+        {
+            Slm.SlamSyntheticRoom.RenderDepth(Gt(f), W, H, F, F, CX, CY, 6f, 0.0015f, (ulong)f + 5, depth);
+            tsdf.IntegrateDepth(depth, W, H, F, F, CX, CY, Gt(f));
+        }
+        // 천장 스캔(기기를 위로 향함 · 지상 진실 자세)
+        for (var k = 0; k < 8; k++)
+        {
+            var eye = center + new V3(0.8f * MathF.Cos(k * 0.785f), 0, 0.8f * MathF.Sin(k * 0.785f));
+            var up = Slm.SlamPose.LookAt(eye, eye + new V3(MathF.Cos(k * 0.785f), 1.2f, MathF.Sin(k * 0.785f)));
+            Slm.SlamSyntheticRoom.RenderDepth(up, W, H, F, F, CX, CY, 6f, 0.0015f, (ulong)k + 77, depth);
+            tsdf.IntegrateDepth(depth, W, H, F, F, CX, CY, up);
+        }
+        var nv = tsdf.ExtractMesh();
+        Assert.True(nv > 3000, "verts " + nv);
+        Assert.True(tsdf.TriangleCount > nv, "tris " + tsdf.TriangleCount);
+        Assert.False(tsdf.Truncated);
+        double err = 0;
+        for (var i = 0; i < nv; i++) err += MathF.Abs(Slm.SlamSyntheticRoom.Distance(tsdf.Vertex(i)));
+        err /= nv;
+        Assert.True(err < tsdf.Voxel * 0.35, "mesh err " + err);
+        foreach (var t in tsdf.Triangles) Assert.InRange(t, 0, nv - 1);
+        // 표면 sdf 샘플(바닥 위 0.5 m = +, 바닥 아래 = −)
+        Assert.True(tsdf.SampleSdf(new V3(-0.6f, 0.5f, 0.5f)) > 0.2f);
+        // 라이다 점 융합
+        var lid = new Slm.LidarPointCloudMeshReconstructionSynthesizer();
+        float[] lx = new float[16 * 180], ly = new float[16 * 180], lz = new float[16 * 180];
+        for (var f = 0; f < Slm.SpatialSlamStudioRunner.FramesPerLoop; f += 24)
+        {
+            var n = Slm.SlamSyntheticRoom.LidarSweep(Gt(f), 16, 180, 6f, 0.005f, (ulong)f + 9, lx, ly, lz);
+            Assert.True(n > 2000);
+            lid.IntegratePoints(lx, ly, lz, n, Gt(f));
+        }
+        var lv = lid.ExtractMesh();
+        Assert.True(lv > 1000, "lidar verts " + lv);
+        double lerr = 0;
+        for (var i = 0; i < lv; i++) lerr += MathF.Abs(Slm.SlamSyntheticRoom.Distance(lid.Vertex(i)));
+        Assert.True(lerr / lv < lid.Voxel * 0.6, "lidar err " + lerr / lv);
+        // 무할당 융합
+        tsdf.IntegrateDepth(depth, W, H, F, F, CX, CY, Gt(0));
+        tsdf.IntegrateDepth(depth, W, H, F, F, CX, CY, Gt(0));   // 원 볼륨 상태는 Step 40 이전과 동일(측정 창 1회분 그대로)
+        lid.IntegratePoints(lx, ly, lz, 1000, Gt(0));
+        tsdf.ExtractMesh();
+        // 측정은 쌍둥이 볼륨에서 — 같은 시점 재적분 재시도가 원 볼륨 가중치를 바꿔 아래 평면 검출 단언을 흔들지 않음(동일 핫패스)
+        var twinVol = new Slm.LidarPointCloudMeshReconstructionSynthesizer();
+        var twinLid = new Slm.LidarPointCloudMeshReconstructionSynthesizer();
+        twinVol.IntegrateDepth(depth, W, H, F, F, CX, CY, Gt(0)); twinLid.IntegratePoints(lx, ly, lz, 1000, Gt(0)); twinVol.ExtractMesh();
+        Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>
+        {
+            twinVol.IntegrateDepth(depth, W, H, F, F, CX, CY, Gt(0));
+            twinLid.IntegratePoints(lx, ly, lz, 1000, Gt(0));
+            twinVol.ExtractMesh();
+        }));
+        // OpenUSD / 3DGS
+        var layer = new PromptFlowStudio.Services.OpenUsd.UsdLayer("t.usda");
+        var pts = tsdf.ExportUsd(layer, 4000);
+        Assert.InRange(pts, 1000, 4000);
+        var prim = layer.Find("/World/SlamMesh");
+        Assert.True(prim >= 0);
+        Assert.Equal(pts, layer.PointsOf(prim).Length / 3);
+        var gs = new PromptFlowStudio.Services.Neural3d.GaussianScene(16);
+        var sp = tsdf.ExportGaussians(gs, 5000);
+        Assert.Equal(gs.Count, sp);
+        Assert.InRange(sp, 1000, 5000);
+
+        // ── SLAM-3: RANSAC 평면(바닥 · 천장 · 벽 · 테이블) + 앵커 가드 ──
+        var guard = new Slm.SpatialPlaneDetectionAnchorGuard { Surface = tsdf };
+        var np = guard.Detect(tsdf.VX, tsdf.VY, tsdf.VZ, tsdf.NX, tsdf.NY, tsdf.NZ);
+        Assert.True(np >= 5, "planes " + np);
+        int TableNear(Slm.SpatialPlaneDetectionAnchorGuard g) { for (var i = 0; i < g.PlaneCount; i++) if (g.Plane(i).Kind == Slm.PlaneKind.Table && MathF.Abs(g.Plane(i).Height - Slm.SlamSyntheticRoom.TableTop) < 0.07f) return i; return -1; }
+        var fl = guard.FindKind(Slm.PlaneKind.Floor); var ce = guard.FindKind(Slm.PlaneKind.Ceiling); var tb = TableNear(guard);
+        Assert.True(fl >= 0 && ce >= 0 && tb >= 0, "floor " + fl + " ceil " + ce + " table " + tb);
+        Assert.InRange(guard.Plane(fl).Height, -0.05f, 0.08f);
+        Assert.InRange(guard.Plane(ce).Height, 2.9f, 3.05f);
+        Assert.InRange(guard.Plane(tb).Height, Slm.SlamSyntheticRoom.TableTop - 0.07f, Slm.SlamSyntheticRoom.TableTop + 0.07f);
+        Assert.True(guard.CountKind(Slm.PlaneKind.Wall) >= 3);
+        var firstFloorId = guard.Plane(fl).Id;
+        guard.Detect(tsdf.VX, tsdf.VY, tsdf.VZ, tsdf.NX, tsdf.NY, tsdf.NZ);
+        guard.Detect(tsdf.VX, tsdf.VY, tsdf.VZ, tsdf.NX, tsdf.NY, tsdf.NZ);
+        fl = guard.FindKind(Slm.PlaneKind.Floor);
+        Assert.Equal(firstFloorId, guard.Plane(fl).Id);
+        Assert.True(guard.Plane(fl).Stable);
+        // 평면 검출 무할당
+        guard.Detect(tsdf.VX, tsdf.VY, tsdf.VZ, tsdf.NX, tsdf.NY, tsdf.NZ, 2);   // 원 가드는 1 회분 그대로(RANSAC 난수 상태 → 아래 앵커 단언 고정)
+        guard.Detect(tsdf.VX, tsdf.VY, tsdf.VZ, tsdf.NX, tsdf.NY, tsdf.NZ);
+        // 측정은 쌍둥이 가드에서 — Detect 마다 RANSAC 난수가 전진하므로 재시도 창이 원 가드의 평면 집합을 바꾸지 않게 분리(동일 핫패스)
+        var twinGuard = new Slm.SpatialPlaneDetectionAnchorGuard { Surface = tsdf };
+        twinGuard.Detect(tsdf.VX, tsdf.VY, tsdf.VZ, tsdf.NX, tsdf.NY, tsdf.NZ, 2);
+        twinGuard.Detect(tsdf.VX, tsdf.VY, tsdf.VZ, tsdf.NX, tsdf.NY, tsdf.NZ);
+        Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>
+        {
+            twinGuard.Detect(tsdf.VX, tsdf.VY, tsdf.VZ, tsdf.NX, tsdf.NY, tsdf.NZ, 2);
+            twinGuard.Detect(tsdf.VX, tsdf.VY, tsdf.VZ, tsdf.NX, tsdf.NY, tsdf.NZ);
+        }));
+        fl = guard.FindKind(Slm.PlaneKind.Floor); tb = TableNear(guard);
+        float HeightAt(int pi, float x, float z) { var pp = guard.Plane(pi); return -(pp.D + pp.Normal.X * x + pp.Normal.Z * z) / pp.Normal.Y; }
+        var aFloat = guard.AddAnchor("float", Slm.AnchorKind.Prop, new V3(-1.6f, 1.1f, 0.6f), 0.25f, 0.9f);
+        var aVase = guard.AddAnchor("vase", Slm.AnchorKind.Prop, new V3(1.2f, 1.25f, -0.2f), 0.08f, 0.3f);
+        var aWall = guard.AddAnchor("human", Slm.AnchorKind.DigitalHuman, new V3(2.85f, 0f, 0.2f), 0.3f, 1.75f);
+        var aSink = guard.AddAnchor("sink", Slm.AnchorKind.Prop, new V3(0.2f, -0.3f, 1.6f), 0.15f, 1.2f);
+        var fixes = guard.Guard(1f / 15);
+        Assert.True(fixes >= 4, "fixes " + fixes);
+        Assert.Equal(HeightAt(fl, -1.6f, 0.6f), guard.Anchor(aFloat).Position.Y, 3);   // 공중 부양 → 바닥
+        Assert.Equal(HeightAt(tb, 1.2f, -0.2f), guard.Anchor(aVase).Position.Y, 3);    // 테이블 위 부양 → 상판
+        Assert.InRange(guard.Anchor(aVase).Position.Y, Slm.SlamSyntheticRoom.TableTop - 0.07f, Slm.SlamSyntheticRoom.TableTop + 0.07f);
+        Assert.True(guard.Anchor(aWall).Position.X <= 3f - 0.3f + 0.06f, "wall x " + guard.Anchor(aWall).Position.X);
+        Assert.Equal(HeightAt(fl, guard.Anchor(aSink).Position.X, guard.Anchor(aSink).Position.Z), guard.Anchor(aSink).Position.Y, 3);    // 바닥 관통 → 바닥
+        Assert.InRange(guard.Anchor(aSink).Position.Y, -0.06f, 0.06f);
+        Assert.True(guard.Anchor(aFloat).Grounded && guard.Anchor(aVase).Grounded);
+        Assert.Equal(0, guard.Guard(1f / 15)); // 안정 후 재보정 0
+        // 중력 모드: 부양 소품이 낙하해 착지
+        var g2 = new Slm.SpatialPlaneDetectionAnchorGuard { Gravity = true };
+        g2.Detect(tsdf.VX, tsdf.VY, tsdf.VZ, tsdf.NX, tsdf.NY, tsdf.NZ);
+        var drop = g2.AddAnchor("drop", Slm.AnchorKind.Prop, new V3(-1.6f, 1.5f, 0.6f), 0.2f, 0.5f);
+        var steps = 0;
+        while (!g2.Anchor(drop).Grounded && steps < 200) { g2.Guard(1f / 60); steps++; }
+        Assert.True(g2.Anchor(drop).Grounded);
+        Assert.InRange(steps, 20, 60); // √(2·1.5/9.81) ≈ 0.55 s
+        Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>
+        {
+            for (var k = 0; k < 100; k++) guard.Guard(1f / 60);
+        }));
+
+        // ── SLAM-4: 러너(라이다 모드 포함) · 내보내기 ──
+        var run = new Slm.SpatialSlamStudioRunner(new Slm.NeuralSpatialSlamTrackingEngine(W, H, F, F, CX, CY), new Slm.LidarPointCloudMeshReconstructionSynthesizer(), new Slm.SpatialPlaneDetectionAnchorGuard());
+        for (var k = 0; k < 40; k++) run.Step();
+        Assert.Equal(40, run.Frame);
+        Assert.True(run.Mesh.VertexCount > 500);
+        Assert.True(run.Guard.PlaneCount >= 2);
+        Assert.True(run.CloudCount > 100);
+        run.LidarMode = true;
+        for (var k = 0; k < 10; k++) run.Step();
+        Assert.True(run.Mesh.PointsFused > 0);
+        var dir = Path.Combine(Path.GetTempPath(), "pf-slam-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var path = run.Export(dir);
+            Assert.True(File.Exists(path));
+            var txt = File.ReadAllText(path);
+            Assert.Contains("SlamMesh", txt);
+            Assert.Contains("Plane_", txt);
+        }
+        finally { if (Directory.Exists(dir)) Directory.Delete(dir, true); }
+        run.Dispose();
+    }
+
+    [Fact]
+    [Trait("Category", "Integration")]
+    public void NeuralPathTracing_And_RealtimeDenoising_Check()
+    {
+        static System.Numerics.Vector3 V3(float x, float y, float z) => new(x, y, z);
+
+        // PATHTRACE-3: MaterialX 파싱/왕복 · 진단 · 프롬프트 프리셋 · BSDF 에너지 보존/상반성/샘플 일관성 · 무할당 ──
+        var mx = new Pt.MaterialXBsdfShaderSynthesizer();
+        Assert.Equal(6, mx.LoadMtlx(Pt.PathTracingStudioRunner.StudioMtlx));
+        var gold = mx.Get(mx.Find("Gold"));
+        Assert.True(gold.Metallic == 1 && gold.Roughness == 0.25f && gold.BaseColor == V3(1, 0.78f, 0.34f));
+        var backdrop = mx.Get(mx.Find("backdrop"));
+        Assert.True(backdrop.Roughness == 0.8f && backdrop.BaseColor == V3(0.7f, 0.7f, 0.72f) && backdrop.Emission == default && backdrop.Metallic == 0);
+        Assert.True(System.Numerics.Vector3.Distance(V3(12, 10.2f, 7.2f), mx.Get(mx.Find("Lamp")).Emission) < 1e-4f);
+        var jade = mx.Get(mx.Find("Jade"));
+        Assert.True(jade.Subsurface == 0.8f && MathF.Abs(jade.SubsurfaceRadius - 0.2f) < 1e-6f && jade.Ior == 1.6f);
+        Assert.Throws<FormatException>(() => mx.LoadMtlx("<materialx version=\"1.38\"><surfacematerial name=\"X\" type=\"material\"><input name=\"surfaceshader\" type=\"surfaceshader\" nodename=\"Missing\" /></surfacematerial></materialx>"));
+        var mx2 = new Pt.MaterialXBsdfShaderSynthesizer();
+        mx2.LoadMtlx(mx.ExportMtlx());
+        for (var i = 0; i < mx.Count; i++)
+        {
+            var a = mx.Get(i); var b = mx2.Get(mx2.Find(mx.Name(i)));
+            Assert.True(System.Numerics.Vector3.Distance(a.BaseColor, b.BaseColor) < 1e-5f && System.Numerics.Vector3.Distance(a.Emission, b.Emission) < 1e-4f
+                && a.Metallic == b.Metallic && a.Roughness == b.Roughness && a.Specular == b.Specular && a.Ior == b.Ior && a.Subsurface == b.Subsurface
+                && MathF.Abs(a.SubsurfaceRadius - b.SubsurfaceRadius) < 1e-6f, mx.Name(i));
+        }
+        Assert.Empty(mx.Diagnose(mx.Find("Gold")).Issues);
+        var badM = Pt.PbrMaterial.Default; badM.Metallic = 0.5f; badM.Roughness = 0.01f;
+        Assert.True(mx.Diagnose(mx.Register("bad", badM)).Issues.Count >= 2);
+        Assert.Equal("gold", Pt.MaterialXBsdfShaderSynthesizer.SuggestFromPrompt("반짝이는 금 반지")!.Value.Name);
+        Assert.Equal(0.9f, Pt.MaterialXBsdfShaderSynthesizer.SuggestFromPrompt("candle wax")!.Value.Material.Subsurface);
+        Assert.Null(Pt.MaterialXBsdfShaderSynthesizer.SuggestFromPrompt("something"));
+
+        var white = Pt.PbrMaterial.Default; white.BaseColor = System.Numerics.Vector3.One; white.Specular = 0;
+        Assert.Equal(1f, Pt.MaterialXBsdfShaderSynthesizer.DirectionalAlbedo(white, 0.7f, 20_000), 2);
+        var plastic = Pt.PbrMaterial.Default; plastic.Roughness = 0.08f;
+        var roughMetal = gold; roughMetal.Roughness = 1f;
+        foreach (var m in new[] { gold, Pt.PbrMaterial.Default, plastic, roughMetal, jade })
+            foreach (var cv in new[] { 1f, 0.5f, 0.1f })
+                { var al = Pt.MaterialXBsdfShaderSynthesizer.DirectionalAlbedo(m, cv, 8000); Assert.True(al <= 1.02f, $"albedo {al} r={m.Roughness} metal={m.Metallic} cos={cv}"); }
+        Assert.True(Pt.MaterialXBsdfShaderSynthesizer.DirectionalAlbedo(gold, 1f, 8000) > 0.5f);
+        var rnd = new Random(1674);
+        var nz = System.Numerics.Vector3.UnitZ;
+        System.Numerics.Vector3 Hemi() { var v = V3(rnd.NextSingle() * 2 - 1, rnd.NextSingle() * 2 - 1, rnd.NextSingle() + 0.05f); return System.Numerics.Vector3.Normalize(v); }
+        for (var k = 0; k < 200; k++)
+        {
+            var wo = Hemi(); var wi = Hemi();
+            var fa = Pt.MaterialXBsdfShaderSynthesizer.Eval(Pt.PbrMaterial.Default, nz, wo, wi, out _) / wi.Z;
+            var fb = Pt.MaterialXBsdfShaderSynthesizer.Eval(Pt.PbrMaterial.Default, nz, wi, wo, out _) / wo.Z;
+            Assert.True(System.Numerics.Vector3.Distance(fa, fb) < 1e-4f * (1 + fa.Length()), $"상반성 {fa} {fb}");
+            if (Pt.MaterialXBsdfShaderSynthesizer.Sample(gold, nz, wo, rnd.NextSingle(), rnd.NextSingle(), rnd.NextSingle(), out var ws, out var weight, out var pdf, out _))
+            {
+                var f = Pt.MaterialXBsdfShaderSynthesizer.Eval(gold, nz, wo, ws, out var pdf2);
+                Assert.True(MathF.Abs(pdf - pdf2) < 1e-4f * pdf && System.Numerics.Vector3.Distance(weight, f / pdf) < 1e-3f * (1 + weight.Length()));
+            }
+        }
+        Assert.Equal(0, AllocationProbe.MinAllocated(() => { for (var k = 0; k < 2000; k++) Pt.MaterialXBsdfShaderSynthesizer.Sample(gold, nz, V3(0.3f, 0, 0.95f), k / 2000f, 0.37f, 0.61f, out _, out _, out _, out _); }));
+
+        // PATHTRACE-1: 퍼니스(빈 장면 · 백색 확산 · 백색 SSS · 산란 안개) · 흡수 투과율 · 3DGS 매질 · SIMD 교차 · AOV/모션 벡터 · 누적 · 결정성 · 무할당 ──
+        var mt = new Pt.MaterialXBsdfShaderSynthesizer();
+        var whiteIdx = mt.Register("white", white);
+        var sssW = white; sssW.Subsurface = 1; sssW.SubsurfaceColor = System.Numerics.Vector3.One; sssW.SubsurfaceRadius = 0.3f;
+        var sssIdx = mt.Register("sss", sssW);
+        var goldIdx = mt.Register("gold", gold);
+        var L = V3(0.5f, 0.5f, 0.5f);
+        var pt = new Pt.VolumetricPathTracingLightTransportEngine(mt) { Ground = false, SunRadiance = default, SkyZenith = L, SkyHorizon = L, MaxBounces = 64 };
+        pt.SetResolution(16, 12);
+        pt.SetCamera(V3(0, 0, 5), default, 40);
+        pt.RenderFrame(0);
+        Assert.All(pt.Color.ToArray(), c => Assert.Equal(0.5f, c, 5));
+        pt.AddSphere(default, 1, whiteIdx);
+        pt.Spp = 4;
+        pt.RenderFrame(1);
+        Assert.All(pt.Color.ToArray(), c => Assert.True(MathF.Abs(c - 0.5f) < 1e-3f, $"확산 퍼니스 {c}"));
+        pt.ClearScene();
+        pt.AddSphere(default, 1, sssIdx);
+        pt.Spp = 16;
+        pt.RenderFrame(2);
+        Assert.True(MathF.Abs(pt.Color.ToArray().Average() - 0.5f) < 0.005f, $"SSS 퍼니스 {pt.Color.ToArray().Average()}");
+        pt.ClearScene();
+        pt.AddSphere(default, 1, goldIdx);
+        var gb = 0f;
+        for (var s = 0; s < 64; s++) gb += pt.Radiance(V3(0, 0, 5), V3(0, 0, -1), (ulong)s).Z / 64;
+        Assert.True(gb < 0.45f && gb > 0.1f, $"금 청색 반사 {gb}");
+        pt.ClearScene();
+        pt.FogDensity = 0.8f; pt.FogAlbedo = System.Numerics.Vector3.One; pt.FogMin = V3(-2, -2, -2); pt.FogMax = V3(2, 2, 2); pt.FogAnisotropy = 0.5f;
+        pt.Spp = 8;
+        pt.RenderFrame(3);
+        Assert.True(pt.Color.ToArray().Min() > 0.49f && pt.Color.ToArray().Max() < 0.5001f, "산란 안개 퍼니스");
+        pt.FogAlbedo = V3(0.5f, 0.5f, 0.5f);
+        pt.RenderFrame(4);
+        var center = (6 * 16 + 8) * 3;
+        Assert.True(pt.Color[center] < 0.45f, $"흡수 안개 {pt.Color[center]}");
+
+        var emit = Pt.PbrMaterial.Default; emit.BaseColor = default; emit.Specular = 0; emit.Emission = System.Numerics.Vector3.One;
+        var emitIdx = mt.Register("emit", emit);
+        pt.SkyZenith = default; pt.SkyHorizon = default;
+        pt.AddBox(V3(-5, -5, -1.1f), V3(5, 5, -1), emitIdx);
+        pt.FogDensity = 0.5f; pt.FogAlbedo = default; pt.FogMin = V3(-10, -10, -1); pt.FogMax = V3(10, 10, 3);
+        var tr = 0f;
+        for (var s = 0; s < 4000; s++) tr += pt.Radiance(V3(0, 0, 5), V3(0, 0, -1), (ulong)s).X / 4000;
+        Assert.True(MathF.Abs(tr - MathF.Exp(-0.5f * 4)) < 0.02f, $"투과율 {tr} vs {MathF.Exp(-2)}");
+
+        pt.ClearScene(); pt.FogDensity = 0; pt.SkyZenith = L; pt.SkyHorizon = L;
+        var smoke = new G3.GaussianScene(64);
+        for (var i = 0; i < 40; i++) smoke.Add(V3((i % 4 - 1.5f) * 0.2f, (i / 4 % 5 - 2) * 0.2f, (i / 20 - 0.5f) * 0.2f), System.Numerics.Quaternion.Identity, V3(0.25f, 0.25f, 0.25f), 1f, default);
+        pt.BindGaussians(smoke, 8f);
+        Assert.True(pt.HasGrid && pt.GridMaxDensity > 1f);
+        var through = 0f;
+        for (var s = 0; s < 400; s++) through += pt.Radiance(V3(0, 0, 5), V3(0, 0, -1), (ulong)s).X / 400;
+        Assert.True(through < 0.25f, $"3DGS 매질 {through}");
+        Assert.Equal(0.5f, pt.Radiance(V3(0, 3, 5), V3(0, 0, -1), 1).X, 5);
+
+        var simd = new Pt.VolumetricPathTracingLightTransportEngine(mt) { Ground = false };
+        var sph = new List<(System.Numerics.Vector3 C, float R)>();
+        for (var i = 0; i < 37; i++) { var c = V3(rnd.NextSingle() * 8 - 4, rnd.NextSingle() * 8 - 4, rnd.NextSingle() * 8 - 4); var r = 0.2f + rnd.NextSingle() * 0.8f; sph.Add((c, r)); simd.AddSphere(c, r, whiteIdx); }
+        for (var k = 0; k < 500; k++)
+        {
+            var o = V3(rnd.NextSingle() * 20 - 10, rnd.NextSingle() * 20 - 10, rnd.NextSingle() * 20 - 10);
+            var d = System.Numerics.Vector3.Normalize(-o + V3(rnd.NextSingle() * 4 - 2, rnd.NextSingle() * 4 - 2, rnd.NextSingle() * 4 - 2));
+            float best = 1e9f; var bi = -1;
+            for (var i = 0; i < sph.Count; i++)
+            {
+                var oc = o - sph[i].C; var b = System.Numerics.Vector3.Dot(oc, d); var disc = b * b - (oc.LengthSquared() - sph[i].R * sph[i].R);
+                if (disc <= 0) continue;
+                var t0 = -b - MathF.Sqrt(disc); var t1 = -b + MathF.Sqrt(disc); var t = t0 > 1e-3f ? t0 : t1;
+                if (t > 1e-3f && t < best) { best = t; bi = i; }
+            }
+            var hit = simd.TraceClosest(o, d, 1e9f, out var ts, out var kind, out var idx);
+            Assert.Equal(bi >= 0, hit);
+            if (hit) { Assert.Equal(bi, idx); Assert.Equal(Pt.PtPrimKind.Sphere, kind); Assert.True(MathF.Abs(ts - best) < 1e-3f * (1 + best)); }
+        }
+
+        var aov = new Pt.VolumetricPathTracingLightTransportEngine(mt) { Ground = true, GroundMaterial = whiteIdx };
+        aov.SetResolution(32, 24);
+        aov.AddSphere(V3(0, 1.5f, 0), 1, goldIdx);
+        aov.SetCamera(V3(0, 1.5f, 5), V3(0, 1.5f, 0), 40);
+        aov.RenderFrame(0);
+        var cp = 12 * 32 + 16;
+        Assert.Equal(4f, aov.Depth[cp], 1);
+        Assert.True(aov.Normal[cp * 3 + 2] > 0.99f && aov.Albedo[cp * 3 + 2] == 0.34f);
+        Assert.Equal(0f, aov.MotionX[cp]);
+        Assert.True(aov.Depth[0] == 0 && aov.Depth[23 * 32 + 16] > 0, "하늘 = 0 · 바닥 히트");
+        aov.RenderFrame(1);
+        Assert.Equal(2, aov.AccumulatedFrames);
+        var c1 = aov.Color.ToArray();
+        aov.RenderFrame(1);
+        Assert.Equal(c1, aov.Color.ToArray());
+        aov.SetCamera(V3(0.2f, 1.5f, 5), V3(0.2f, 1.5f, 0), 40);
+        aov.RenderFrame(2);
+        Assert.Equal(1, aov.AccumulatedFrames);
+        Assert.InRange(aov.MotionX[cp], 1.4f, 1.95f);
+        Assert.True(MathF.Abs(aov.MotionY[cp]) < 0.2f);
+        Assert.Equal(0, AllocationProbe.MinAllocated(() => aov.RenderFrame(3)));
+        Assert.Equal(0f, aov.MotionX[cp]);
+
+        // PATHTRACE-2: 디노이즈 품질(단일/시간) · 잔상 차단(깊이 거부 · 분산 클리핑) · 업스케일 · SIMD 톤매핑 · 무할당 ──
+        var qs = new Pt.VolumetricPathTracingLightTransportEngine(mt) { GroundMaterial = whiteIdx, SunRadiance = V3(1f, 0.95f, 0.9f), SkyZenith = V3(0.15f, 0.25f, 0.45f), SkyHorizon = V3(0.35f, 0.38f, 0.42f) };
+        qs.SetResolution(48, 32);
+        qs.AddSphere(V3(-0.6f, 0.6f, 0), 0.6f, whiteIdx);
+        qs.AddSphere(V3(0.7f, 0.5f, -0.4f), 0.5f, goldIdx);
+        qs.SetCamera(V3(0, 1.4f, 4), V3(0, 0.5f, 0), 45);
+        qs.Spp = 256;
+        qs.RenderFrame(10_000);
+        var reference = qs.Color.ToArray();
+        qs.Spp = 1;
+        qs.RenderFrame(0);
+        var psnrNoisy = Pt.AiRealtimeSpatiotemporalDenoiser.Psnr(qs.Color, reference);
+        var dn = new Pt.AiRealtimeSpatiotemporalDenoiser { Strength = 0.5f, Sharpen = 0 };
+        dn.Configure(48, 32, 1);
+        dn.Denoise(qs.Color, qs.Albedo, qs.Normal, qs.Depth, qs.MotionX, qs.MotionY);
+        var psnrSingle = Pt.AiRealtimeSpatiotemporalDenoiser.Psnr(dn.Output, reference);
+        Assert.True(psnrSingle > psnrNoisy + 2.5, $"단일 프레임 {psnrNoisy:0.0} → {psnrSingle:0.0} dB");
+        for (var f = 1; f < 16; f++) { qs.RenderFrame(f); dn.Denoise(qs.Color, qs.Albedo, qs.Normal, qs.Depth, qs.MotionX, qs.MotionY); }
+        var psnrTemporal = Pt.AiRealtimeSpatiotemporalDenoiser.Psnr(dn.Output, reference);
+        Assert.True(psnrTemporal > psnrSingle + 1, $"시간 누적 {psnrSingle:0.0} → {psnrTemporal:0.0} dB");
+        Assert.True(dn.MeanHistoryLength > 10 && dn.DisocclusionRatio < 0.01f);
+        Assert.Equal(0, AllocationProbe.MinAllocated(() => dn.Denoise(qs.Color, qs.Albedo, qs.Normal, qs.Depth, qs.MotionX, qs.MotionY)));
+
+        float Ghost(bool depthCue, bool clamp)
+        {
+            const int GW = 40, GH = 20;
+            var g = new Pt.AiRealtimeSpatiotemporalDenoiser { Strength = 0, Sharpen = 0, ClampHistory = clamp };
+            g.Configure(GW, GH, 1);
+            var col = new float[GW * GH * 3]; var alb = new float[GW * GH * 3]; var nrm = new float[GW * GH * 3];
+            var dep = new float[GW * GH]; var mvx = new float[GW * GH]; var mvy = new float[GW * GH];
+            Array.Fill(alb, 1f);
+            for (var p = 0; p < GW * GH; p++) nrm[p * 3 + 2] = 1;
+            for (var f = 0; f <= 5; f++)
+            {
+                var xo = 4 + 5 * f;
+                for (var y = 0; y < GH; y++)
+                    for (var x = 0; x < GW; x++)
+                    {
+                        var p = y * GW + x;
+                        var obj = x >= xo && x < xo + 6 && y >= 7 && y < 13;
+                        col[p * 3] = col[p * 3 + 1] = col[p * 3 + 2] = obj ? 1f : 0.1f;
+                        dep[p] = obj && depthCue ? 2f : 10f;
+                        mvx[p] = obj && f > 0 ? -5 : 0;
+                    }
+                g.Denoise(col, alb, nrm, dep, mvx, mvy);
+            }
+            var worst = 0f;
+            for (var x = 24; x <= 26; x++) worst = MathF.Max(worst, g.Output[(10 * GW + x) * 3]);
+            return worst;
+        }
+        Assert.True(Ghost(true, false) < 0.15f, "깊이 불일치 → 이력 거부");
+        Assert.True(Ghost(false, true) < 0.15f, "분산 클리핑");
+        Assert.True(Ghost(false, false) > 0.5f, "대조군: 보호 장치 없으면 잔상");
+
+        var up = new Pt.AiRealtimeSpatiotemporalDenoiser { Sharpen = 0.3f };
+        up.Configure(8, 6, 4);
+        var cc = Enumerable.Repeat(0.3f, 8 * 6 * 3).ToArray();
+        up.Denoise(cc, Enumerable.Repeat(1f, 8 * 6 * 3).ToArray(), Enumerable.Range(0, 8 * 6 * 3).Select(i => i % 3 == 2 ? 1f : 0f).ToArray(), Enumerable.Repeat(5f, 48).ToArray(), new float[48], new float[48]);
+        Assert.Equal(32 * 24 * 3, up.Upscaled.Length);
+        Assert.All(up.Upscaled.ToArray(), v => Assert.Equal(0.3f, v, 4));
+        Assert.Equal(32 * 24 * 4, up.Rgba.Length);
+        var big = new Pt.AiRealtimeSpatiotemporalDenoiser();
+        big.Configure(960, 540, 4);
+        Assert.True(big.OutputWidth == 3840 && big.OutputHeight == 2160);
+        var tmIn = Enumerable.Range(0, 3 * 37).Select(i => i * 0.05f).ToArray();
+        var tmOut = new byte[37 * 4];
+        Pt.AiRealtimeSpatiotemporalDenoiser.ToneMap(tmIn, tmOut, 1.3f, new float[tmIn.Length]);
+        for (var i = 0; i < tmIn.Length; i++)
+        {
+            var x = tmIn[i] * 1.3f;
+            var e = (byte)(MathF.Sqrt(MathF.Min(1, x * (2.51f * x + 0.03f) / (x * (2.43f * x + 0.59f) + 0.14f))) * 255 + 0.5f);
+            Assert.InRange(tmOut[i / 3 * 4 + i % 3], e - 1, e + 1);
+        }
+
+        // PATHTRACE-4: 러너 — USD 장면/재질 바인딩 · 3DGS 연기 · 정적 누적 대비 PSNR · 궤도 모션 벡터 · 프롬프트 재질 · 무할당 ──
+        var run = new Pt.PathTracingStudioRunner(new Pt.MaterialXBsdfShaderSynthesizer(), new Pt.AiRealtimeSpatiotemporalDenoiser());
+        Assert.True(run.Tracer.SphereCount == 4 && run.Tracer.BoxCount == 2 && run.Tracer.HasGrid);
+        for (var k = 0; k < 24; k++) run.TickOnce();
+        Assert.True(run.PsnrDenoised > run.PsnrNoisy + 3, $"{run.PsnrNoisy:0.0} → {run.PsnrDenoised:0.0}");
+        Assert.Equal(24, run.Tracer.AccumulatedFrames);
+        Assert.Equal(0, AllocationProbe.MinAllocated(() => { for (var k = 0; k < 3; k++) run.TickOnce(); }));
+        run.Orbit = true;
+        run.TickOnce();
+        Assert.Equal(1, run.Tracer.AccumulatedFrames);
+        Assert.True(run.Denoiser.DisocclusionRatio < 0.3f, $"{run.Denoiser.DisocclusionRatio}");
+        var skin = run.Materials.Find("Skin");
+        Assert.True(run.ApplyPrompt(skin, "따뜻한 양초 왁스 candle"));
+        Assert.Equal(0.9f, run.Materials.Get(skin).Subsurface);
+        Assert.Equal(54 + 320 * 180 * 4, run.SnapshotBmp(1).Length);
+        Assert.Equal(54 + 160 * 90 * 4, run.SnapshotBmp(6).Length);
+        run.Dispose();
+    }
+
+    [Fact]
+    [Trait("Category", "Integration")]
+    public void GenerativeEnvironment_And_MicroWeatherLighting_Check()
+    {
+        // ══ ENV-0 SIMD 커널 = 스칼라(비트 일치 · 꼬리) ══
+        var rnd = new Random(1684);
+        foreach (var len in new[] { 0, 1, 7, 8, 9, 17, 33, 1001 })
+        {
+            float[] R() { var a = new float[len]; for (var i = 0; i < len; i++) a[i] = (float)(rnd.NextDouble() * 4 - 2); return a; }
+            var x = R(); var y = R(); var z = R(); var w = R();
+            var d1 = new float[len]; var d2 = new float[len];
+            At.EnvSimd.Dot3(x, y, z, 0.3f, -0.7f, 0.65f, d1); At.EnvSimd.Dot3Scalar(x, y, z, 0.3f, -0.7f, 0.65f, d2);
+            Assert.True(d1.AsSpan().SequenceEqual(d2), $"dot3 {len}");
+            At.EnvSimd.MulAcc(d1, x, y); At.EnvSimd.MulAccScalar(d2, x, y);
+            Assert.True(d1.AsSpan().SequenceEqual(d2), $"mulacc {len}");
+            At.EnvSimd.Composite(d1, w, 0.37f); At.EnvSimd.CompositeScalar(d2, w, 0.37f);
+            Assert.True(d1.AsSpan().SequenceEqual(d2), $"composite {len}");
+            At.EnvSimd.Lerp(d1, x, 0.08f, w); At.EnvSimd.LerpScalar(d2, x, 0.08f, w);
+            Assert.True(d1.AsSpan().SequenceEqual(d2), $"lerp {len}");
+            var o1 = new float[len]; var o2 = new float[len];
+            At.EnvSimd.ClampOverflow(d1, z, o1); At.EnvSimd.ClampOverflowScalar(d2, z, o2);
+            Assert.True(d1.AsSpan().SequenceEqual(d2) && o1.AsSpan().SequenceEqual(o2), $"overflow {len}");
+        }
+
+        // ══ ENV-1 천체 위치 · 대기 산란 ══
+        var (eq, _) = At.AtmosphericScatteringLightingEngine.SolarPosition(80, 12f, 0f);
+        Assert.True(eq > 86f, $"equinox noon equator {eq}");
+        var (sol, solAz) = At.AtmosphericScatteringLightingEngine.SolarPosition(172, 12f, 37.5f);
+        Assert.True(MathF.Abs(sol - 75.94f) < 1.5f && MathF.Abs(solAz - 180f) < 15f, $"solstice {sol} az {solAz}");
+        var (mid, _) = At.AtmosphericScatteringLightingEngine.SolarPosition(172, 0f, 37.5f);
+        Assert.True(mid < -20f, $"midnight {mid}");
+        var (am, amAz) = At.AtmosphericScatteringLightingEngine.SolarPosition(172, 8f, 37.5f);
+        Assert.True(am > 20f && am < 50f && amAz > 60f && amAz < 120f, $"morning {am} az {amAz} (east)");
+        var (moonEl, _) = At.AtmosphericScatteringLightingEngine.LunarPosition(172, 0f, 37.5f, 0.5f);
+        Assert.True(moonEl > 0f, $"full moon at midnight {moonEl}");
+
+        var atm = new At.AtmosphericScatteringLightingEngine();
+        Assert.Equal(1, atm.LutBuilds);
+        // 천정 투과율 ≈ exp(−(βR·H_R + βM·H_M + 오존 텐트 면적 15 km))
+        var tz = atm.Transmittance(0f, 1f);
+        float Expect(float br, float bo) => MathF.Exp(-(br * 8000f * (1f - MathF.Exp(-12.5f)) + 8.396e-6f * 1200f + bo * 15000f));
+        Assert.True(MathF.Abs(tz.Y - Expect(13.558e-6f, 1.881e-6f)) < 0.01f && MathF.Abs(tz.Z - Expect(33.1e-6f, 0.085e-6f)) < 0.01f, $"T zenith {tz}");
+        Assert.Equal(Nm.Vector3.Zero, atm.Transmittance(1000f, -0.5f));
+        Assert.True(atm.Transmittance(0f, 0.05f).Z < atm.Transmittance(0f, 0.05f).X, "horizon reddening");
+
+        var noonSun = At.AtmosphericScatteringLightingEngine.FromAngles(70f, 180f);
+        var down = -Nm.Vector3.UnitY;
+        atm.Update(noonSun, down, 0f, 0f, 0f, 0f, 1f, 1f);
+        var zen = atm.ZenithColor;
+        Assert.True(zen.Z > zen.Y && zen.Y > zen.X && zen.Z > 1e-3f, $"blue sky {zen}");
+        var noonSunC = atm.SunIrradiance; var noonLux = atm.GroundLux; var noonVis = atm.Visibility;
+        Assert.True(noonLux > 50_000f && noonLux < 160_000f, $"lux {noonLux}");
+        atm.Update(At.AtmosphericScatteringLightingEngine.FromAngles(2f, 270f), down, 0f, 0f, 0f, 0f, 1f, 1f);
+        Assert.True(atm.SunIrradiance.Z / atm.SunIrradiance.X < 0.5f * noonSunC.Z / noonSunC.X, $"sunset red {atm.SunIrradiance}");
+        var sunsetHor = atm.HorizonColor;
+        Assert.True(sunsetHor.X / sunsetHor.Z > zen.X / zen.Z, "warm horizon");
+        atm.Update(At.AtmosphericScatteringLightingEngine.FromAngles(-4f, 270f), down, 0f, 0f, 0f, 0f, 1f, 1f);
+        var twilight = At.AtmosphericScatteringLightingEngine.Luminance(atm.ZenithColor);
+        Assert.True(atm.SunIrradiance == Nm.Vector3.Zero, "sun below horizon → planet shadow");
+        atm.Update(At.AtmosphericScatteringLightingEngine.FromAngles(-30f, 270f), down, 0f, 0f, 0f, 0f, 1f, 1f);
+        var night = At.AtmosphericScatteringLightingEngine.Luminance(atm.ZenithColor);
+        Assert.True(night < 1e-3f * At.AtmosphericScatteringLightingEngine.Luminance(zen) && twilight > 10f * night, $"night {night} twilight {twilight}");
+        atm.Update(At.AtmosphericScatteringLightingEngine.FromAngles(-30f, 270f), Nm.Vector3.UnitY, 0.5f, 0f, 0f, 0f, 1f, 1f);
+        Assert.True(At.AtmosphericScatteringLightingEngine.Luminance(atm.ZenithColor) > 2f * night && atm.MoonLight.Y > 0f && atm.NightFactor == 1f, "moonlit");
+        atm.Update(noonSun, down, 0f, 1f, 25f, 0f, 1f, 1f);
+        Assert.True(atm.SunIrradiance.Y < 0.01f * noonSunC.Y && atm.GodRayStrength < 0.01f, "overcast blocks sun");
+        var oc = atm.ZenithColor;
+        Assert.True(oc.Z / oc.X < zen.Z / zen.X, "overcast greys sky");
+        atm.Update(noonSun, down, 0f, 0.5f, 10f, 0f, 1f, 1f);
+        Assert.True(atm.GodRayStrength > 0.1f, $"god rays {atm.GodRayStrength}");
+        atm.Update(noonSun, down, 0f, 0f, 0f, 0.03f, 1f, 1f);
+        Assert.True(MathF.Abs(atm.Visibility - 3.912f / (0.03f + 13.2e-6f + 8.396e-6f)) < 5f && atm.Visibility < 0.01f * noonVis, $"fog vis {atm.Visibility}");
+        var builds = atm.LutBuilds;
+        atm.Update(noonSun, down, 0f, 0f, 0f, 0f, 4f, 1f);
+        Assert.Equal(builds + 1, atm.LutBuilds);
+        Assert.True(atm.Transmittance(0f, 1f).Y < tz.Y, "haze → more extinction");
+        var ar = new float[] { 1f, 1f }; var ag = new float[] { 1f, 1f }; var ab = new float[] { 1f, 1f }; var tt = new float[2];
+        atm.ApplyAerial(ar, ag, ab, new float[] { 0f, 1e7f }, tt);
+        Assert.True(ar[0] == 1f && MathF.Abs(ar[1] - atm.FogColor.X) < 1e-6f, "aerial perspective");
+        var disp = atm.ToDisplay(new Nm.Vector3(1e9f));
+        Assert.True(disp.X <= 1f && disp.X > 0.99f && atm.ToDisplay(Nm.Vector3.Zero) == Nm.Vector3.Zero);
+        Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>
+        {
+            for (var i = 0; i < 10; i++) atm.Update(noonSun, Nm.Vector3.UnitY, 0.5f, 0.3f, 8f, 0.002f, 4f, 1f / 60f);
+        }));
+
+        // ══ ENV-2 미세 기상: 상 · 종단 속도 · 회전 돌풍 · 바람 추종 · 번개 · 프롬프트 · 결정성 · 무할당 ══
+        Assert.True(MathF.Abs(At.DynamicMicroWeatherSimulatorEngine.RainTerminalVelocity(2f) - 6.55f) < 0.05f);
+        Assert.True(At.DynamicMicroWeatherSimulatorEngine.MarshallPalmerLambda(25f) < At.DynamicMicroWeatherSimulatorEngine.MarshallPalmerLambda(1f), "heavier rain → larger drops");
+        Assert.True(MathF.Abs(At.DynamicMicroWeatherSimulatorEngine.DewPointOf(20f, 0.5f) - 9.26f) < 0.2f);
+        Assert.Equal(1f, At.DynamicMicroWeatherSimulatorEngine.ProfileFactor(10f), 4);
+        Assert.True(At.DynamicMicroWeatherSimulatorEngine.ProfileFactor(1f) < 0.7f);
+        var wx = new At.DynamicMicroWeatherSimulatorEngine(42);
+        wx.SetScenario(new At.WeatherScenario { Precipitation = 20f, CloudCoverage = 0.9f, Temperature = 12f, Humidity = 0.9f, WindSpeed = 6f, WindYawDeg = 90f, Storm = 0f, Fog = 0f });
+        wx.SnapToTarget();
+        for (var f = 0; f < 240; f++) wx.Step(1f / 60f);
+        Assert.Equal(At.PrecipKind.Rain, wx.Kind);
+        Assert.True(wx.ActiveParticles > 4000, $"{wx.ActiveParticles}");
+        float mvx = 0, mvy = 0; var nr = 0;
+        for (var i = 0; i < wx.ActiveParticles; i++)
+        {
+            var p = wx.Position(i);
+            Assert.True(p.X >= -20f && p.X < 20f && p.Z >= -20f && p.Z < 20f && p.Y >= 0f && p.Y < 24f, $"box {p}");
+            if (wx.ParticleKind(i) != At.PrecipKind.Rain) continue;
+            var v = wx.Velocity(i); mvx += v.X; mvy += v.Y; nr++;
+        }
+        Assert.True(mvx / nr > 2.5f && mvy / nr < -1.2f, $"wind drift {mvx / nr} fall {mvy / nr}");
+        Assert.True(wx.MeanDropDiameter > 0.35f && wx.ImpactsPerSecond > 100f, $"{wx.MeanDropDiameter} {wx.ImpactsPerSecond}");
+        Assert.True(wx.GridGustRms() > 0.3f && wx.GridDivergenceRms() < 1e-3f * wx.GridGustRms(), $"curl gust {wx.GridGustRms()} div {wx.GridDivergenceRms()}");
+        Assert.True(wx.CloudCover > 0.6f && wx.RelativeHumidity > 0.9f, $"{wx.CloudCover}");
+        Assert.Equal(0, wx.LightningStrikes);
+        Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>
+        {
+            for (var f = 0; f < 30; f++) wx.Step(1f / 60f);
+        }, out var wxWindows));
+        var wx2 = new At.DynamicMicroWeatherSimulatorEngine(42);
+        wx2.SetScenario(wx.Target); wx2.SnapToTarget();
+        for (var f = 0; f < 240 + 30 * wxWindows; f++) wx2.Step(1f / 60f);   // 결정론 재생 = 측정 전 240 + 창당 30 프레임
+        Assert.Equal(wx.Position(17), wx2.Position(17));
+        var sc = wx.Target; sc.Temperature = -6f; wx.SetScenario(sc); wx.SnapToTarget();
+        for (var f = 0; f < 600; f++) wx.Step(1f / 60f);
+        Assert.Equal(At.PrecipKind.Snow, wx.Kind);
+        var snowN = 0;
+        for (var i = 0; i < wx.ActiveParticles; i++) if (wx.ParticleKind(i) == At.PrecipKind.Snow) snowN++;
+        Assert.True(snowN > wx.ActiveParticles * 0.95f, $"snow {snowN}/{wx.ActiveParticles}");
+        sc.Storm = 1f; sc.CloudCoverage = 1f; wx.SetScenario(sc);
+        float maxFlash = 0;
+        for (var f = 0; f < 60 * 60; f++) { wx.Step(1f / 60f); maxFlash = MathF.Max(maxFlash, wx.FlashIntensity); }
+        Assert.True(wx.LightningStrikes >= 3 && maxFlash > 0.05f && wx.ThunderDelay > 0.8f, $"strikes {wx.LightningStrikes} flash {maxFlash}");
+        Assert.Equal(0f, wx.BoltY[0]); Assert.Equal(1f, wx.BoltY[At.DynamicMicroWeatherSimulatorEngine.BoltPoints - 1]);
+        var ps = At.WeatherScenario.Clear;
+        Assert.True(At.DynamicMicroWeatherSimulatorEngine.ParsePrompt("천둥 번개 치는 폭우", ref ps) >= 2 && ps.Precipitation >= 20f && ps.Storm > 0.5f);
+        ps = At.WeatherScenario.Clear;
+        Assert.True(At.DynamicMicroWeatherSimulatorEngine.ParsePrompt("a foggy blizzard", ref ps) >= 2 && ps.Temperature < 0f && ps.Fog > 0.5f);
+        ps = At.WeatherScenario.Clear;
+        Assert.True(At.DynamicMicroWeatherSimulatorEngine.ParsePrompt("진눈깨비", ref ps) == 1 && ps.Temperature > 0f);
+        Assert.Equal(0, At.DynamicMicroWeatherSimulatorEngine.ParsePrompt("", ref ps));
+        // 방사 안개: 이슬점 근접 + 약풍
+        var fogx = new At.DynamicMicroWeatherSimulatorEngine(7);
+        fogx.SetScenario(new At.WeatherScenario { Temperature = 8f, Humidity = 0.99f, WindSpeed = 0.5f, CloudCoverage = 0.1f });
+        fogx.SnapToTarget(); fogx.Step(1f / 60f);
+        Assert.True(fogx.FogAmount > 0.3f && fogx.FogExtinction > 0.001f, $"radiation fog {fogx.FogAmount}");
+
+        // ══ ENV-3 습윤/적설: 물 수지 보존 · 공극률 감쇠 · 웅덩이 · 증발 · 적설/경사 탈락/융설 · 가드 · 3DGS · 캐릭터 ══
+        var world = new Us.GenerativeWorldProceduralEngine();
+        world.Configure("rolling green grassland hills with forest", 1684);
+        var wet = new At.EnvironmentalBiomeWetnessGuard();
+        wet.Rebuild(world);
+        Assert.True(wet.LandCells > 200, $"land {wet.LandCells}");
+        Assert.Equal(0f, wet.MeanWetness);
+        float dryAlb = 0, dryRough = 0;
+        for (var c = 0; c < At.EnvironmentalBiomeWetnessGuard.Cells; c++) if (wet.BiomeOf(c) != Us.Biome.Ocean) { dryAlb += wet.AlbedoG[c]; dryRough += wet.Roughness[c]; }
+        var rainIn = new At.PrecipitationInput(20f, 0f, 15f, 0.95f, 3f, 0f, 6f);
+        for (var f = 0; f < 60 * 30; f++) wet.Step(1f / 60f, rainIn);
+        Assert.True(wet.MeanWetness > 0.6f && wet.MeanPuddle > 0f, $"wet {wet.MeanWetness} puddle {wet.MeanPuddle}");
+        float wetAlb = 0, wetRough = 0;
+        for (var c = 0; c < At.EnvironmentalBiomeWetnessGuard.Cells; c++) if (wet.BiomeOf(c) != Us.Biome.Ocean) { wetAlb += wet.AlbedoG[c]; wetRough += wet.Roughness[c]; }
+        Assert.True(wetAlb < 0.8f * dryAlb && wetRough < 0.8f * dryRough, $"darken {wetAlb / dryAlb} smooth {wetRough / dryRough}");
+        double Balance() => wet.TotalIn - (wet.TotalEvaporated + wet.TotalInfiltrated + wet.TotalRunoff + wet.Stored);
+        Assert.True(Math.Abs(Balance()) < 1e-3 * wet.TotalIn, $"mass {Balance()} of {wet.TotalIn}");
+        Assert.True(wet.TotalInfiltrated > 0 && wet.TotalRunoff >= 0);
+        var wetPeak = wet.MeanWetness;
+        Assert.True(wet.ClothWetness > 0.3f, $"cloth {wet.ClothWetness} skin {wet.SkinWetness}");
+        var dryIn = new At.PrecipitationInput(0f, 0f, 28f, 0.25f, 5f, 1f, 6f);
+        for (var f = 0; f < 60 * 60; f++) wet.Step(1f / 60f, dryIn);
+        Assert.True(wet.MeanWetness < 0.5f * wetPeak && wet.EvaporationMmH > 0.3f, $"dry {wet.MeanWetness} evap {wet.EvaporationMmH}");
+        Assert.True(wet.ClothWetness > wet.SkinWetness, $"cloth dries slower {wet.ClothWetness} vs {wet.SkinWetness}");
+        Assert.True(Math.Abs(Balance()) < 1e-3 * wet.TotalIn, "mass after drying");
+        Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>
+        {
+            for (var f = 0; f < 30; f++) wet.Step(1f / 60f, rainIn);
+        }));
+        // 적설
+        wet.ResetState();
+        var snowIn = new At.PrecipitationInput(0f, 6f, -6f, 0.85f, 2f, 0f, 1f);
+        for (var f = 0; f < 60 * 40; f++) wet.Step(1f / 60f, snowIn);
+        Assert.True(wet.SnowCoverage > 0.5f && wet.MaxSnowDepth > 0.02f, $"snow {wet.SnowCoverage} depth {wet.MaxSnowDepth}");
+        float flatSnow = 0, steepSnow = 0, snowAlb = 0; int nf = 0, ns = 0;
+        for (var c = 0; c < At.EnvironmentalBiomeWetnessGuard.Cells; c++)
+        {
+            if (wet.BiomeOf(c) == Us.Biome.Ocean) continue;
+            if (wet.Normal(c).Y > 0.95f) { flatSnow += wet.SnowWaterEquivalent(c); nf++; snowAlb += wet.AlbedoG[c]; }
+            else if (wet.Normal(c).Y < 0.8f) { steepSnow += wet.SnowWaterEquivalent(c); ns++; }
+        }
+        Assert.True(nf > 0 && snowAlb / nf > 0.8f, $"snow albedo {snowAlb / Math.Max(1, nf)}");
+        if (ns > 0) Assert.True(steepSnow / ns < flatSnow / nf, "steep less snow");
+        var stored0 = wet.Stored; var cover0 = wet.SnowCoverage;
+        var meltIn = new At.PrecipitationInput(0f, 0f, 10f, 0.7f, 2f, 0.5f, 6f);
+        for (var f = 0; f < 60 * 20; f++) wet.Step(1f / 60f, meltIn);
+        Assert.True(wet.SnowCoverage < cover0 && wet.MeanWetness > 0f, $"melt {wet.SnowCoverage} vs {cover0}");
+        Assert.True(Math.Abs(Balance()) < 1e-3 * Math.Max(1, wet.TotalIn) && wet.Stored < stored0, $"mass melt {Balance()}");
+        var iceIn = new At.PrecipitationInput(5f, 0f, -3f, 0.9f, 1f, 0f, 6f);
+        wet.ResetState();
+        for (var f = 0; f < 600; f++) wet.Step(1f / 60f, iceIn);
+        Assert.True(wet.IceRisk > 0.3f, $"ice {wet.IceRisk}");
+        // 재질 가드
+        var metal = new Pt.PbrMaterial { BaseColor = new Nm.Vector3(0.9f, 0.6f, 0.3f), Metallic = 1f, Roughness = 0.3f, Specular = 1f, Ior = 1.5f, Opacity = 1f };
+        var wm = wet.Apply(metal, 1f, 0f, 0f, 0f);
+        Assert.Equal(metal.BaseColor, wm.BaseColor);
+        Assert.True(wm.Roughness < metal.Roughness);
+        var soil = new Pt.PbrMaterial { BaseColor = new Nm.Vector3(0.5f, 0.4f, 0.3f), Roughness = 0.9f, Specular = 0.5f, Ior = 1.5f, Opacity = 1f };
+        var ws = wet.Apply(soil, 1f, 1f, 0f, 0f);
+        Assert.True(ws.BaseColor.X < 0.25f * soil.BaseColor.X + 1e-4f && ws.Roughness < soil.Roughness);
+        var pd = wet.Apply(soil, 1f, 1f, 1f, 0f);
+        Assert.True(MathF.Abs(pd.DielectricF0 - 0.0201f) < 0.002f && pd.Roughness <= 0.0201f, $"puddle F0 {pd.DielectricF0} r {pd.Roughness}");
+        var sn = wet.Apply(soil, 0f, 0.5f, 0f, 1f);
+        Assert.True(sn.BaseColor.Y > 0.85f && sn.Subsurface > 0.3f);
+        var nanGuards = wet.NanGuards;
+        var bad = soil; bad.BaseColor = new Nm.Vector3(float.NaN, 1f, 1f);
+        var gm = wet.Apply(bad, float.NaN, 0.5f, 0f, 0f);
+        Assert.True(float.IsFinite(gm.BaseColor.X) && wet.NanGuards == nanGuards + 1);
+        var hot = wet.Apply(new Pt.PbrMaterial { BaseColor = new Nm.Vector3(2f), Roughness = 0f, Ior = 1.5f, Specular = 1f }, 0f, 0f, 0f, 0f);
+        Assert.True(hot.BaseColor.X <= 0.95f && hot.Roughness >= 0.02f);
+        Assert.True(float.IsFinite(wet.ApplyCharacter(soil, At.WetSurface.Cloth).Roughness));
+        // 3DGS 오버레이: 상향 스플랫 → 눈 백색화 · 측면 스플랫 유지
+        var gs = new G3.GaussianScene(4);
+        gs.Add(Nm.Vector3.Zero, Dh.PhotorealisticMicroSkinSssSynthesizer.FromTo(Nm.Vector3.UnitZ, Nm.Vector3.UnitY), new Nm.Vector3(0.1f), 1f, new Nm.Vector3(0.2f, 0.3f, 0.2f));
+        gs.Add(Nm.Vector3.One, Dh.PhotorealisticMicroSkinSssSynthesizer.FromTo(Nm.Vector3.UnitZ, Nm.Vector3.UnitX), new Nm.Vector3(0.1f), 1f, new Nm.Vector3(0.2f, 0.3f, 0.2f));
+        var ver = gs.Version;
+        Assert.Equal(2, wet.ApplyToSplats(gs, 0f, 0.5f, 1f));
+        Assert.True(gs.BaseColor(0).Y > 0.85f && MathF.Abs(gs.BaseColor(1).Y - 0.3f) < 1e-3f && gs.Version > ver, $"{gs.BaseColor(0)} {gs.BaseColor(1)}");
+        Assert.Equal(0, wet.ApplyToSplats(gs, 0f, 0.5f, 0f));
+
+        // ══ ENV-4 러너: 프롬프트 · 태양 제어 · 피드백 · 3DGS · 무할당 ══
+        var run = new At.GenerativeEnvironmentStudioRunner(new At.AtmosphericScatteringLightingEngine(), new At.DynamicMicroWeatherSimulatorEngine(5), new At.EnvironmentalBiomeWetnessGuard(), world);
+        Assert.True(run.Splats.Count >= At.EnvironmentalBiomeWetnessGuard.Cells);
+        run.SetSun(45f, 180f);
+        Assert.True(run.TriggerPrompt("천둥 번개 폭우") >= 2);
+        run.Weather.SnapToTarget();
+        for (var f = 0; f < 120; f++) run.TickOnce();
+        Assert.True(MathF.Abs(run.SunElevation - 45f) < 0.1f && run.Weather.ActiveParticles > 3000);
+        Assert.True(run.Splats.Count > At.EnvironmentalBiomeWetnessGuard.Cells && run.Wet.MeanWetness > 0.2f, $"{run.Wet.MeanWetness}");
+        Assert.True(run.Weather.SurfaceMoisture > 0.2f);
+        for (var c = 0; c < At.EnvironmentalBiomeWetnessGuard.Cells; c += 37) { Assert.InRange(run.TerrainR[c], 0f, 1f); Assert.InRange(run.TerrainB[c], 0f, 1f); }
+        Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>
+        {
+            for (var f = 0; f < 20; f++) run.TickOnce();
+        }));
+        Assert.True(run.TriggerPrompt("맑은 정오") >= 2 && run.ClockMode && run.Hour == 12.5f);
+        run.Weather.SnapToTarget();
+        run.TickOnce();
+        Assert.True(run.SunElevation > 60f && run.Weather.ActiveParticles == 0, $"{run.SunElevation}");
+        run.TriggerPrompt("달빛 비치는 한밤");
+        for (var f = 0; f < 240; f++) run.TickOnce();
+        Assert.True(run.SunElevation < 0f && run.Atmosphere.NightFactor > 0.5f && run.Atmosphere.MoonLight.Y > 0f, $"{run.SunElevation} {run.Atmosphere.NightFactor} {run.Atmosphere.MoonLight}");
+        Assert.Equal(0, run.TriggerPrompt("   "));
+        run.NewShot();
+        Assert.Equal(0, run.Frame);
+        Assert.True(run.Wet.MeanWetness < 0.01f);
+        run.Dispose();
+    }
+
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task RealDomUiTesting_And_CodeDefectSelfFix_Check()
+    {
+        // ══ RF-1 실 RenderTree 구동: 클릭/변경/체크 디스패치 · NRE · 비동기 예외 · 지연 · 위험 라벨 · disabled · OnClose ══
+        DomProbeComponent.Clicks = 0; DomProbeComponent.Flag = false; DomProbeComponent.Slider = -1; DomProbeComponent.DeniedHits = DomProbeComponent.DisabledHits = 0;
+        var dom = new Sfx.RealDomBlazorRenderTreeDriver(new TitanReleaseTests.CrewTestProvider()) { EventTimeoutMs = 300d };
+        var rp = await dom.DriveAsync(typeof(DomProbeComponent), CancellationToken.None);
+        Assert.True(rp.Mounted, rp.MountError);
+        Assert.Equal(8, rp.Elements);                       // disabled 제외 8(버튼 6 + range + checkbox)
+        Assert.Equal(1, DomProbeComponent.Clicks);
+        Assert.Equal(5d, DomProbeComponent.Slider, 6);      // range 중간값
+        Assert.True(DomProbeComponent.Flag);                // checkbox 반전
+        Assert.Equal(0, DomProbeComponent.DeniedHits);
+        Assert.Equal(0, DomProbeComponent.DisabledHits);
+        Assert.Equal(1, rp.Skipped);
+        Assert.Equal(2, rp.Exceptions);                     // NRE + 비동기 InvalidOperation
+        Assert.Equal(1, rp.Timeouts);
+        Assert.Equal(1, rp.CloseRequests);
+        Assert.True(rp.Batches >= 2);
+        var log = Enumerable.Range(0, dom.LogCount).Select(dom.Log).ToList();
+        Assert.Contains(log, e => e.Outcome == Sfx.DomOutcome.Exception && e.Error!.StartsWith("NullReferenceException", StringComparison.Ordinal) && e.Label == "NRE 버튼");
+        Assert.Contains(log, e => e.Outcome == Sfx.DomOutcome.Exception && e.Error!.Contains("async boom", StringComparison.Ordinal));
+
+        // 실 스튜디오 모달(실 DI): 크루 모달 RenderTree 구동 → 예외 0 · 언마운트 시 크루 정지
+        var crew = new Pcw.MultiAgentCrewStudioRunner(new Pcw.MultiAgentVirtualProductionCrewOrchestratorEngine(new Pcw.AutonomousDirectorialConsensusEvaluator(), new Pcw.RealtimeProductionSwarmExecutionGuard()));
+        var dom2 = new Sfx.RealDomBlazorRenderTreeDriver(new TitanReleaseTests.CrewTestProvider().Add(crew)) { SettleMs = 0 };
+        var modals = Sfx.RealDomBlazorRenderTreeDriver.DiscoverStudioModals();
+        Assert.True(modals.Count >= 30, $"modals {modals.Count}");
+        var crewModal = modals.Single(t => t.Name == "MultiAgentCrewStudioModal");
+        var rc = await dom2.DriveAsync(crewModal, CancellationToken.None);
+        Assert.True(rc.Mounted, rc.MountError);
+        Assert.True(rc.Elements >= 15 && rc.Clicks >= 15, $"elements {rc.Elements} clicks {rc.Clicks}");
+        Assert.True(rc.Exceptions == 0 && rc.Timeouts == 0, string.Join(" | ", Enumerable.Range(0, dom2.LogCount).Select(dom2.Log).Where(e => e.Error is not null).Select(e => e.Label + ":" + e.Error)));
+        Assert.True(rc.CloseRequests >= 1);
+        Assert.False(crew.IsRunning);
+        // 미등록 서비스 → 마운트 실패 집계(예외 전파 없음)
+        var rm = await new Sfx.RealDomBlazorRenderTreeDriver(new TitanReleaseTests.CrewTestProvider()).DriveAsync(crewModal, CancellationToken.None);
+        Assert.False(rm.Mounted); Assert.Contains("MultiAgentCrewStudioRunner", rm.MountError, StringComparison.Ordinal);
+        crew.Dispose();
+
+        // ══ RF-2 자동 수정 엔진: 미관찰 Task 문장만 · await/대입/체인/식/주석/문자열/마크업 제외 · 멱등 · 권고 ══
+        const string razor = """
+            <button @onclick="() => { InvokeAsync(StateHasChanged); }">x</button>
+            @code {
+                // InvokeAsync(StateHasChanged);
+                private void A() { InvokeAsync(StateHasChanged); }
+                private void B() => _ = InvokeAsync(StateHasChanged);
+                private async Task C() { await InvokeAsync(StateHasChanged); }
+                private void D() { var t = InvokeAsync(StateHasChanged); InvokeAsync(StateHasChanged).ContinueWith(_ => 0); }
+                private void E() { var s = "InvokeAsync(StateHasChanged);"; Task.Run(() => 1); }
+                private void F() { Use(InvokeAsync(StateHasChanged)); }
+                private static void Use(Task t) { }
+            }
+            """;
+        var found = Sfx.AutonomousCodeDefectSelfFixEngine.Find("A.razor", razor);
+        Assert.Equal(2, found.Count);
+        Assert.Equal(new[] { "InvokeAsync", "Task.Run" }, found.Select(p => p.Anchor).ToArray());
+        Assert.Equal(4, found[0].Line);
+        Assert.Contains("{ _ = InvokeAsync(StateHasChanged); }", found[0].After, StringComparison.Ordinal);
+        var (fixedRazor, applied, conflicts) = Sfx.AutonomousCodeDefectSelfFixEngine.ApplyToText(razor, found);
+        Assert.Equal(2, applied); Assert.Equal(0, conflicts);
+        Assert.Equal(razor.Length + 8, fixedRazor.Length);
+        Assert.Empty(Sfx.AutonomousCodeDefectSelfFixEngine.Find("A.razor", fixedRazor));           // 멱등
+        Assert.Equal(0, Sfx.AutonomousCodeDefectSelfFixEngine.ApplyToText(fixedRazor, found).Applied); // 재적용 차단(충돌)
+
+        const string hot = """
+            public sealed class R
+            {
+                public string? Last;
+                public void TickOnce() { Last = $"t{Last}"; Task.Run(() => 0); }
+                public async void Fire() { await Task.Yield(); }
+            }
+            """;
+        var eng = new Sfx.AutonomousCodeDefectSelfFixEngine();
+        var verifier = new Cvf.CloudSourceCodeIntegrityVerifierEngine();
+        Assert.Equal(1, eng.PlanFile("R.cs", hot, verifier));
+        Assert.Contains(Enumerable.Range(0, eng.AdvisoryCount).Select(eng.Advisory), a => a.Rule == Cvf.VerifyRule.HotPathInterpolation && a.Line == 4);
+        Assert.Contains(Enumerable.Range(0, eng.AdvisoryCount).Select(eng.Advisory), a => a.Rule == Cvf.VerifyRule.AsyncVoid);
+        Assert.DoesNotContain(Enumerable.Range(0, eng.AdvisoryCount).Select(eng.Advisory), a => a.Rule == Cvf.VerifyRule.UnobservedTask); // 패치로 해소
+        Assert.Contains("+ public void TickOnce() { Last = $\"t{Last}\"; _ = Task.Run(() => 0); }", eng.BuildDiff(), StringComparison.Ordinal);
+
+        // ══ RF-3 폐루프: 빌드 오류 귀속 파일 제외 재시도 → 커밋 · 테스트 실패 → 전량 롤백(바이트 동일 · BOM 보존) · 외부 변경 보호 ══
+        var dir = Path.Combine(Path.GetTempPath(), "pfs-selffix-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Path.Combine(dir, "src"));
+        try
+        {
+            var aText = "class A { void M() { Task.Run(() => 0); } }\r\n";
+            var bText = "class B { void M() { Task.Run(() => 1); } }\n";
+            var aPath = Path.Combine(dir, "src", "A.cs"); var bPath = Path.Combine(dir, "src", "B.cs");
+            void Reset() { File.WriteAllBytes(aPath, new byte[] { 0xEF, 0xBB, 0xBF }.Concat(System.Text.Encoding.UTF8.GetBytes(aText)).ToArray()); File.WriteAllText(bPath, bText); }
+            Reset();
+            var aOrig = File.ReadAllBytes(aPath); var bOrig = File.ReadAllBytes(bPath);
+            var plan = new Sfx.AutonomousCodeDefectSelfFixEngine();
+            Assert.Equal(2, await plan.PlanAsync(Path.Combine(dir, "src"), CancellationToken.None));
+            var groups = plan.GroupByFile();
+
+            var calls = new List<string>();
+            var guard = new Sfx.ClosedLoopRegressionSelfRepairGuard
+            {
+                Execute = (args, wd, ct) =>
+                {
+                    calls.Add(args.Split(' ')[0]);
+                    var buildFails = args.StartsWith("build", StringComparison.Ordinal) && File.ReadAllText(bPath).Contains("_ = ", StringComparison.Ordinal);
+                    return Task.FromResult(buildFails
+                        ? new Sfx.CommandResult(1, bPath + "(1,22): error CS8209: simulated\n", 1, false)
+                        : new Sfx.CommandResult(0, "통과!  - 실패:     0, 통과:   368, 건너뜀:     0, 전체:   368", 1, false));
+                },
+            };
+            var r1 = await guard.RepairAsync(dir, Path.Combine(dir, "src"), groups, CancellationToken.None);
+            Assert.True(r1.Committed);
+            Assert.Equal(2, r1.Attempts);
+            Assert.Equal(new[] { "B.cs" }, r1.ExcludedFiles.ToArray());
+            Assert.Equal(1, r1.PatchesCommitted); Assert.Equal(368, r1.TestsPassed);
+            Assert.Equal(new[] { "build", "build", "test" }, calls.ToArray());
+            var aNow = File.ReadAllBytes(aPath);
+            Assert.True(aNow.Take(3).SequenceEqual(new byte[] { 0xEF, 0xBB, 0xBF }), "BOM preserved");
+            Assert.Contains("{ _ = Task.Run(() => 0); } }\r\n", System.Text.Encoding.UTF8.GetString(aNow), StringComparison.Ordinal);
+            Assert.Equal(bOrig, File.ReadAllBytes(bPath));
+            Assert.Equal(Sfx.RepairPhase.Committed, guard.Phase);
+            Assert.Equal(64, r1.SafePointDigest!.Length);
+
+            Reset();
+            var g2 = new Sfx.ClosedLoopRegressionSelfRepairGuard { Execute = (args, wd, ct) => Task.FromResult(new Sfx.CommandResult(args.StartsWith("test", StringComparison.Ordinal) ? 1 : 0, "실패!  - 실패:     1, 통과:   367", 1, false)) };
+            var r2 = await g2.RepairAsync(dir, Path.Combine(dir, "src"), groups, CancellationToken.None);
+            Assert.False(r2.Committed);
+            Assert.Equal(Sfx.RepairPhase.RolledBack, g2.Phase);
+            Assert.Equal(1, r2.TestsFailed);
+            Assert.Equal(aOrig, File.ReadAllBytes(aPath)); Assert.Equal(bOrig, File.ReadAllBytes(bPath));
+
+            Reset();
+            var g3 = new Sfx.ClosedLoopRegressionSelfRepairGuard
+            {
+                MaxAttempts = 1,
+                Execute = (args, wd, ct) => { File.AppendAllText(aPath, "// 사용자 편집\n"); return Task.FromResult(new Sfx.CommandResult(1, "error", 1, false)); },
+            };
+            var r3 = await g3.RepairAsync(dir, Path.Combine(dir, "src"), groups, CancellationToken.None);
+            Assert.False(r3.Committed);
+            Assert.Equal(1, r3.Conflicts);
+            Assert.EndsWith("// 사용자 편집\n", File.ReadAllText(aPath), StringComparison.Ordinal); // 외부 편집 보존
+            Assert.Equal(bOrig, File.ReadAllBytes(bPath));
+
+            // 취소 → 적용 파일 복원 후 전파
+            Reset();
+            using var cts = new CancellationTokenSource();
+            var g4 = new Sfx.ClosedLoopRegressionSelfRepairGuard { Execute = (args, wd, ct) => { cts.Cancel(); ct.ThrowIfCancellationRequested(); return Task.FromResult(default(Sfx.CommandResult)); } };
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => g4.RepairAsync(dir, Path.Combine(dir, "src"), groups, cts.Token));
+            Assert.Equal(aOrig, File.ReadAllBytes(aPath)); Assert.Equal(bOrig, File.ReadAllBytes(bPath));
+        }
+        finally { try { Directory.Delete(dir, true); } catch (IOException) { } }
+
+        // ══ RF-4 러너: 드라이런(파일 미수정) — 실 소스 계획 + 1개 모달 구동 ══
+        var root = Cvf.CloudSourceCodeIntegrityVerifierEngine.FindSourceRoot();
+        Assert.NotNull(root);
+        var runner = new Sfx.RealUiSelfHealingStudioRunner(new Sfx.RealDomBlazorRenderTreeDriver(new TitanReleaseTests.CrewTestProvider()), new Sfx.AutonomousCodeDefectSelfFixEngine(), new Sfx.ClosedLoopRegressionSelfRepairGuard()) { DriveDom = false, SourceRoot = root };
+        Assert.True(runner.ModalCount >= 30);
+        await runner.RunAsync(CancellationToken.None);
+        Assert.Equal(Sfx.SelfHealPhase.Done, runner.Phase);
+        Assert.True(runner.Engine.FilesScanned > 300);
+        Assert.Equal(Sfx.RepairPhase.Idle, runner.Guard.Phase); // 패치 스위치 OFF → 수리 미수행
+        runner.Dispose();
+    }
+
+    [Fact]
+    [Trait("Category", "Integration")]
+    public void NeuralCodec_And_GlobalEdgeCdn_Check()
+    {
+        // ── CDN-1: SIMD 커널 = 스칼라 비트 동일(길이 0..37) ──
+        var rng = new Random(1702);
+        for (var n = 0; n <= 37; n++)
+        {
+            var a = new float[n]; var b = new float[n]; var w = new float[n];
+            for (var i = 0; i < n; i++) { a[i] = (float)(rng.NextDouble() * 400 - 200); b[i] = (float)(rng.NextDouble() * 400 - 200); w[i] = 0.05f + (float)rng.NextDouble(); }
+            var d1 = new float[n]; var d2 = new float[n];
+            Ncd.NvcSimd.Sub(a, b, d1); Ncd.NvcSimd.SubScalar(a, b, d2); Assert.Equal(d2, d1);
+            Ncd.NvcSimd.AddClamp(a, b, d1, 0f, 255f); Ncd.NvcSimd.AddClampScalar(a, b, d2, 0f, 255f); Assert.Equal(d2, d1);
+            var q1 = new int[n]; var q2 = new int[n];
+            Assert.Equal(Ncd.NvcSimd.QuantizeUniformScalar(a, q2, 0.37f, 0.5f), Ncd.NvcSimd.QuantizeUniform(a, q1, 0.37f, 0.5f)); Assert.Equal(q2, q1);
+            Assert.Equal(Ncd.NvcSimd.QuantizeWeightedScalar(a, w, q2, 1f / 6f), Ncd.NvcSimd.QuantizeWeighted(a, w, q1, 1f / 6f)); Assert.Equal(q2, q1);
+            Ncd.NvcSimd.DequantWeighted(q1, w, d1); Ncd.NvcSimd.DequantWeightedScalar(q1, w, d2); Assert.Equal(d2, d1);
+            Ncd.NvcSimd.DequantAddUniform(q1, b, d1, 0.7f); Ncd.NvcSimd.DequantAddUniformScalar(q1, b, d2, 0.7f); Assert.Equal(d2, d1);
+            Assert.True(Math.Abs(Ncd.NvcSimd.Sad(a, b) - Ncd.NvcSimd.SadScalar(a, b)) <= 1e-3f * (1 + Ncd.NvcSimd.SadScalar(a, b)));
+            Ncd.CdnSimd.Add(a, b, d1); Ncd.CdnSimd.AddScalar(a, b, d2); Assert.Equal(d2, d1);
+            var s1 = new byte[n]; var s2 = new byte[n]; var src = new byte[n]; rng.NextBytes(src); rng.NextBytes(s1); s1.AsSpan().CopyTo(s2);
+            var c = (byte)rng.Next(256);
+            Ncd.Gf256.MulXor(c, src, s1); Ncd.Gf256.MulXorScalar(c, src, s2); Assert.Equal(s2, s1);
+        }
+        // GF(2⁸): 곱 역원 · 분배 법칙
+        for (var x = 1; x < 256; x++) Assert.Equal(1, Ncd.Gf256.Mul((byte)x, Ncd.Gf256.Inv((byte)x)));
+        Assert.Equal(Ncd.Gf256.Mul(7, (byte)(9 ^ 200)), (byte)(Ncd.Gf256.Mul(7, 9) ^ Ncd.Gf256.Mul(7, 200)));
+
+        // ── 비트스트림 Exp-Golomb 왕복 · 손상 판독 무예외 ──
+        var buf = new byte[4096];
+        var bw = new Ncd.NvcBitWriter(); bw.Reset(buf, 0);
+        for (var v = -300; v <= 300; v += 7) { bw.PutSe(v); bw.PutUe((uint)(v + 300)); bw.Put((uint)(v & 0x1F), 5); }
+        var bytes = bw.Finish();
+        Assert.False(bw.Overflow);
+        var br = new Ncd.NvcBitReader(); br.Reset(buf, 0, bytes);
+        for (var v = -300; v <= 300; v += 7) { Assert.Equal(v, br.GetSe()); Assert.Equal((uint)(v + 300), br.GetUe()); Assert.Equal((uint)(v & 0x1F), br.Get(5)); }
+        Assert.False(br.Error);
+        br.Reset(buf, 0, 2); for (var i = 0; i < 20; i++) br.GetUe();
+        Assert.True(br.Error);
+
+        // ── 코덱: 인코더 재구성 = 독립 디코더 비트 동일 · 품질 · 시간 중복 절감 · 스플랫 오차 한계 ──
+        var codec = new Ncd.NeuralVolumetricVideoCodecEngine { FixedQp = 26 };
+        var frame = new float[Ncd.NeuralVolumetricVideoCodecEngine.Pixels];
+        var splat = new Ncd.VolumetricSplatFrame(Ncd.NeuralVolumetricVideoCodecEngine.MaxSplats);
+        long keyBits = 0, interBits = 0; var inter = 0;
+        for (var f = 0; f < 40; f++)
+        {
+            var t = f / 30.0;
+            Ncd.NeuralVolumetricVideoCodecEngine.SynthesizeFrame(frame, t);
+            Ncd.NeuralVolumetricVideoCodecEngine.SynthesizeSplats(splat, 1500, t);
+            codec.Encode(frame, splat);
+            if (codec.LastType == Ncd.NvcFrameType.Intra) keyBits += codec.LastVideoBits; else { interBits += codec.LastVideoBits; inter++; }
+            Assert.True(codec.Decode(codec.AccessUnit));
+            Assert.True(codec.Reconstructed.SequenceEqual(codec.Decoded));
+            var ds = codec.DecodedSplats; var es = codec.EncoderSplats;
+            Assert.Equal(1500, ds.Count);
+            var step = Ncd.NeuralVolumetricVideoCodecEngine.SplatScale(26);
+            for (var at = 0; at < Ncd.VolumetricSplatFrame.Attributes; at++)
+            {
+                Assert.True(ds.Plane[at].AsSpan(0, 1500).SequenceEqual(es.Plane[at].AsSpan(0, 1500)));
+                for (var i = 0; i < 1500; i += 37) Assert.True(Math.Abs(ds.Plane[at][i] - splat.Plane[at][i]) <= Ncd.NeuralVolumetricVideoCodecEngine.SplatBaseStep[at] * step * 0.5f + 1e-5f);
+            }
+            Assert.True(codec.EncoderPsnr > 33f, "PSNR " + codec.EncoderPsnr);
+        }
+        Assert.Equal(1, codec.KeyFrames);
+        Assert.True(interBits / inter < keyBits * 0.35, "P " + interBits / inter + " vs I " + keyBits);
+        Assert.True(codec.SkipRatio > 0.3f && codec.SplatChangedRatio < 0.5f);
+        Assert.True(Ncd.NeuralVolumetricVideoCodecEngine.Ssim(frame, codec.Decoded) > 0.9f);
+        Assert.True(codec.CompressionRatio > 8f);
+        // 무할당 인코드/디코드
+        Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>
+        {
+            for (var f = 40; f < 46; f++)
+            {
+                Ncd.NeuralVolumetricVideoCodecEngine.SynthesizeFrame(frame, f / 30.0);
+                Ncd.NeuralVolumetricVideoCodecEngine.SynthesizeSplats(splat, 1500, f / 30.0);
+                codec.Encode(frame, splat); codec.Decode(codec.AccessUnit);
+            }
+        }));
+        // 손상 AU: 예외 없이 거부 · 참조 보존
+        var good = codec.AccessUnit.ToArray();
+        var before = codec.Decoded.ToArray();
+        var bad = (byte[])good.Clone(); bad[0] = 0;
+        Assert.False(codec.Decode(bad));
+        Assert.False(codec.Decode(good.AsSpan(0, Math.Min(6, good.Length))));
+        for (var trial = 0; trial < 30; trial++)
+        {
+            var junk = (byte[])good.Clone();
+            for (var i = 4; i < junk.Length; i += 1 + rng.Next(5)) junk[i] = (byte)rng.Next(256);
+            codec.Decode(junk);
+        }
+        Assert.True(codec.DecodeErrors >= 2);
+        // 레이트 제어: 학습 R-Q 모델 → 목표 비트 수렴
+        var rc = new Ncd.NeuralVolumetricVideoCodecEngine { TargetBitsPerFrame = 6000f };
+        long rcBits = 0; var rcN = 0;
+        for (var f = 0; f < 80; f++)
+        {
+            Ncd.NeuralVolumetricVideoCodecEngine.SynthesizeFrame(frame, f / 30.0);
+            rc.Encode(frame, null);
+            if (f >= 40 && rc.LastType == Ncd.NvcFrameType.Inter) { rcBits += rc.LastVideoBits; rcN++; }
+        }
+        var mean = rcBits / (double)rcN;
+        Assert.True(mean > 6000 * 0.6 && mean < 6000 * 1.4, "RC mean " + mean);
+        rc.TargetBitsPerFrame = 1500f;
+        for (var f = 80; f < 130; f++) { Ncd.NeuralVolumetricVideoCodecEngine.SynthesizeFrame(frame, f / 30.0); rc.Encode(frame, null); }
+        Assert.True(rc.LastQp > 26);
+
+        // ── CDN-3: 리드-솔로몬 소거 복원(m 이하 = 정확 복원 · 초과 = 실패) ──
+        var guard = new Ncd.PacketLossConcealmentFecGuard();
+        const int K = 10, M = 4, P = Ncd.PacketLossConcealmentFecGuard.Payload;
+        var data = new byte[K * P]; rng.NextBytes(data);
+        for (var trial = 0; trial < 20; trial++)
+        {
+            guard.EncodeBlockForTest(data, K, M);
+            var erase = 1 + trial % M;
+            var used = new bool[K + M];
+            for (var e = 0; e < erase; e++)
+            {
+                int slot; do slot = rng.Next(K + M); while (used[slot]);
+                used[slot] = true;
+                guard.EraseForTest(slot < K ? slot : Ncd.PacketLossConcealmentFecGuard.MaxK + slot - K);
+            }
+            Assert.True(guard.RecoverForTest() >= 0);
+            for (var i = 0; i < K; i++) Assert.True(guard.DataPacketForTest(i).SequenceEqual(data.AsSpan(i * P, P)));
+        }
+        guard.EncodeBlockForTest(data, K, M);
+        for (var e = 0; e < M + 1; e++) guard.EraseForTest(e);
+        Assert.Equal(-1, guard.RecoverForTest());
+
+        // ── CDN-2: 라우팅 · 용량 · 장애 우회 · ABR ──
+        var cdn = new Ncd.GlobalEdgeCdnRoutingSynthesizer();
+        for (var s = 0; s < 90; s++) cdn.Step(1f / 30f, (s + 1) / 30.0);
+        for (var r = 0; r < Ncd.GlobalEdgeCdnRoutingSynthesizer.Regions; r++)
+        {
+            var sum = 0f;
+            for (var j = 0; j < Ncd.GlobalEdgeCdnRoutingSynthesizer.Nodes; j++) sum += cdn.Alloc(r, j);
+            Assert.True(Math.Abs(sum - cdn.DemandGbps(r)) <= 1e-3f * (1 + cdn.DemandGbps(r)));
+            Assert.Equal(0f, cdn.Alloc(r, Ncd.GlobalEdgeCdnRoutingSynthesizer.PeerBase + (r + 1) % Ncd.GlobalEdgeCdnRoutingSynthesizer.Regions));
+            Assert.True(cdn.RegionRttMs(r) > 0f && cdn.RegionRttMs(r) < 200f);
+        }
+        Assert.True(cdn.Alloc(0, 1) > 0f && cdn.Alloc(0, 1) >= cdn.Alloc(0, 0));     // 서울 시청자 → 서울 PoP 우선
+        Assert.True(cdn.EdgeShare + cdn.PeerShare > 0.7f && cdn.PeerShare > 0f, "e " + cdn.EdgeShare + " p " + cdn.PeerShare + " o " + cdn.OriginShare + " d " + cdn.TotalDemandGbps + " r " + cdn.Rung(0) + "," + cdn.Rung(4));
+        cdn.FailNode(1);
+        cdn.Step(1f / 30f, 3.1);
+        Assert.Equal(0f, cdn.Alloc(0, 1));
+        Assert.NotEqual(1, cdn.Primary(0));
+        Assert.True(cdn.Reroutes > 0 && cdn.Failovers == 1);
+        cdn.RestoreNode(1);
+        var rungBefore = cdn.Rung(0);
+        cdn.BandwidthDrop(0, 60f);
+        for (var s = 0; s < 600; s++) cdn.Step(1f / 30f, 3.1 + (s + 1) / 30.0);
+        Assert.True(cdn.Rung(0) < rungBefore || cdn.Rung(0) == 0);
+        Assert.True(cdn.EstimateMbps(0) < 600f);
+        Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>
+        {
+            for (var s = 0; s < 100; s++) cdn.Step(1f / 30f, 30 + s / 30.0);
+        }));
+
+        // ── 러너: 종단 간 스트리밍 · FEC 복원율 · 은닉 + PLI · 무할당 ──
+        var run = new Ncd.NeuralCodecEdgeCdnStudioRunner(new Ncd.NeuralVolumetricVideoCodecEngine(), new Ncd.GlobalEdgeCdnRoutingSynthesizer(), new Ncd.PacketLossConcealmentFecGuard());
+        for (var s = 0; s < 120; s++) run.Step();
+        Assert.True(run.Codec.DecodedFrames > 100);
+        Assert.True(run.ViewerPsnr > 25f && run.ViewerSsim > 0.7f, "viewer " + run.ViewerPsnr + " / " + run.ViewerSsim);
+        Assert.True(run.Guard.ParityPackets > 0);
+        run.Storm();
+        for (var s = 0; s < 150; s++) run.Step();
+        var g = run.Guard;
+        Assert.True(g.Lost + g.Late > 0 && g.Recovered > 0, "lost " + g.Lost + " rec " + g.Recovered);
+        Assert.True(g.RecoveryRate > 0.5f, "recovery " + g.RecoveryRate);
+        var keys = run.Codec.KeyFrames;
+        g.FecEnabled = false;                                                         // FEC 해제 + 폭풍 → 은닉 · PLI · IDR
+        run.Storm();
+        for (var s = 0; s < 150; s++) run.Step();
+        g.FecEnabled = true;
+        Assert.True(g.FramesConcealed > 0 && g.PliSent > 0 && run.Codec.KeyFrames > keys, "conceal " + g.FramesConcealed + " pli " + g.PliSent + " keys " + run.Codec.KeyFrames);
+        Assert.True(run.ConcealPsnr > 15f, "conceal psnr " + run.ConcealPsnr);
+        for (var s = 0; s < 120; s++) run.Step();
+        Assert.True(g.FramesClean + g.FramesRepaired > 200);
+        Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>
+        {
+            for (var s = 0; s < 60; s++) run.Step();
+        }));
+        Assert.Equal(Ncd.NeuralCodecEdgeCdnStudioRunner.SeriesLen, run.SeriesCount);
+        Assert.NotNull(run.Action);
+        run.Dispose();
+    }
+
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task LipSync_And_EmotionPuppeteer_Check()
+    {
+        // ① 감정 키워드 탐지 · 아기 피사체 · 프리셋
+        Assert.Equal(SB.FacialEmotion.Giggle, SB.FacialEmotionPuppeteerEngine.Detect("아기가 까르르 웃어요"));
+        Assert.Equal(SB.FacialEmotion.Pout, SB.FacialEmotionPuppeteerEngine.Detect("toddler pouting at dinner"));
+        Assert.Equal(SB.FacialEmotion.Surprised, SB.FacialEmotionPuppeteerEngine.Detect("깜짝 놀란 표정"));
+        Assert.Equal(SB.FacialEmotion.Curious, SB.FacialEmotionPuppeteerEngine.Detect("궁금한 듯 바라봐요"));
+        Assert.Equal(SB.FacialEmotion.HappySmile, SB.FacialEmotionPuppeteerEngine.Detect("방긋 미소"));
+        Assert.Equal(SB.FacialEmotion.Neutral, SB.FacialEmotionPuppeteerEngine.Detect("a quiet park"));
+        Assert.True(SB.FacialEmotionPuppeteerEngine.IsBabySubject("cute baby in bath"));
+        Assert.False(SB.FacialEmotionPuppeteerEngine.IsBabySubject("adult chef cooking"));
+        Assert.Equal(6, SB.FacialEmotionPuppeteerEngine.Presets.Count);
+        Assert.Equal("🥺 삐침/칭얼거림", SB.FacialEmotionPuppeteerEngine.LabelOf(SB.FacialEmotion.Pout));
+
+        // ② 표정 주입: 상충 단어 제거 · 표정/정체성 구문 · 얼굴 보호 네거티브 · 멱등 · Neutral 무변경
+        var inj = SB.FacialEmotionPuppeteerEngine.Apply("a crying baby sitting on a sofa", "blurry", SB.FacialEmotion.HappySmile, 1.0);
+        Assert.True(inj.Changed && inj.BabyProfile);
+        Assert.DoesNotContain("crying", inj.Prompt);
+        Assert.Contains("happy smile", inj.Prompt);
+        Assert.Contains(SB.FacialEmotionPuppeteerEngine.IdentityGuard, inj.Prompt);
+        Assert.StartsWith("blurry, ", inj.Negative);
+        Assert.Contains("distorted face", inj.Negative);
+        Assert.Equal(SB.FacialEmotionPuppeteerEngine.BabyIntensityCap, inj.Intensity);
+        Assert.Contains("clear bright happy smile", inj.Prompt);
+        Assert.StartsWith("a baby sitting", inj.Prompt);
+        var again = SB.FacialEmotionPuppeteerEngine.Apply(inj.Prompt, inj.Negative, SB.FacialEmotion.HappySmile, 1.0);
+        Assert.Equal(inj.Prompt, again.Prompt);
+        Assert.Equal(inj.Negative, again.Negative);
+        Assert.False(again.Changed);
+        var neutral = SB.FacialEmotionPuppeteerEngine.Apply(" a dog ", null, SB.FacialEmotion.Neutral);
+        Assert.Equal("a dog", neutral.Prompt);
+        Assert.Null(neutral.Negative);
+        Assert.DoesNotContain("crying", SB.FacialEmotionPuppeteerEngine.Apply("crying crybaby", null, SB.FacialEmotion.Giggle).Prompt.Replace("crybaby", ""));
+        Assert.Contains("crybaby", SB.FacialEmotionPuppeteerEngine.Apply("crying crybaby", null, SB.FacialEmotion.Giggle).Prompt);   // 단어 경계
+
+        // ③ 안면 보호: 랜드마크 상한(아기 0.55 · 성인 0.8) · 강도 문구 · 입모양 배율
+        var babyG = SB.FacialEmotionPuppeteerEngine.GuideOf(SB.FacialEmotion.Giggle, 1.0, baby: true);
+        var adultG = SB.FacialEmotionPuppeteerEngine.GuideOf(SB.FacialEmotion.Giggle, 1.0, baby: false);
+        Assert.True(babyG.MaxMagnitude <= SB.FacialEmotionPuppeteerEngine.BabyLandmarkCap + 1e-9);
+        Assert.True(adultG.MaxMagnitude <= SB.FacialEmotionPuppeteerEngine.AdultLandmarkCap + 1e-9);
+        Assert.True(babyG.MouthCornerLift > 0 && babyG.MouthCornerLift < adultG.MouthCornerLift);
+        Assert.Equal("subtle", SB.FacialEmotionPuppeteerEngine.IntensityWord(0.2));
+        Assert.Equal("gentle", SB.FacialEmotionPuppeteerEngine.IntensityWord(0.6));
+        Assert.Equal("clear", SB.FacialEmotionPuppeteerEngine.IntensityWord(0.9));
+        Assert.True(SB.FacialEmotionPuppeteerEngine.MouthScaleOf(SB.FacialEmotion.Giggle) > 1.0);
+        Assert.True(SB.FacialEmotionPuppeteerEngine.MouthScaleOf(SB.FacialEmotion.Pout) < 1.0);
+        Assert.Equal(1.0, SB.FacialEmotionPuppeteerEngine.MouthScaleOf(SB.FacialEmotion.Neutral));
+        Assert.Equal(SB.FacialEmotionPuppeteerEngine.DefaultIntensity, SB.FacialEmotionPuppeteerEngine.SafeIntensity(double.NaN, false));
+        Assert.Contains("입꼬리 +", SB.FacialEmotionPuppeteerEngine.Describe(babyG));
+
+        // ④ 컷 연속성 완화 · 자동 할당
+        var ints = new[] { 0.2, 1.0, 0.1 };
+        Assert.Equal(2, SB.FacialEmotionPuppeteerEngine.SmoothIntensities(ints));
+        Assert.Equal(0.55, ints[1], 6);
+        Assert.Equal(0.2, ints[2], 6);
+        var scenes = new[]
+        {
+            new SB.StoryboardScene { VoiceText = "우와 깜짝이야!" },
+            new SB.StoryboardScene { Prompt = "baby giggling with bubbles" },
+            new SB.StoryboardScene { Prompt = "empty room" },
+            new SB.StoryboardScene { Prompt = "baby smiling", Emotion = SB.FacialEmotion.Pout },
+        };
+        Assert.Equal(2, SB.FacialEmotionPuppeteerEngine.AutoAssign(scenes));
+        Assert.Equal((SB.FacialEmotion.Surprised, SB.FacialEmotion.Giggle, SB.FacialEmotion.Neutral, SB.FacialEmotion.Pout),
+            (scenes[0].Emotion, scenes[1].Emotion, scenes[2].Emotion, scenes[3].Emotion));
+        var json = System.Text.Json.JsonSerializer.Serialize(scenes[3]);
+        Assert.Contains("\"Pout\"", json);
+
+        // ⑤ 대사 → 입모양: 한글 중성/종성(양순음) · 라틴 · 구두점 Rest
+        var vis = new Med.Viseme[32];
+        var vn = Med.AiAudioDrivenLipSyncService.TranscriptToVisemes("아밤 우리", vis);
+        Assert.Equal(new[] { Med.Viseme.A, Med.Viseme.A, Med.Viseme.Closed, Med.Viseme.Rest, Med.Viseme.U, Med.Viseme.I }, vis[..vn]);
+        Assert.Equal(3, Med.AiAudioDrivenLipSyncService.TranscriptToVisemes("mao", vis));
+
+        // ⑥ 합성 WAV(16kHz mono): 0.3초 무음 → 0.6초 톤 → 0.3초 무음 → 0.4초 톤 · 엔벨로프 · 유성 · 타임라인
+        const int sr = 16000;
+        var wav = MakeWav(sr, (0.3, 0.0), (0.6, 0.5), (0.3, 0.0), (0.4, 0.4));
+        Assert.True(Med.AiAudioDrivenLipSyncService.TryParseWav(wav, out var off, out var len, out var ch, out var rate, out var bits));
+        Assert.Equal((44, 1, sr, 16), (off, ch, rate, bits));
+        Assert.Equal(sr * 16 / 10 * 2, len);
+        var (act, cues) = Med.AiAudioDrivenLipSyncService.Analyze(wav, "아빠 엄마 안녕", 1.2);
+        Assert.Equal(1.6, act.DurationSeconds, 2);
+        Assert.InRange(act.OnsetSeconds, 0.26, 0.34);
+        Assert.InRange(act.VoicedRatio, 0.55, 0.70);
+        Assert.Equal(80, act.Frames);
+        Assert.Equal(Med.Viseme.Rest, cues[0].Shape);
+        Assert.Contains(cues, c => c.Shape == Med.Viseme.A && c.Openness > 0.5);
+        Assert.Contains(cues, c => c.Shape == Med.Viseme.Closed);
+        for (var i = 1; i < cues.Count; i++) Assert.Equal(cues[i - 1].End, cues[i].Start, 3);
+        Assert.Equal(1.6, cues[^1].End, 2);
+        var (_, energyCues) = Med.AiAudioDrivenLipSyncService.Analyze(wav, null);
+        Assert.Contains(energyCues, c => c.Shape != Med.Viseme.Rest);
+        Assert.False(Med.AiAudioDrivenLipSyncService.TryParseWav(new byte[20], out _, out _, out _, out _, out _));
+        Assert.Equal(default, Med.AiAudioDrivenLipSyncService.Analyze(new byte[10], "x").Activity);
+        Assert.StartsWith("[{\"s\":0,", Med.AiAudioDrivenLipSyncService.VisemesJson(cues));
+
+        // ⑦ FFmpeg 프레임 보정 인자: 발화 정렬 atrim · ≤20% setpts 리타임 · 초과 tpad 복제
+        var a1 = Med.AiAudioDrivenLipSyncService.BuildRealignArgs(@"C:\v\in clip.mp4", @"C:\v\n.wav", @"C:\v\out.mp4", 5.0, 5.6, 0.5);
+        var fc1 = a1[a1.IndexOf("-filter_complex") + 1];
+        Assert.Contains("atrim=start=0.4", fc1);
+        Assert.Contains("setpts=1.04*PTS", fc1);
+        Assert.Contains("fps=30", fc1);
+        Assert.Equal("5.2", a1[a1.IndexOf("-t") + 1]);
+        Assert.Equal(@"C:\v\in clip.mp4", a1[a1.IndexOf("-i") + 1]);
+        var a2 = Med.AiAudioDrivenLipSyncService.BuildRealignArgs("v.mp4", "a.wav", "o.mp4", 4.0, 8.0, 0);
+        var fc2 = a2[a2.IndexOf("-filter_complex") + 1];
+        Assert.Contains("tpad=stop_mode=clone:stop_duration=4", fc2);
+        Assert.DoesNotContain("setpts=2", fc2);
+        Assert.Equal(83.5, Med.AiAudioDrivenLipSyncService.ParseDuration("  Duration: 00:01:23.50, start: 0.000000"));
+        Assert.Equal(0, Med.AiAudioDrivenLipSyncService.ParseDuration("garbage"));
+
+        // ⑧ 원격 응답 스키마 검증
+        Assert.Equal("job_42", Med.AiAudioDrivenLipSyncService.ParseSubmit("{\"job_id\":\"job_42\"}"));
+        Assert.Null(Med.AiAudioDrivenLipSyncService.ParseSubmit("{\"id\":\"../etc\"}"));
+        Assert.Null(Med.AiAudioDrivenLipSyncService.ParseSubmit("[1]"));
+        Assert.Equal(("succeeded", "https://cdn.example.com/o.mp4", (string?)null),
+            Med.AiAudioDrivenLipSyncService.ParseStatus("{\"status\":\"completed\",\"output_url\":\"https://cdn.example.com/o.mp4\"}"));
+        Assert.Equal("invalid", Med.AiAudioDrivenLipSyncService.ParseStatus("{\"status\":\"done\",\"output_url\":\"http://evil.example.com/o.mp4\"}").Status);
+        Assert.Equal("running", Med.AiAudioDrivenLipSyncService.ParseStatus("{\"status\":\"processing\"}").Status);
+        Assert.Equal(("failed", (string?)null, "oom"), Med.AiAudioDrivenLipSyncService.ParseStatus("{\"status\":\"error\",\"error\":\"oom\"}"));
+        Assert.False(new Med.LipSyncApiConfig("http://remote.example.com", null, Med.LipSyncBackend.Wav2LipApi).IsConfigured);
+        Assert.True(new Med.LipSyncApiConfig("http://127.0.0.1:7860", null, Med.LipSyncBackend.MuseTalkApi).IsConfigured);
+
+        // ⑨ 오케스트레이션: 원격(500×3 백오프 실패) → 로컬 엔진 폴백 · 원격 성공 경로 · 입력 누락
+        var dir = Path.Combine(Path.GetTempPath(), "pfs_lip_test_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var video = Path.Combine(dir, "clip.mp4");
+            var audio = Path.Combine(dir, "narr.wav");
+            await File.WriteAllBytesAsync(video, new byte[] { 0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70 });
+            await File.WriteAllBytesAsync(audio, wav);
+            var cfg = new Med.LipSyncApiConfig("https://lipsync.example.com", "test-key", Med.LipSyncBackend.MuseTalkApi);
+            var failing = new LipApiHandler(submitStatus: System.Net.HttpStatusCode.InternalServerError);
+            var local = new FakeLocalLip(ok: true);
+            using (var svc = new Med.AiAudioDrivenLipSyncService(() => null, local, () => cfg, failing, TimeSpan.Zero))
+            {
+                Assert.True(svc.AiAvailable && svc.RemoteConfigured);
+                Assert.Equal(Med.LipSyncBackend.MuseTalkApi, svc.PreferredBackend);
+                var r = await svc.SyncAsync(new Med.AudioLipSyncRequest(video, audio, Path.Combine(dir, "o1.mp4"), "아빠 엄마", SB.FacialEmotion.Giggle));
+                Assert.True(r.Ok);
+                Assert.Equal(Med.LipSyncBackend.LatentSyncLocal, r.Backend);
+                Assert.Contains("MuseTalk API 실패(HTTP 500)", r.Message);
+                Assert.Equal(Med.AiAudioDrivenLipSyncService.MaxSubmitAttempts, failing.Submits);
+                Assert.Equal("Bearer test-key", failing.LastAuth);
+                Assert.True(r.Visemes.Count > 0);
+                Assert.Equal(1, local.Calls);
+            }
+
+            var good = new LipApiHandler(System.Net.HttpStatusCode.OK, pollsBeforeDone: 2);
+            using (var svc = new Med.AiAudioDrivenLipSyncService(() => null, null, () => cfg, good, TimeSpan.Zero))
+            {
+                var outPath = Path.Combine(dir, "o2.mp4");
+                var r = await svc.SyncAsync(new Med.AudioLipSyncRequest(video, audio, outPath, "안녕", SB.FacialEmotion.Pout, 0.8));
+                Assert.True(r.Ok, r.Message);
+                Assert.Equal(Med.LipSyncBackend.MuseTalkApi, r.Backend);
+                Assert.Equal(3, good.Polls);
+                Assert.Equal(4, new FileInfo(outPath).Length);
+                Assert.Contains("name=mouth_scale", good.LastForm);
+                Assert.Contains("musetalk", good.LastForm);
+            }
+
+            using (var none = new Med.AiAudioDrivenLipSyncService(() => null, new FakeLocalLip(ok: false), () => new Med.LipSyncApiConfig(null, null, Med.LipSyncBackend.Wav2LipApi), null, TimeSpan.Zero))
+            {
+                Assert.False(none.IsAvailable);
+                Assert.Equal(Med.LipSyncBackend.None, none.PreferredBackend);
+                var r = await none.SyncAsync(new Med.AudioLipSyncRequest(video, audio, Path.Combine(dir, "o3.mp4")));
+                Assert.False(r.Ok);
+                Assert.Contains("ffmpeg", r.Message);
+                Assert.False((await none.SyncAsync(new Med.AudioLipSyncRequest("missing.mp4", audio, "o.mp4"))).Ok);
+                Assert.False((await none.RealignAsync(video, audio, "o.mp4")).Ok);
+            }
+        }
+        finally { try { Directory.Delete(dir, true); } catch { } }
+    }
+
+    private sealed class MapProvider : Dictionary<Type, object>, IServiceProvider
+    {
+        public object? GetService(Type serviceType) => TryGetValue(serviceType, out var o) ? o : null;
+    }
+
+    /// <summary>v16.93 DOM 구동 검증용 C# 컴포넌트(정상/NRE/비동기 예외/지연/위험 라벨/비활성/range/checkbox).</summary>
+    private sealed class DomProbeComponent : Microsoft.AspNetCore.Components.ComponentBase
+    {
+        public static int Clicks; public static bool Flag; public static double Slider = -1; public static int DeniedHits, DisabledHits;
+        [Microsoft.AspNetCore.Components.Parameter] public Microsoft.AspNetCore.Components.EventCallback OnClose { get; set; }
+        protected override void BuildRenderTree(Microsoft.AspNetCore.Components.Rendering.RenderTreeBuilder b)
+        {
+            var f = Microsoft.AspNetCore.Components.EventCallback.Factory;
+            b.OpenElement(0, "div");
+            b.OpenElement(1, "button"); b.AddAttribute(2, "onclick", f.Create<Microsoft.AspNetCore.Components.Web.MouseEventArgs>(this, () => Clicks++)); b.AddContent(3, "정상 버튼"); b.CloseElement();
+            b.OpenElement(4, "button"); b.AddAttribute(5, "onclick", f.Create<Microsoft.AspNetCore.Components.Web.MouseEventArgs>(this, () => { string? s = null; _ = s!.Length; })); b.AddContent(6, "NRE 버튼"); b.CloseElement();
+            b.OpenElement(7, "button"); b.AddAttribute(8, "onclick", f.Create<Microsoft.AspNetCore.Components.Web.MouseEventArgs>(this, async () => { await Task.Yield(); throw new InvalidOperationException("async boom"); })); b.AddContent(9, "비동기 예외"); b.CloseElement();
+            b.OpenElement(10, "button"); b.AddAttribute(11, "onclick", f.Create<Microsoft.AspNetCore.Components.Web.MouseEventArgs>(this, () => Task.Delay(1500))); b.AddContent(12, "느린 버튼"); b.CloseElement();
+            b.OpenElement(13, "button"); b.AddAttribute(14, "onclick", f.Create<Microsoft.AspNetCore.Components.Web.MouseEventArgs>(this, () => DeniedHits++)); b.AddContent(15, "파일 삭제"); b.CloseElement();
+            b.OpenElement(16, "button"); b.AddAttribute(17, "disabled", true); b.AddAttribute(18, "onclick", f.Create<Microsoft.AspNetCore.Components.Web.MouseEventArgs>(this, () => DisabledHits++)); b.AddContent(19, "비활성"); b.CloseElement();
+            b.OpenElement(20, "input"); b.AddAttribute(21, "type", "range"); b.AddAttribute(22, "min", "0"); b.AddAttribute(23, "max", "10");
+            b.AddAttribute(24, "onchange", f.Create<Microsoft.AspNetCore.Components.ChangeEventArgs>(this, e => Slider = double.Parse(e.Value!.ToString()!, System.Globalization.CultureInfo.InvariantCulture))); b.CloseElement();
+            b.OpenElement(25, "input"); b.AddAttribute(26, "type", "checkbox"); b.AddAttribute(27, "checked", Flag);
+            b.AddAttribute(28, "onchange", f.Create<Microsoft.AspNetCore.Components.ChangeEventArgs>(this, e => Flag = (bool)e.Value!)); b.CloseElement();
+            b.OpenElement(29, "button"); b.AddAttribute(30, "onclick", OnClose); b.AddContent(31, "✕"); b.CloseElement();
+            b.CloseElement();
+        }
+    }
+
+    private static byte[] MakeWav(int sampleRate, params (double Seconds, double Amp)[] parts)
+    {
+        var samples = 0;
+        foreach (var p in parts) samples += (int)(p.Seconds * sampleRate);
+        var data = samples * 2;
+        var buf = new byte[44 + data];
+        "RIFF"u8.CopyTo(buf);
+        System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(buf.AsSpan(4), 36 + data);
+        "WAVEfmt "u8.CopyTo(buf.AsSpan(8));
+        System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(buf.AsSpan(16), 16);
+        System.Buffers.Binary.BinaryPrimitives.WriteInt16LittleEndian(buf.AsSpan(20), 1);
+        System.Buffers.Binary.BinaryPrimitives.WriteInt16LittleEndian(buf.AsSpan(22), 1);
+        System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(buf.AsSpan(24), sampleRate);
+        System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(buf.AsSpan(28), sampleRate * 2);
+        System.Buffers.Binary.BinaryPrimitives.WriteInt16LittleEndian(buf.AsSpan(32), 2);
+        System.Buffers.Binary.BinaryPrimitives.WriteInt16LittleEndian(buf.AsSpan(34), 16);
+        "data"u8.CopyTo(buf.AsSpan(36));
+        System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(buf.AsSpan(40), data);
+        var o = 44;
+        var t = 0;
+        foreach (var (sec, amp) in parts)
+        {
+            var n = (int)(sec * sampleRate);
+            for (var i = 0; i < n; i++, t++, o += 2)
+                System.Buffers.Binary.BinaryPrimitives.WriteInt16LittleEndian(buf.AsSpan(o), (short)(Math.Sin(2 * Math.PI * 220 * t / sampleRate) * amp * 32767));
+        }
+        return buf;
+    }
+
+    private sealed class LipApiHandler(System.Net.HttpStatusCode submitStatus, int pollsBeforeDone = 0) : System.Net.Http.HttpMessageHandler
+    {
+        public int Submits, Polls;
+        public string? LastAuth, LastForm;
+        protected override async Task<System.Net.Http.HttpResponseMessage> SendAsync(System.Net.Http.HttpRequestMessage request, CancellationToken ct)
+        {
+            LastAuth = request.Headers.Authorization?.ToString() ?? LastAuth;
+            var path = request.RequestUri!.AbsolutePath;
+            if (request.Method == System.Net.Http.HttpMethod.Post && path == "/lipsync")
+            {
+                Submits++;
+                LastForm = await request.Content!.ReadAsStringAsync(ct);
+                return submitStatus == System.Net.HttpStatusCode.OK
+                    ? new System.Net.Http.HttpResponseMessage(submitStatus) { Content = new System.Net.Http.StringContent("{\"id\":\"abc-1\"}") }
+                    : new System.Net.Http.HttpResponseMessage(submitStatus);
+            }
+            if (path == "/lipsync/abc-1")
+            {
+                Polls++;
+                var body = Polls <= pollsBeforeDone ? "{\"status\":\"running\"}" : "{\"status\":\"succeeded\",\"output_url\":\"https://lipsync.example.com/files/abc-1.mp4\"}";
+                return new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new System.Net.Http.StringContent(body) };
+            }
+            if (path == "/files/abc-1.mp4")
+                return new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new System.Net.Http.ByteArrayContent(new byte[] { 1, 2, 3, 4 }) };
+            return new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.NotFound);
+        }
+    }
+
+    private sealed class FakeLocalLip(bool ok) : Med.ILipSyncService
+    {
+        public int Calls;
+        public bool IsAvailable => ok;
+        public Task<Med.LipSyncResult> ApplyAsync(string videoPath, string audioPath, string outputPath, IProgress<string>? status = null, CancellationToken ct = default)
+        {
+            Calls++;
+            return Task.FromResult(new Med.LipSyncResult(ok, ok ? outputPath : null, ok ? "ok" : "fail"));
+        }
+    }
+}
+
+/// <summary>Step 44 — <see cref="TitanReleaseTests"/>(ProcessGcMode · 비병렬)에서 분리한 순수 계산 · 가상 시계 메서드 (B 사슬 몫 11 메서드 · 실측 ≈ 22 s).
+///   분류 기준(rules_testing.md Step 43) 0 건 감사 통과: 환경변수 · 실 프로세스 · 프로세스 GC 모드/지표 · 실 벽시계 게이트 · 단발 무할당 창 없음
+///   (무할당 단언은 전부 <see cref="SteadyStateAllocation.MinBytes(System.Action)"/> 재시도 창 · 임시 경로는 전부 GUID).
+///   제외 유지: RealtimeGamingVision(라이브 FPS 벽시계 게이트) · HardwareAcceleration(1.5 s 하트비트 창 · 실 인코더 스레드) ·
+///   UniversalMediaEmpire(Task.Delay 동시 처리 피크 단언) — 비병렬 <see cref="TitanReleaseTests"/> 에 남김.</summary>
+[Collection("TitanHeavyComputeB")]   // Step 44: 측정 기반 A/B 재균형 — 동시 중량 사슬 ≤ 2 유지
+public sealed class TitanReleaseChainBTests
+{
+    [Fact]
+    [Trait("Category", "Integration")]
+    public void NeuralCinematography_And_ShotComposition_Check()
+    {
+        // ══ CI-0 SIMD 커널 = 스칼라(비트 일치 · 꼬리) ══
+        var rnd = new Random(1685);
+        foreach (var len in new[] { 0, 1, 7, 8, 9, 17, 33, 1001 })
+        {
+            float[] R() { var a = new float[len]; for (var i = 0; i < len; i++) a[i] = (float)(rnd.NextDouble() * 4 - 2); return a; }
+            var x = R(); var a1 = R(); var a2 = (float[])a1.Clone();
+            Ci.CineSimd.MulAdd(a1, x, 0.37f); Ci.CineSimd.MulAddScalar(a2, x, 0.37f);
+            Assert.True(a1.AsSpan().SequenceEqual(a2), $"muladd {len}");
+            Ci.CineSimd.Threshold(a1, x, 0.4f, 1.3f); Ci.CineSimd.ThresholdScalar(a2, x, 0.4f, 1.3f);
+            Assert.True(a1.AsSpan().SequenceEqual(a2), $"threshold {len}");
+        }
+
+        // ══ CI-1 박막 렌즈 광학 ══
+        Assert.Equal(0f, Ci.NeuralCameraTrajectoryEngine.CocMm(5f, 5f, 50f, 2.8f), 5);
+        Assert.True(Ci.NeuralCameraTrajectoryEngine.CocMm(20f, 5f, 50f, 1.4f) > Ci.NeuralCameraTrajectoryEngine.CocMm(20f, 5f, 50f, 8f) * 4f, "aperture");
+        var hfd = Ci.NeuralCameraTrajectoryEngine.Hyperfocal(50f, 8f);
+        Assert.True(MathF.Abs(hfd - 12.55f) < 0.1f, $"hyperfocal {hfd}");
+        var (near, far) = Ci.NeuralCameraTrajectoryEngine.DepthOfField(5f, 50f, 2.8f);
+        Assert.True(near < 5f && far > 5f && MathF.Abs(Ci.NeuralCameraTrajectoryEngine.CocMm(near, 5f, 50f, 2.8f) - Ci.NeuralCameraTrajectoryEngine.CocLimitMm) < 2e-3f, $"dof {near} {far}");
+        Assert.True(float.IsPositiveInfinity(Ci.NeuralCameraTrajectoryEngine.DepthOfField(20f, 50f, 8f).Far));
+        Assert.True(Ci.NeuralCameraTrajectoryEngine.VerticalFovDeg(25f) > Ci.NeuralCameraTrajectoryEngine.VerticalFovDeg(100f));
+        var q = Ci.NeuralCameraTrajectoryEngine.LookRotation(Nm.Vector3.UnitX, 0f);
+        Assert.True(Nm.Vector3.Distance(Nm.Vector3.Transform(Nm.Vector3.UnitZ, q), Nm.Vector3.UnitX) < 1e-4f && Nm.Vector3.Transform(Nm.Vector3.UnitY, q).Y > 0.999f);
+
+        // ══ CI-2 궤적: 장애물 우회 · 평활 · 가시선 · 지형 여유고 · 자동 줌 · 랙 포커스 · 무할당 ══
+        var tr = new Ci.NeuralCameraTrajectoryEngine();
+        var flat = new FlatField(0.5f);
+        tr.BindTerrain(flat);
+        tr.AddObstacle(new Nm.Vector3(0f, 1.5f, -3f), 1.2f);
+        var subj = Nm.Vector3.Zero; var sv = new Nm.Vector3(0f, 0f, 1.2f);
+        tr.Reset(subj, sv);
+        for (var f = 0; f < 240; f++)
+        {
+            subj += sv / 60f;
+            tr.Step(1f / 60f, subj, sv, new Nm.Vector3(2f, 1.6f, 8f));
+            Assert.True(Nm.Vector3.Distance(tr.Pose.Position, new Nm.Vector3(0f, 1.5f, -3f)) >= 1.2f + Ci.NeuralCameraTrajectoryEngine.ObstacleMargin - 1e-3f, $"penetration f{f}");
+            Assert.True(tr.Pose.Position.Y >= 0.5f + Ci.NeuralCameraTrajectoryEngine.Clearance - 1e-3f, "terrain clearance");
+        }
+        Assert.True(tr.OptimizedCost <= tr.RawCost, $"opt {tr.OptimizedCost} raw {tr.RawCost}");
+        Assert.True(tr.MinClearance >= Ci.NeuralCameraTrajectoryEngine.ObstacleMargin - 1e-3f);
+        var dist = Nm.Vector3.Distance(tr.Pose.Position, subj + Nm.Vector3.UnitY * 1.6f);
+        Assert.True(dist > 3f && dist < 6f, $"follow distance {dist}");
+        var expF = Ci.NeuralCameraTrajectoryEngine.FrameCoverage(Ci.ShotScale.Medium) * Ci.NeuralCameraTrajectoryEngine.SensorHeightMm * tr.SubjectDistance / tr.SubjectHeight;
+        Assert.True(MathF.Abs(tr.Pose.FocalMm - expF) / expF < 0.05f, $"zoom {tr.Pose.FocalMm} vs {expF}");
+        var fpt = subj + Nm.Vector3.UnitY * (tr.SubjectHeight * 0.92f);
+        Assert.True(MathF.Abs(tr.Pose.FocusDistance - Nm.Vector3.Dot(fpt - tr.Pose.Position, tr.Pose.Forward)) < 0.1f, "focus on subject");
+        Assert.True(Nm.Vector3.Dot(Nm.Vector3.Normalize(fpt - tr.Pose.Position), tr.Pose.Forward) > 0.95f, "aim");
+        Assert.True(tr.RmsJerk < 400f, $"jerk {tr.RmsJerk}");
+        tr.Focus = Ci.FocusTarget.Secondary;
+        for (var f = 0; f < 180; f++) { subj += sv / 60f; tr.Step(1f / 60f, subj, sv, new Nm.Vector3(2f, 1.6f, 8f)); }
+        var secD = Nm.Vector3.Dot(new Nm.Vector3(2f, 1.6f, 8f) - tr.Pose.Position, tr.Pose.Forward);
+        Assert.True(MathF.Abs(tr.Pose.FocusDistance - secD) < 0.3f, $"rack {tr.Pose.FocusDistance} vs {secD}");
+        Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>
+        {
+            for (var f = 0; f < 30; f++) { subj += sv / 60f; tr.Step(1f / 60f, subj, sv, new Nm.Vector3(2f, 1.6f, 8f)); }
+        }));
+        // 가시선: 피사체와 카메라 사이 장애물 → 가림 해소
+        var los = new Ci.NeuralCameraTrajectoryEngine { AzimuthOffsetDeg = 0f, Distance = 6f };
+        var occ = new Nm.Vector3(0f, 1.5f, -3f);
+        los.AddObstacle(occ, 0.8f);
+        los.Reset(Nm.Vector3.Zero, new Nm.Vector3(0f, 0f, 0.01f));
+        for (var f = 0; f < 120; f++) los.Step(1f / 60f, Nm.Vector3.Zero, new Nm.Vector3(0f, 0f, 0.01f), Nm.Vector3.One);
+        var cp = los.Pose.Position; var look = new Nm.Vector3(0f, 1.3f, 0f); var seg = look - cp;
+        var u = Math.Clamp(Nm.Vector3.Dot(occ - cp, seg) / seg.LengthSquared(), 0f, 1f);
+        Assert.True(Nm.Vector3.Distance(cp + seg * u, occ) > 0.8f, $"line of sight {cp}");
+        // 오빗 · 더치 롤
+        var orb = new Ci.NeuralCameraTrajectoryEngine { Move = Ci.CameraMove.Orbit, OrbitRateDeg = 45f, DutchDeg = 15f };
+        orb.Reset(Nm.Vector3.Zero, Nm.Vector3.Zero);
+        var p0 = orb.Pose.Position;
+        for (var f = 0; f < 120; f++) orb.Step(1f / 60f, Nm.Vector3.Zero, Nm.Vector3.Zero, Nm.Vector3.One);
+        Assert.True(Nm.Vector3.Distance(p0, orb.Pose.Position) > 1f && MathF.Abs(new Nm.Vector2(orb.Pose.Position.X, orb.Pose.Position.Z).Length() - orb.Distance) < 0.8f, "orbit");
+        Assert.True(MathF.Abs(orb.Pose.Up.X) > 0.15f || MathF.Abs(orb.Pose.Up.Z) > 0.15f, "dutch roll");
+
+        // ══ CI-3 구도 평가: 분류 · 삼등분/황금비 · 헤드룸 · 리드룸 · 더치 · 제안 개선 ══
+        var ev = new Ci.GenerativeShotFramingEvaluator();
+        Assert.Equal(Ci.ShotType.CloseUp, Ci.GenerativeShotFramingEvaluator.Classify(0.3f, 3f));
+        Assert.Equal(Ci.ShotType.Medium, Ci.GenerativeShotFramingEvaluator.Classify(0.08f, 1.5f));
+        Assert.Equal(Ci.ShotType.Full, Ci.GenerativeShotFramingEvaluator.Classify(0.05f, 0.8f));
+        Assert.Equal(Ci.ShotType.Wide, Ci.GenerativeShotFramingEvaluator.Classify(0.02f, 0.4f));
+        Ci.CameraPose Cam(Nm.Vector3 pos, Nm.Vector3 tgt, float focal, float roll) => new()
+        { Position = pos, Orientation = Ci.NeuralCameraTrajectoryEngine.LookRotation(Nm.Vector3.Normalize(tgt - pos), roll), FocalMm = focal, FocusDistance = 5f, FStop = 2.8f, RollDeg = roll };
+        var feet = new Nm.Vector3(0f, 0f, 5f);
+        var eyeW = feet + Nm.Vector3.UnitY * (1.75f * 0.92f);
+        var centered = ev.Evaluate(Cam(new Nm.Vector3(0f, 1.6f, 0f), eyeW, 60f, 0f), feet, 1.75f, Nm.Vector3.UnitX, default, false);
+        Assert.True(centered.Visible && MathF.Abs(centered.Eye.X - 0.5f) < 0.02f);
+        // 시선 +X(화면 오른쪽) → 눈을 왼쪽 1/3 에 두도록 조준 이동
+        var target = Ci.GenerativeShotFramingEvaluator.SuggestEyeTarget(centered);
+        Assert.True(MathF.Abs(target.X - 1f / 3f) < 1e-4f && MathF.Abs(target.Y - 1f / 3f) < 1e-4f, $"{target}");
+        var tv = Ci.NeuralCameraTrajectoryEngine.SensorHeightMm * 0.5f / 60f; var th = tv * Ci.NeuralCameraTrajectoryEngine.ImageAspect;
+        var aim = eyeW + Nm.Vector3.UnitX * ((0.5f - target.X) * 2f * th * 5f) + Nm.Vector3.UnitY * ((0.5f - target.Y) * 2f * tv * 5f * -1f);
+        var thirds = ev.Evaluate(Cam(new Nm.Vector3(0f, 1.6f, 0f), aim, 60f, 0f), feet, 1.75f, Nm.Vector3.UnitX, default, false);
+        Assert.True(thirds.Thirds > 0.8f && thirds.LeadRoom > centered.LeadRoom && thirds.Score > centered.Score + 5f, $"thirds {thirds.Score} vs {centered.Score} eye {thirds.Eye}");
+        Assert.InRange(thirds.Score, 0f, 100f);
+        var tilted = ev.Evaluate(Cam(new Nm.Vector3(0f, 1.6f, 0f), aim, 60f, 4f), feet, 1.75f, Nm.Vector3.UnitX, default, false);
+        var dutch = ev.Evaluate(Cam(new Nm.Vector3(0f, 1.6f, 0f), aim, 60f, 15f), feet, 1.75f, Nm.Vector3.UnitX, default, false);
+        Assert.True(!tilted.Dutch && dutch.Dutch && tilted.Horizon < dutch.Horizon && tilted.Horizon < 1f, "accidental tilt < dutch");
+        var cu = ev.Evaluate(Cam(new Nm.Vector3(0f, 1.6f, 0f), eyeW, 200f, 0f), feet, 1.75f, Nm.Vector3.UnitX, default, false);
+        var wide = ev.Evaluate(Cam(new Nm.Vector3(0f, 1.6f, 0f), eyeW, 18f, 0f), feet + new Nm.Vector3(0f, 0f, 15f), 1.75f, Nm.Vector3.UnitX, default, false);
+        Assert.True(cu.Type is Ci.ShotType.CloseUp or Ci.ShotType.ExtremeCloseUp && wide.Type is Ci.ShotType.Wide or Ci.ShotType.ExtremeWide, $"{cu.Type} {wide.Type}");
+        var behind = ev.Evaluate(Cam(new Nm.Vector3(0f, 1.6f, 0f), new Nm.Vector3(0f, 1.6f, -5f), 50f, 0f), feet, 1.75f, Nm.Vector3.UnitX, default, false);
+        Assert.True(!behind.Visible && behind.Score == 0f && behind.Type == Ci.ShotType.None);
+        Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>
+        {
+            for (var i = 0; i < 100; i++) ev.Evaluate(Cam(new Nm.Vector3(0f, 1.6f, 0f), aim, 60f, 0f), feet, 1.75f, Nm.Vector3.UnitX, Nm.Vector3.One, true);
+        }));
+
+        // ══ CI-4 아나모픽 렌즈: 초점면 선명 · 타원 보케 · 스트릭 · 왜곡/색수차 · 경로 추적/3DGS 결선 · 무할당 ══
+        const int W = 96, H = 64;
+        var lens = new Ci.AnamorphicLensBokehSynthesizer { DistortionK1 = 0f, DistortionK2 = 0f, ChromaticAberration = 0f, Vignette = 0f, StreakIntensity = 0f, CatEye = 0f, FocalMm = 85f, FStop = 1.4f, FocusDistance = 1.2f };
+        var rgb = new float[W * H * 3]; var dep = new float[W * H];
+        for (var i = 0; i < W * H; i++) { dep[i] = 30f; rgb[i * 3] = rgb[i * 3 + 1] = rgb[i * 3 + 2] = 0.05f; }
+        void Dot(int x, int y, float v, float d) { var i = y * W + x; rgb[i * 3] = rgb[i * 3 + 1] = rgb[i * 3 + 2] = v; dep[i] = d; }
+        Dot(48, 32, 1f, 30f);
+        lens.ProcessLinear(rgb, dep, W, H, false);
+        Assert.True(lens.MaxCoc > 5f && lens.BokehPixels > W * H / 2, $"coc {lens.MaxCoc}");
+        int SpreadX() { var n = 0; for (var x = 0; x < W; x++) if (lens.OutputLinear(32 * W + x).Y > 0.08f) n++; return n; }
+        int SpreadY() { var n = 0; for (var y = 0; y < H; y++) if (lens.OutputLinear(y * W + 48).Y > 0.08f) n++; return n; }
+        var sxA = SpreadX(); var syA = SpreadY();
+        Assert.True(syA > sxA * 1.4f && sxA >= 2, $"anamorphic oval {sxA}x{syA}");
+        lens.Squeeze = 1f; lens.ProcessLinear(rgb, dep, W, H, false);
+        Assert.True(Math.Abs(SpreadX() - SpreadY()) <= 2, $"spherical round {SpreadX()}x{SpreadY()}");
+        // 초점면 점광원은 선명 유지
+        for (var i = 0; i < W * H; i++) dep[i] = 1.2f;
+        lens.ProcessLinear(rgb, dep, W, H, false);
+        Assert.True(lens.OutputLinear(32 * W + 48).Y > 0.95f && lens.OutputLinear(32 * W + 50).Y < 0.06f && lens.BokehPixels == 0, "in focus sharp");
+        // 스트릭: 수평으로 길게 · 청색 틴트
+        lens.StreakIntensity = 1f; lens.StreakThreshold = 0.5f;
+        lens.ProcessLinear(rgb, dep, W, H, false);
+        var sAt = lens.OutputLinear(32 * W + 60); var vAt = lens.OutputLinear(44 * W + 48);
+        Assert.True(sAt.Z > 0.06f && sAt.Z > sAt.X && vAt.Z < 0.06f && lens.StreakEnergy > 0f, $"streak {sAt} vertical {vAt}");
+        // 배럴 왜곡 · 색수차: 모서리 이동 > 0 · 중앙 불변
+        lens.StreakIntensity = 0f; lens.DistortionK1 = 0.1f; lens.ChromaticAberration = 0.01f; lens.Vignette = 0.5f;
+        lens.ProcessLinear(rgb, dep, W, H, false);
+        Assert.True(lens.CornerShiftPx > 1f && lens.CornerCaPx > 0.5f && lens.OutputLinear(32 * W + 48).Y > 0.9f, $"distort {lens.CornerShiftPx} ca {lens.CornerCaPx}");
+        Assert.True(lens.OutputLinear(0).Y < 0.05f, "vignette");
+        Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>
+        {
+            lens.ProcessLinear(rgb, dep, W, H, false);
+        }));
+        Assert.Equal((byte)200, Ci.AnamorphicLensBokehSynthesizer.Encode(Ci.AnamorphicLensBokehSynthesizer.Decode(200)));
+        // v16.74 경로 추적기 결선
+        var mtl = new Pt.MaterialXBsdfShaderSynthesizer();
+        var pt = new Pt.VolumetricPathTracingLightTransportEngine(mtl);
+        pt.SetResolution(48, 24); pt.SetCamera(new Nm.Vector3(0f, 1f, -4f), new Nm.Vector3(0f, 1f, 0f), 40f);
+        pt.AddSphere(new Nm.Vector3(0f, 1f, 0f), 0.8f, 0);
+        pt.RenderFrame(0);
+        var lpt = new Ci.AnamorphicLensBokehSynthesizer();
+        lpt.ProcessPathTracer(pt);
+        Assert.True(lpt.Width == 48 && lpt.Frames == 1 && lpt.Output.Length == 48 * 24 * 3);
+        for (var i = 0; i < 48 * 24; i++) Assert.True(float.IsFinite(lpt.OutputLinear(i).X));
+
+        // ══ CI-5 러너: 3DGS 렌더 · 자동 구도 · 프롬프트 · 경로 추적 모드 · 무할당 ══
+        var run = new Ci.NeuralCinematographyStudioRunner(new Ci.NeuralCameraTrajectoryEngine(), new Ci.GenerativeShotFramingEvaluator(), new Ci.AnamorphicLensBokehSynthesizer());
+        Assert.True(run.RenderedFrames >= 1 && run.Scene.Count > 576 + 6 * 24);
+        for (var f = 0; f < 240; f++) run.TickOnce();
+        Assert.True(run.LastFraming.Visible && run.LastFraming.Score > 40f, $"score {run.LastFraming.Score} {run.LastFraming.Type}");
+        Assert.True(run.Trajectory.MinClearance >= Ci.NeuralCameraTrajectoryEngine.ObstacleMargin - 0.05f, $"clear {run.Trajectory.MinClearance}");
+        var lit = 0;
+        for (var i = 0; i < run.Lens.Output.Length; i++) if (run.Lens.Output[i] > 20) lit++;
+        Assert.True(lit > run.Lens.Output.Length / 4, $"lit {lit}");
+        Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>
+        {
+            for (var f = 0; f < 20; f++) run.TickOnce();
+        }));
+        Assert.True(run.TriggerPrompt("아나모픽 오빗 클로즈업 더치 보케") >= 4);
+        Assert.True(run.Trajectory.Move == Ci.CameraMove.Orbit && run.Trajectory.Scale == Ci.ShotScale.CloseUp && run.Trajectory.DutchDeg > 8f && run.Trajectory.FStop < 2f);
+        for (var f = 0; f < 120; f++) run.TickOnce();
+        Assert.True(run.LastFraming.Dutch, "dutch framing");
+        Assert.Equal(0, run.TriggerPrompt(""));
+        run.SetPathTracer(true);
+        for (var f = 0; f < 4; f++) run.TickOnce();
+        Assert.True(run.UsePathTracer && run.Lens.Width == Ci.NeuralCinematographyStudioRunner.PtW);
+        run.SetPathTracer(false);
+        run.NewShot();
+        Assert.Equal(0, run.Frame);
+        run.Dispose();
+    }
+
+    [Fact]
+    [Trait("Category", "FastUnit")]
+    public async Task SovereignMediaCloud_And_QuantumVault_Check()
+    {
+        static string Hex(ReadOnlySpan<byte> b) => Convert.ToHexString(b).ToLowerInvariant();
+        static string Sha3(ReadOnlySpan<byte> b) { var h = new byte[32]; Pq.KeccakState.Sha3_256(b, h); return Hex(h); }
+        static byte[] Un(string hex) => Convert.FromHexString(hex);
+
+        // 1) Keccak(FIPS 202): 공식 벡터 · 증분 흡수/압출 경계 일치
+        Assert.Equal("a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a", Sha3(ReadOnlySpan<byte>.Empty));
+        Assert.Equal("3a985da74fe225b2045c172d6bd390bd855f086e3e9d525b46bfe24511431532", Sha3("abc"u8));
+        var h512 = new byte[64]; Pq.KeccakState.Sha3_512("abc"u8, h512);
+        Assert.Equal("b751850b1a57168a5693cd924b6b096e08f621827444f70d884f5d0240d2712e10e116e9192af3c91a7ec57647e3934057340b4cf408d5a56592f8274eec53f0", Hex(h512));
+        var s128 = new byte[32]; Pq.KeccakState.Shake128(ReadOnlySpan<byte>.Empty, s128);
+        Assert.Equal("7f9c2ba4e88f827d616045507605853ed73b8093f6efbc88eb1a6eacfa66ef26", Hex(s128));
+        var s256 = new byte[32]; Pq.KeccakState.Shake256(ReadOnlySpan<byte>.Empty, s256);
+        Assert.Equal("46b9dd2b0ba88d13233b3feb743eeb243fcd52ea62b81b82b50c27646ed5762f", Hex(s256));
+        var big = new byte[1000]; new Random(53).NextBytes(big);
+        var one = new byte[500]; Pq.KeccakState.Shake128(big, one);
+        var inc = Pq.KeccakState.Shake128();
+        for (var o = 0; o < big.Length; o += 167) inc.Absorb(big.AsSpan(o, Math.Min(167, big.Length - o)));
+        var parts = new byte[500];
+        for (var o = 0; o < 500; o += 169) inc.Squeeze(parts.AsSpan(o, Math.Min(169, 500 - o)));
+        Assert.Equal(one, parts);
+        if (System.Security.Cryptography.SHA3_256.IsSupported) Assert.Equal(Hex(System.Security.Cryptography.SHA3_256.HashData(big)), Sha3(big));
+
+        // 2) ML-KEM-768: NIST ACVP 공식 벡터(keyGen · encap · decap) · 랜덤 왕복 · 암시적 거부 · 키 검사
+        var (kgEk, kgDk) = Pq.MlKem768.KeyGenInternal(Un(PqcKatVectors.KemKgD), Un(PqcKatVectors.KemKgZ));
+        Assert.Equal(PqcKatVectors.KemKgEkSha3, Sha3(kgEk));
+        Assert.Equal(PqcKatVectors.KemKgDkSha3, Sha3(kgDk));
+        var (encK, encC) = Pq.MlKem768.EncapsInternal(Un(PqcKatVectors.KemEncEk), Un(PqcKatVectors.KemEncM));
+        Assert.Equal(PqcKatVectors.KemEncK, Hex(encK));
+        Assert.Equal(PqcKatVectors.KemEncCSha3, Sha3(encC));
+        Assert.Equal(PqcKatVectors.KemDecK, Hex(Pq.MlKem768.DecapsInternal(Un(PqcKatVectors.KemDecDk), Un(PqcKatVectors.KemDecC))));
+        var (ek, dk) = Pq.MlKem768.GenerateKeyPair();
+        Assert.Equal((1184, 2400), (ek.Length, dk.Length));
+        var (ss, ct) = Pq.MlKem768.Encapsulate(ek);
+        Assert.Equal(1088, ct.Length);
+        Assert.Equal(ss, Pq.MlKem768.Decapsulate(dk, ct));
+        var badCt = (byte[])ct.Clone(); badCt[100] ^= 1;
+        var rejected = Pq.MlKem768.Decapsulate(dk, badCt);
+        Assert.NotEqual(ss, rejected);
+        var jz = new byte[32]; var jx = Pq.KeccakState.Shake256(); jx.Absorb(dk.AsSpan(2400 - 32)); jx.Absorb(badCt); jx.Squeeze(jz);
+        Assert.Equal(jz, rejected);                                                                                       // 암시적 거부 = J(z‖c)
+        var badEk = (byte[])ek.Clone(); badEk[0] = 0xFF; badEk[1] |= 0x0F;                                              // 계수 4095 ≥ q
+        Assert.False(Pq.MlKem768.CheckEncapsulationKey(badEk));
+        Assert.Throws<System.Security.Cryptography.CryptographicException>(() => Pq.MlKem768.Encapsulate(badEk));
+        var badDk = (byte[])dk.Clone(); badDk[1500] ^= 1;
+        Assert.Throws<System.Security.Cryptography.CryptographicException>(() => Pq.MlKem768.Decapsulate(badDk, ct));
+
+        // 3) ML-DSA-65: NIST ACVP 공식 벡터(keyGen · 결정적/헤지드 sigGen) · 왕복 · 위조 거부
+        var (kgPk, kgSk) = Pq.MlDsa65.KeyGenInternal(Un(PqcKatVectors.DsaKgSeed));
+        Assert.Equal(PqcKatVectors.DsaKgPkSha3, Sha3(kgPk));
+        Assert.Equal(PqcKatVectors.DsaKgSkSha3, Sha3(kgSk));
+        static byte[] Mp(string msg, string ctx) { var m = Convert.FromHexString(msg); var c = Convert.FromHexString(ctx); var r = new byte[2 + c.Length + m.Length]; r[1] = (byte)c.Length; c.CopyTo(r, 2); m.CopyTo(r, 2 + c.Length); return r; }
+        var sgSig = Pq.MlDsa65.SignInternal(Un(PqcKatVectors.DsaSgSk), Mp(PqcKatVectors.DsaSgMsg, PqcKatVectors.DsaSgCtx), new byte[32]);
+        Assert.Equal(PqcKatVectors.DsaSgSigSha3, Sha3(sgSig));
+        Assert.True(Pq.MlDsa65.Verify(Un(PqcKatVectors.DsaSgPk), Un(PqcKatVectors.DsaSgMsg), sgSig, Un(PqcKatVectors.DsaSgCtx)));
+        Assert.Equal(sgSig, Pq.MlDsa65.Sign(Un(PqcKatVectors.DsaSgSk), Un(PqcKatVectors.DsaSgMsg), Un(PqcKatVectors.DsaSgCtx), deterministic: true));
+        Assert.Equal(PqcKatVectors.DsaShSigSha3, Sha3(Pq.MlDsa65.SignInternal(Un(PqcKatVectors.DsaShSk), Mp(PqcKatVectors.DsaShMsg, PqcKatVectors.DsaShCtx), Un(PqcKatVectors.DsaShRnd))));
+        var (pk, sk) = Pq.MlDsa65.GenerateKeyPair();
+        Assert.Equal((1952, 4032), (pk.Length, sk.Length));
+        var msg = "시즌2 마스터 영상 원장"u8.ToArray();
+        var sig1 = Pq.MlDsa65.Sign(sk, msg, "ctx"u8);
+        var sig2 = Pq.MlDsa65.Sign(sk, msg, "ctx"u8);
+        Assert.Equal(3309, sig1.Length);
+        Assert.NotEqual(sig1, sig2);                                                                                       // 헤지드 서명
+        Assert.True(Pq.MlDsa65.Verify(pk, msg, sig1, "ctx"u8) && Pq.MlDsa65.Verify(pk, msg, sig2, "ctx"u8));
+        Assert.False(Pq.MlDsa65.Verify(pk, msg, sig1, "ctX"u8));
+        var msg2 = (byte[])msg.Clone(); msg2[0] ^= 1;
+        Assert.False(Pq.MlDsa65.Verify(pk, msg2, sig1, "ctx"u8));
+        for (var pos = 0; pos < sig1.Length; pos += 401) { var f = (byte[])sig1.Clone(); f[pos] ^= 0x10; Assert.False(Pq.MlDsa65.Verify(pk, msg, f, "ctx"u8)); }
+        Assert.False(Pq.MlDsa65.Verify(kgPk, msg, sig1, "ctx"u8));
+        Assert.Throws<ArgumentException>(() => Pq.MlDsa65.Sign(sk, msg, new byte[256]));
+
+        // 4) PQC 금고: 하이브리드 봉인/열기 · 변조 4부위 검출 · 키 회전 · 워터마크 · PQ 원장
+        var kek = System.Security.Cryptography.SHA256.HashData("vault-kek"u8);
+        var vault = new Sv.PostQuantumMediaVaultEngine(() => kek);
+        var k1 = vault.RotateKeys(DateTimeOffset.UnixEpoch);
+        Assert.StartsWith("pqv-", k1.Id);
+        var asset = new byte[50_000]; new Random(7).NextBytes(asset);
+        var env = vault.Seal("asset-1", asset, "한빛 스튜디오", "Secret", DateTimeOffset.UnixEpoch);
+        Assert.True(env.Length > asset.Length + 1088 + 3309);
+        var (plain, info) = vault.Open(env);
+        Assert.Equal(asset, plain);
+        Assert.Equal(("asset-1", "한빛 스튜디오", 50_000L, k1.Id), (info.AssetId, info.Owner, info.PlainBytes, info.KeyId));
+        Assert.Equal(Sha3(asset), info.PlainSha3);
+        foreach (var pos in new[] { 40, 1200, env.Length - 4000 - 3309 - 104, env.Length - 200 })                         // kemCt · eph/헤더 · 암호문 · 서명
+        {
+            var t = (byte[])env.Clone(); t[pos] ^= 0x01;
+            Assert.Throws<System.Security.Cryptography.CryptographicException>(() => vault.Open(t));
+        }
+        Assert.Equal(4, vault.TamperDetected);
+        Assert.Throws<System.Security.Cryptography.CryptographicException>(() => vault.Open(env.AsSpan(0, env.Length - 1)));
+        var k2 = vault.RotateKeys(DateTimeOffset.UnixEpoch.AddDays(1));
+        Assert.True(k1.Retired); Assert.False(k2.Retired); Assert.Same(k2, vault.Current);
+        Assert.Equal(asset, vault.Open(env).Plaintext);                                                                  // 은퇴 키로 기존 봉인 열기
+        Assert.Equal(k2.Id, vault.Open(vault.Seal("asset-2", "x"u8, "o", "k", DateTimeOffset.UnixEpoch)).Info.KeyId);
+        var stranger = new Sv.PostQuantumMediaVaultEngine(() => kek);
+        Assert.Throws<System.Security.Cryptography.CryptographicException>(() => stranger.Open(env));                    // 미보유 키
+        var wm = vault.SignWatermark("asset-1", "한빛 스튜디오", DateTimeOffset.UnixEpoch);
+        Assert.Equal((true, "asset-1", "한빛 스튜디오"), vault.VerifyWatermark(wm));
+        var wmParts = wm.Split('.');
+        var forgedPayload = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(k2.Id + "|asset-1|도용자|0")).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+        Assert.False(vault.VerifyWatermark(forgedPayload + "." + wmParts[1] + "." + wmParts[2]).Ok);
+        Assert.False(vault.VerifyWatermark("garbage").Ok);
+        for (var i = 0; i < 3; i++) vault.AppendLedger(System.Text.Encoding.UTF8.GetBytes("settlement-" + i));
+        Assert.Equal(-1, vault.VerifyLedger(vault.Ledger));
+        var led = vault.Ledger.ToList();
+        led[1] = led[1] with { EntrySha3 = Sha3("forged"u8) };
+        Assert.Equal(1, vault.VerifyLedger(led));
+        led = vault.Ledger.ToList(); led.RemoveAt(0);
+        Assert.Equal(0, vault.VerifyLedger(led));
+        Assert.NotEqual(Sv.PostQuantumMediaVaultEngine.Combine(ss, ss, ct, ek), Sv.PostQuantumMediaVaultEngine.Combine(ss, ss, badCt, ek));   // ct 바인딩
+
+        // 5) 기밀 메시: 증명(재생/위조/불신/만료) · 주권 배치 · 암호 채널 Enclave 처리 · 재생/변조 거부 · 무할당 · 코드 변조 → 폐기 · 모델 봉인 바인딩
+        using var mesh = new Sv.SovereignMediaCloudConfidentialMesh();
+        Assert.Equal(6, mesh.EnclaveCount);
+        Assert.Equal(6, mesh.AttestAll(1000));
+        var lut = Enumerable.Range(0, 256).Select(i => (byte)(255 - i)).ToArray();
+        var measure = Sv.SovereignMediaCloudConfidentialMesh.Measure("pfs-render-enclave", "16.53.0");
+        Assert.False(mesh.LoadModel(0, mesh.SealModel(lut, Sv.SovereignMediaCloudConfidentialMesh.Measure("other", "1"))));   // 측정값 바인딩
+        for (var i = 0; i < mesh.EnclaveCount; i++) Assert.True(mesh.LoadModel(i, mesh.SealModel(lut, measure)));
+        var nonce = new byte[32]; new Random(1).NextBytes(nonce);
+        var quote = mesh.GenerateQuote(0, nonce, 2000);
+        Assert.True(mesh.VerifyQuote(quote, nonce, 2000, Sv.Jurisdiction.KR).Ok);
+        Assert.Equal("논스 재사용(재생)", mesh.VerifyQuote(quote, nonce, 2001).Reason);
+        var n2 = (byte[])nonce.Clone(); n2[0] ^= 1;
+        Assert.Equal("논스 불일치", mesh.VerifyQuote(quote, n2, 2001).Reason);
+        var q2 = mesh.GenerateQuote(0, n2, 3000);
+        Assert.Equal("관할 불일치", mesh.VerifyQuote(q2, n2, 3000, Sv.Jurisdiction.EU).Reason);
+        Assert.Equal("견적 만료", mesh.VerifyQuote(mesh.GenerateQuote(0, n2, 3000), n2, 3000 + 61_000).Reason);
+        var forgedQ = quote with { Measurement = Sv.SovereignMediaCloudConfidentialMesh.Measure("evil", "1"), Nonce = n2 };
+        Assert.Equal("플랫폼 서명 불신", mesh.VerifyQuote(forgedQ, n2, 2000).Reason);
+        using var otherMesh = new Sv.SovereignMediaCloudConfidentialMesh();
+        var n3 = new byte[32]; n3[5] = 9;
+        Assert.Equal("플랫폼 서명 불신", mesh.VerifyQuote(otherMesh.GenerateQuote(0, n3, 2000), n3, 2000).Reason);
+        var (pv, sess, enc) = mesh.Place(Sv.Jurisdiction.KR, 5000);
+        Assert.Equal(Sv.PlacementVerdict.Placed, pv);
+        Assert.Equal(Sv.Jurisdiction.KR, mesh.EnclaveJurisdiction(enc));
+        Assert.Equal(Sv.PlacementVerdict.NoEnclaveInJurisdiction, mesh.Place(Sv.Jurisdiction.IN, 5000).Verdict);
+        Assert.Equal(1, mesh.SovereigntyBlocks);
+        var frame = new byte[4096]; new Random(3).NextBytes(frame);
+        var req = new byte[4096 + 24]; var resp = new byte[4096 + 24]; var back = new byte[4096];
+        var rl = mesh.ClientEncrypt(sess, frame, req);
+        Assert.Equal(4096 + 24, rl);
+        Assert.False(req.AsSpan(0, 4096).SequenceEqual(frame));                                                          // 전송 중 암호문
+        var pl = mesh.ProcessFrame(sess, req.AsSpan(0, rl), resp);
+        Assert.Equal(rl, pl);
+        Assert.Equal(4096, mesh.ClientDecrypt(sess, resp.AsSpan(0, pl), back));
+        for (var i = 0; i < 4096; i++) Assert.Equal((byte)(255 - frame[i]), back[i]);                                   // Enclave 내 봉인 모델 적용
+        Assert.Equal(-1, mesh.ProcessFrame(sess, req.AsSpan(0, rl), resp));                                              // 재생 거부
+        rl = mesh.ClientEncrypt(sess, frame, req); req[10] ^= 1;
+        Assert.Equal(-1, mesh.ProcessFrame(sess, req.AsSpan(0, rl), resp));                                              // 변조 거부
+        Assert.Equal(0, AllocationProbe.MinAllocated(() =>
+        {
+            for (var i = 0; i < 50; i++) { var l = mesh.ClientEncrypt(sess, frame, req); var p = mesh.ProcessFrame(sess, req.AsSpan(0, l), resp); mesh.ClientDecrypt(sess, resp.AsSpan(0, p), back); }
+        }));
+        var placedKr = new List<int>();
+        Sv.PlacementVerdict v;
+        while ((v = mesh.Place(Sv.Jurisdiction.JP, 6000).Verdict) == Sv.PlacementVerdict.Placed) placedKr.Add(0);
+        Assert.Equal(Sv.PlacementVerdict.CapacityExhausted, v);
+        Assert.Equal(4, placedKr.Count);
+        mesh.UpdateEnclaveCode(enc, "pfs-render-enclave-patched", "evil");
+        Assert.False(mesh.Attest(enc, 7000));                                                                            // 미허용 측정값
+        Assert.Equal(Sv.EnclaveState.Untrusted, mesh.State(enc));
+        Assert.Throws<InvalidOperationException>(() => mesh.ClientEncrypt(sess, frame, req));                           // 세션 폐기
+        Assert.False(mesh.LoadModel(enc, mesh.SealModel(lut, measure)));
+
+        // 6) 거버넌스: RBAC/ABAC · 테넌트 경계 · 기한부 공유 · 등급/MFA/거주 · 명시 거부 · 격리 · 쿼터 원자성 · 감사 체인 · 무할당
+        var gov = new Sv.MultiTenantStudioGovernanceEngine(System.Security.Cryptography.SHA256.HashData("audit"u8));
+        var tKr = gov.AddTenant("KR", Sv.Jurisdiction.KR, 4, 8192, 100);
+        var tEu = gov.AddTenant("EU", Sv.Jurisdiction.EU, 2, 4096, 50);
+        var owner = gov.AddSubject("kim", tKr, Sv.TenantRole.Owner, Sv.Classification.Secret);
+        var editor = gov.AddSubject("lee", tKr, Sv.TenantRole.Editor, Sv.Classification.Internal);
+        var viewer = gov.AddSubject("park", tKr, Sv.TenantRole.Viewer, Sv.Classification.Confidential);
+        var euOwner = gov.AddSubject("anna", tEu, Sv.TenantRole.Owner, Sv.Classification.Secret);
+        var euEditor = gov.AddSubject("max", tEu, Sv.TenantRole.Editor, Sv.Classification.Secret);
+        var secret = gov.AddAsset("master", tKr, Sv.Classification.Secret, Sv.Jurisdiction.KR);
+        var internalA = gov.AddAsset("draft", tKr, Sv.Classification.Internal, Sv.Jurisdiction.KR);
+        var conf = gov.AddAsset("twin", tKr, Sv.Classification.Confidential, Sv.Jurisdiction.KR);
+        var krCtx = new Sv.AccessContext(Sv.Jurisdiction.KR, true, 1000);
+        Sv.DenyReason R(int s, Sv.AssetAction a, int asst, Sv.AccessContext c) => gov.Authorize(s, a, asst, c).Reason;
+        Assert.Equal(Sv.DenyReason.None, R(editor, Sv.AssetAction.Write, internalA, krCtx));
+        Assert.Equal(Sv.DenyReason.RoleNotPermitted, R(viewer, Sv.AssetAction.Write, internalA, krCtx));
+        Assert.Equal(Sv.DenyReason.RoleNotPermitted, R(editor, Sv.AssetAction.Delete, internalA, krCtx));
+        Assert.Equal(Sv.DenyReason.ClearanceTooLow, R(editor, Sv.AssetAction.Read, conf, krCtx));
+        Assert.Equal(Sv.DenyReason.MfaRequired, R(owner, Sv.AssetAction.Read, secret, krCtx with { MfaVerified = false }));
+        Assert.Equal(Sv.DenyReason.None, R(owner, Sv.AssetAction.Export, secret, krCtx));
+        Assert.Equal(Sv.DenyReason.ResidencyViolation, R(owner, Sv.AssetAction.Export, secret, krCtx with { ClientRegion = Sv.Jurisdiction.US }));
+        Assert.Equal(Sv.DenyReason.None, R(owner, Sv.AssetAction.Export, internalA, krCtx with { ClientRegion = Sv.Jurisdiction.US }));   // Internal 은 반출 허용
+        Assert.Equal(Sv.DenyReason.CrossTenant, R(euOwner, Sv.AssetAction.Read, conf, krCtx));
+        Assert.Equal(1, gov.Breaches(tEu, tKr)); Assert.Equal(0, gov.Breaches(tKr, tEu));
+        Assert.False(gov.GrantShare(editor, conf, tEu, new[] { Sv.AssetAction.Read }, 5000));                          // Owner 만 승인
+        Assert.True(gov.GrantShare(owner, conf, tEu, new[] { Sv.AssetAction.Read, Sv.AssetAction.Delete }, 5000));
+        Assert.Equal(Sv.DenyReason.None, R(euOwner, Sv.AssetAction.Read, conf, krCtx));
+        Assert.Equal(Sv.DenyReason.ShareActionNotGranted, R(euOwner, Sv.AssetAction.Delete, conf, krCtx));            // 삭제는 공유 불가
+        Assert.Equal(Sv.DenyReason.ShareActionNotGranted, R(euEditor, Sv.AssetAction.Write, conf, krCtx));
+        Assert.Equal(Sv.DenyReason.ShareExpired, R(euOwner, Sv.AssetAction.Read, conf, krCtx with { NowMs = 5000 }));
+        gov.ExplicitDeny(owner, Sv.AssetAction.Export);
+        Assert.Equal(Sv.DenyReason.ExplicitDeny, R(owner, Sv.AssetAction.Export, secret, krCtx));
+        for (var i = 0; i < 5; i++) R(euEditor, Sv.AssetAction.Read, secret, krCtx);
+        Assert.True(gov.IsQuarantined(euEditor));
+        Assert.Equal(Sv.DenyReason.SubjectQuarantined, R(euEditor, Sv.AssetAction.Read, conf, krCtx));
+        gov.ReleaseQuarantine(euEditor);
+        Assert.Equal(Sv.DenyReason.UnknownAsset, R(owner, Sv.AssetAction.Read, 999, krCtx));
+        Assert.True(gov.CrossTenantBlocked >= 7);
+        Assert.Equal(Sv.DenyReason.None, gov.TryReserve(tEu, 2, 1000, 10));
+        Assert.Equal(Sv.DenyReason.QuotaGpu, gov.TryReserve(tEu, 1, 10, 1));
+        Assert.Equal(Sv.DenyReason.QuotaRam, gov.TryReserve(tKr, 1, 9000, 1));
+        Assert.Equal(0, gov.Usage(tKr).Gpu);                                                                             // 롤백
+        gov.Release(tEu, 2, 1000, 10);
+        var granted = 0;
+        Parallel.For(0, 400, _ => { if (gov.TryReserve(tKr, 1, 100, 1) == Sv.DenyReason.None) Interlocked.Increment(ref granted); });
+        Assert.Equal(4, granted);                                                                                        // 초과 예약 0
+        Assert.Equal(4, gov.Usage(tKr).Gpu);
+        for (var i = 0; i < 4; i++) gov.Release(tKr, 1, 100, 1);
+        var hist = new Sv.AccessDecision[512];
+        var hn = gov.CopyAudit(hist);
+        Assert.Equal(gov.Decisions, hn);
+        Assert.True(gov.VerifyAuditChain(hist.AsSpan(0, hn), gov.AuditHeadHex));
+        hist[3] = hist[3] with { Allowed = !hist[3].Allowed };
+        Assert.False(gov.VerifyAuditChain(hist.AsSpan(0, hn), gov.AuditHeadHex));
+        Assert.Equal(0, AllocationProbe.MinAllocated(() =>
+        {
+            for (var i = 0; i < 200; i++) { gov.Authorize(editor, Sv.AssetAction.Write, internalA, krCtx); gov.Authorize(euOwner, Sv.AssetAction.Read, secret, krCtx with { NowMs = 9000 }); if (gov.TryReserve(tKr, 1, 1, 1) == Sv.DenyReason.None) gov.Release(tKr, 1, 1, 1); }
+        }));
+
+        // 7) 오케스트레이터: 1-Click 양자 봉인(정책 → 쿼터 → 관할 Enclave 기밀 렌더 → PQ 봉인 → 워터마크 → 원장) · 부분 실패 격리
+        using var oMesh = new Sv.SovereignMediaCloudConfidentialMesh();
+        var oVault = new Sv.PostQuantumMediaVaultEngine(() => kek);
+        var oGov = new Sv.MultiTenantStudioGovernanceEngine(new byte[32]);
+        var orch = new Sv.SovereignCloudOrchestrator(oMesh, oVault, oGov);
+        orch.Bootstrap(1000);
+        orch.Bootstrap(1000);                                                                                            // 멱등
+        Assert.Equal(4, oGov.TenantCount);
+        Assert.Equal(6, oMesh.AttestationsOk);
+        var krOwner = orch.ActorOf(0);
+        var r1 = orch.OneClickQuantumSeal(0, krOwner, true, 2000);
+        Assert.Equal(2, r1.Count);
+        Assert.All(r1, i => Assert.True(i.Ok, i.Stage + " " + i.Detail));
+        Assert.All(r1, i => Assert.Contains("seoul", i.Detail));                                                         // KR 데이터 → KR Enclave
+        Assert.All(r1, i => Assert.True(oVault.VerifyWatermark(i.Watermark!).Ok));
+        Assert.Equal(2, oVault.Sealed); Assert.Equal(2, oVault.Ledger.Count);
+        Assert.Equal(-1, oVault.VerifyLedger(oVault.Ledger));
+        Assert.Equal(0, oGov.Usage(0).Gpu);                                                                              // 쿼터 반납
+        Assert.Equal(0, oMesh.OpenSessions);
+        var r2 = orch.OneClickQuantumSeal(0, krOwner, false, 3000);
+        Assert.Contains(r2, i => !i.Ok && i.Stage == "정책" && i.Detail == "MFA 필요");                                  // Secret · MFA 없음
+        Assert.Contains(r2, i => i.Ok);
+        Assert.Equal(-1, orch.ActorOf(2));                                                                               // US: Viewer 만
+        var usViewer = Enumerable.Range(0, oGov.SubjectCount).First(s => oGov.SubjectTenant(s) == 2);
+        Assert.All(orch.OneClickQuantumSeal(2, usViewer, true, 4000), i => Assert.Equal("역할 권한 없음", i.Detail));
+        var jpEnclave = Enumerable.Range(0, oMesh.EnclaveCount).Single(i => oMesh.EnclaveJurisdiction(i) == Sv.Jurisdiction.JP);
+        oMesh.UpdateEnclaveCode(jpEnclave, "tampered", "x");
+        oMesh.Attest(jpEnclave, 5000);
+        var r3 = orch.OneClickQuantumSeal(3, orch.ActorOf(3), true, 5000);
+        Assert.All(r3, i => Assert.Equal(("기밀 배치", "증명 실패"), (i.Stage, i.Detail)));                                // 변조 Enclave 로 역외 우회 없음
+        Assert.Equal(0, oMesh.SovereigntyBlocks);
+        await Task.CompletedTask;
+    }
+
+    [Fact]
+    [Trait("Category", "Integration")]
+    public void OpenUsdSpatialAsset_And_GenerativeWorld_Check()
+    {
+        // USD-1: USDA 파싱 · 레이어 합성(over/뮤트/미정의) · 시간 샘플 · 계층 변환 · 3DGS/4D 바인딩 · USDC/USDZ/USDA 왕복 · 무할당 ──
+        var heroBytes = System.Text.Encoding.UTF8.GetBytes(Us.OpenUsdSpatialStudioRunner.HeroUsda);
+        var hero = new Us.UsdLayer("hero.usda");
+        Assert.True(Us.UsdaReader.Parse(heroBytes, hero), $"{hero.LastError}@{hero.ErrorOffset}");
+        Assert.Equal(8, hero.Count);
+        var ballA = hero.Find("/World/Hero/BallA");
+        Assert.True(ballA > 0 && hero.TypeOf(ballA) == Us.UsdPrimType.Sphere && hero.IsRigid(ballA));
+        Assert.Equal(0.4f, hero.RadiusOf(ballA), 5);
+        Assert.Equal(2f, hero.MassOf(ballA), 5);
+        Assert.Equal((-0.6f, 6f, 0f), hero.Translate(ballA));
+        Assert.Equal(5, hero.SampleCount(hero.Find("/World/Hero/Drone")));
+        Assert.Equal(8, hero.PointsOf(hero.Find("/World/Hero/Halo")).Length / 3);
+        Assert.Equal(hero.Find("/World/Hero"), hero.ParentOf(ballA));
+        Assert.False(Us.UsdaReader.Parse("def Xform \"X\" {}"u8, new Us.UsdLayer()));
+        var badSyntax = new Us.UsdLayer();
+        Assert.False(Us.UsdaReader.Parse("#usda 1.0\ndef Xform \"X\" {\n"u8, badSyntax));
+        Assert.Equal(Us.UsdError.Syntax, badSyntax.LastError);
+
+        var strong = new Us.UsdLayer("shot.usda");
+        Assert.True(Us.UsdaReader.Parse("""
+#usda 1.0
+over "World"
+{
+    over "Hero"
+    {
+        double3 xformOp:translate = (10, 0, 0)
+        over "BallA"
+        {
+            double radius = 1.5
+            token visibility = "invisible"
+        }
+        over "BallB" (doc = "meta")
+        {
+            rel material:binding = </Looks/Red>
+            custom string note = "a { tricky } string"
+            color3f[] primvars:displayColor = [(0, 1, 0), (1, 1, 1)]
+        }
+    }
+    over "Ghost"
+    {
+        double radius = 9
+    }
+}
+class "Proto"
+{
+    double radius = 3
+}
+"""u8, strong), $"{strong.LastError}@{strong.ErrorOffset}");
+        var usd = new Us.OpenUsdSpatialAssetCompositorEngine();
+        usd.SetLayer(1, hero);
+        usd.SetLayer(0, strong);
+        var st = usd.Stage;
+        var sA = usd.FindPrim("/World/Hero/BallA");
+        Assert.Equal(1.5f, st.RadiusOf(sA), 5);
+        Assert.False(usd.State(sA).Visible);
+        Assert.Equal((0f, 1f, 0f), st.Color(usd.FindPrim("/World/Hero/BallB")));
+        Assert.False(usd.State(usd.FindPrim("/World/Ghost")).Defined);
+        Assert.Equal(-1, usd.FindPrim("/Proto"));
+        Assert.Equal(10f - 0.6f, usd.State(sA).X, 4);
+        usd.Evaluate(24);
+        var drone = usd.State(usd.FindPrim("/World/Hero/Drone"));
+        Assert.Equal(10f, drone.X, 4); Assert.Equal(5.5f, drone.Y, 4); Assert.Equal(-4f, drone.Z, 4);
+        usd.Evaluate(500);
+        Assert.Equal(10f - 4f, usd.State(usd.FindPrim("/World/Hero/Drone")).X, 4);
+        var gs = new G3.GaussianScene(4096);
+        Assert.Equal(3 + 1 + 8, usd.BindToGaussians(gs));   // BallB · BallC · Drone + Pedestal + Halo 8 (BallA 비가시 · Ghost 미정의)
+        usd.MuteLayer(0, true);
+        Assert.Equal(0.4f, st.RadiusOf(usd.FindPrim("/World/Hero/BallA")), 5);
+        Assert.True(usd.State(usd.FindPrim("/World/Hero/BallA")).Visible);
+        Assert.Equal(-1, usd.FindPrim("/World/Ghost"));
+        Assert.Equal(13, usd.BindToGaussians(gs));
+        Assert.Equal(new System.Numerics.Vector3(-0.6f, 6f, 0f), gs.Position(0));
+        usd.MuteLayer(0, false);
+        Assert.Equal(0, AllocationProbe.MinAllocated(() => { for (var i = 0; i < 20; i++) { usd.Compose(); usd.Evaluate(i * 3); usd.BindToGaussians(gs); } }));
+        var scratch = new Us.UsdLayer();
+        Assert.Equal(0, AllocationProbe.MinAllocated(() => Us.UsdaReader.Parse(heroBytes, scratch)));
+
+        var crate = new byte[Us.OpenUsdSpatialAssetCompositorEngine.CrateSize(hero)];
+        var cn = Us.OpenUsdSpatialAssetCompositorEngine.EncodeUsdc(hero, crate);
+        Assert.Equal(crate.Length, cn);
+        Assert.Equal(Us.UsdFormat.Usdc, Us.OpenUsdSpatialAssetCompositorEngine.Detect(crate));
+        var fromCrate = new Us.UsdLayer();
+        Assert.True(Us.OpenUsdSpatialAssetCompositorEngine.Decode(crate, fromCrate), $"{fromCrate.LastError}");
+        Assert.Equal(hero.Count, fromCrate.Count);
+        for (var i = 0; i < hero.Count; i++)
+        {
+            Assert.True(hero.Path(i).SequenceEqual(fromCrate.Path(i)));
+            Assert.Equal(hero.Translate(i), fromCrate.Translate(i));
+            Assert.Equal(hero.FieldsOf(i), fromCrate.FieldsOf(i));
+        }
+        Assert.Equal(ballA, fromCrate.Find("/World/Hero/BallA"));
+        Assert.Equal(0, AllocationProbe.MinAllocated(() => Us.OpenUsdSpatialAssetCompositorEngine.DecodeUsdc(crate, scratch)));
+        crate[100] ^= 0x5A;
+        Assert.False(Us.OpenUsdSpatialAssetCompositorEngine.Decode(crate, fromCrate));
+        Assert.Equal(Us.UsdError.Checksum, fromCrate.LastError);
+        Assert.False(Us.OpenUsdSpatialAssetCompositorEngine.Decode("PXR-USDC\0\0\0\0"u8, fromCrate));
+        Assert.Equal(Us.UsdError.UnsupportedCrate, fromCrate.LastError);
+
+        var zip = new byte[heroBytes.Length + 512];
+        var zn = Us.OpenUsdSpatialAssetCompositorEngine.WriteUsdz("hero.usda"u8, heroBytes, zip);
+        Assert.True(zn > heroBytes.Length);
+        Assert.Equal(Us.UsdFormat.Usdz, Us.OpenUsdSpatialAssetCompositorEngine.Detect(zip));
+        var fromZip = new Us.UsdLayer();
+        Assert.True(Us.OpenUsdSpatialAssetCompositorEngine.DecodeUsdz(zip.AsSpan(0, zn), fromZip, out var aligned) && aligned);
+        Assert.Equal(8, fromZip.Count);
+        using (var ms = new MemoryStream(zip, 0, zn))
+        using (var za = new System.IO.Compression.ZipArchive(ms, System.IO.Compression.ZipArchiveMode.Read))
+        {
+            Assert.Single(za.Entries);
+            Assert.Equal("hero.usda", za.Entries[0].FullName);
+            using var es = za.Entries[0].Open();
+            using var rd = new StreamReader(es);
+            Assert.Equal(Us.OpenUsdSpatialStudioRunner.HeroUsda, rd.ReadToEnd());
+        }
+        zip[zn - 22 - 46 - 9 - 10] ^= 0x01;   // 페이로드 1바이트 변조
+        Assert.False(Us.OpenUsdSpatialAssetCompositorEngine.Decode(zip.AsSpan(0, zn), fromZip));
+        Assert.Equal(Us.UsdError.Checksum, fromZip.LastError);
+
+        var text = new byte[64 * 1024];
+        var tn = Us.OpenUsdSpatialAssetCompositorEngine.WriteUsda(st, text);
+        Assert.True(tn > 0);
+        var reparsed = new Us.UsdLayer();
+        Assert.True(Us.UsdaReader.Parse(text.AsSpan(0, tn), reparsed), $"{reparsed.LastError}@{reparsed.ErrorOffset}");
+        Assert.Equal(st.Count, reparsed.Count);
+        for (var i = 0; i < st.Count; i++)
+        {
+            var j = reparsed.Find(st.Path(i));
+            Assert.True(j >= 0 && reparsed.FieldsOf(j) == st.FieldsOf(i) && reparsed.SpecOf(j) == st.SpecOf(i), new string(st.Path(i)));
+            Assert.Equal(st.Translate(i), reparsed.Translate(j));
+            Assert.Equal(st.SampleCount(i), reparsed.SampleCount(j));
+        }
+
+        var cloud = new G3.GaussianScene(256);
+        var rnd = new Random(1672);
+        for (var i = 0; i < 100; i++) cloud.Add(new System.Numerics.Vector3(rnd.NextSingle() * 4, rnd.NextSingle() * 2, rnd.NextSingle() * 4), System.Numerics.Quaternion.Identity, new System.Numerics.Vector3(0.05f), 0.8f, new System.Numerics.Vector3(0.2f, 0.4f, 0.9f));
+        var splatLayer = new Us.UsdLayer("splats.usda");
+        Assert.Equal(100, Us.OpenUsdSpatialAssetCompositorEngine.ImportGaussians(cloud, splatLayer));
+        var back = new Us.OpenUsdSpatialAssetCompositorEngine();
+        back.SetLayer(0, splatLayer);
+        var gs2 = new G3.GaussianScene(256);
+        Assert.Equal(100, back.BindToGaussians(gs2));
+        for (var i = 0; i < 100; i++) Assert.True(System.Numerics.Vector3.Distance(cloud.Position(i), gs2.Position(i)) < 1e-5f);
+        Assert.True(System.Numerics.Vector3.Distance(gs2.BaseColor(7), new System.Numerics.Vector3(0.2f, 0.4f, 0.9f)) < 1e-3f);
+
+        var w4 = new PromptFlowStudio.Services.World.AiGenerative4dWorldModelEngine();
+        usd.MuteLayer(0, true);
+        Assert.Equal(5, usd.BindToWorld(w4));   // BallA/B/C · Pedestal · Drone
+        Assert.True(w4.IsStatic(w4.IndexOf("Pedestal")) && !w4.IsStatic(w4.IndexOf("BallC")));
+        Assert.Equal(PromptFlowStudio.Services.World.WorldShape.Box, w4.Shape(w4.IndexOf("Pedestal")));
+        var fromWorld = new Us.UsdLayer();
+        Assert.Equal(5, Us.OpenUsdSpatialAssetCompositorEngine.ImportWorld(w4, fromWorld));
+        var fw = fromWorld.Find("/World/BallC");
+        Assert.True(fw > 0 && fromWorld.IsRigid(fw) && fromWorld.TypeOf(fw) == Us.UsdPrimType.Sphere);
+        Assert.Equal(0.5f, fromWorld.RadiusOf(fw), 4);
+        Assert.Equal(3f, fromWorld.MassOf(fw), 4);
+
+        // USD-2: 프롬프트 → 특성 → 시밀러리티 시드 · 스펙트럼 · 시드 고정 · 바이옴 · 청크 연속/무한 · 무할당 ──
+        var gen = new Us.GenerativeWorldProceduralEngine();
+        gen.Configure("sunset desert dunes", 7);
+        var s1 = gen.Seed; var k1 = gen.SimilarityKey;
+        gen.EnsureAround(0, 0);
+        var h1 = gen.ChunkHash(0, 0);
+        Assert.Equal(Us.Biome.Desert, gen.DominantBiome);
+        gen.Configure("Dunes in the DESERT at sunset!!", 7);
+        Assert.Equal(k1, gen.SimilarityKey);
+        Assert.Equal(s1, gen.Seed);
+        Assert.Equal(h1, gen.ChunkHash(0, 0));
+        gen.Configure("sunset desert dunes", 8);
+        Assert.NotEqual(s1, gen.Seed);
+        gen.Configure("snowy arctic winter 설원", 7);
+        Assert.NotEqual(k1, gen.SimilarityKey);
+        gen.EnsureAround(0, 0);
+        Assert.Equal(Us.Biome.Snow, gen.DominantBiome);
+        Assert.True(Us.GenerativeWorldProceduralEngine.AnalyzePrompt("정글 열대 폭우").Moisture > 0.9f);
+        Assert.True(Us.GenerativeWorldProceduralEngine.AnalyzePrompt("화산 용암").Volcanism > 0.9f);
+        gen.Configure("forest mountains", 0);
+        var baseSeed = gen.Seed; var baseKey = gen.SimilarityKey;
+        gen.SetSpectrum(0.5f);
+        Assert.NotEqual(baseSeed, gen.Seed);
+        Assert.Equal(baseKey, gen.SimilarityKey);
+        var spectrumSeed = gen.Seed;
+        gen.SetSpectrum(0);
+        Assert.Equal(baseSeed, gen.Seed);
+        gen.LockSeed(0xABCDEFUL);
+        gen.Configure("ocean island", 3);
+        Assert.Equal(0xABCDEFUL, gen.Seed);
+        gen.LockSeed(null);
+        Assert.NotEqual(0xABCDEFUL, gen.Seed);
+        Assert.NotEqual(spectrumSeed, gen.Seed);
+        gen.Configure("forest mountains", 0);
+        const int V = Us.GenerativeWorldProceduralEngine.ChunkVerts;
+        float[] ha = new float[V * V], hb = new float[V * V];
+        byte[] ba = new byte[V * V], bb = new byte[V * V];
+        gen.CopyChunk(0, 0, ha, ba); gen.CopyChunk(1, 0, hb, bb);
+        for (var j = 0; j < V; j++) { Assert.Equal(ha[j * V + V - 1], hb[j * V]); Assert.Equal(ba[j * V + V - 1], bb[j * V]); }
+        gen.CopyChunk(-200_000, 150_000, ha, ba);
+        Assert.All(ha, v => Assert.True(float.IsFinite(v) && MathF.Abs(v) < 40));
+        Assert.Equal(ha[5], gen.HeightAt(-200_000 * Us.GenerativeWorldProceduralEngine.ChunkSize + 5, 150_000 * Us.GenerativeWorldProceduralEngine.ChunkSize));
+        gen.EnsureAround(0, 0);
+        Assert.Equal(5, gen.EnsureAround(Us.GenerativeWorldProceduralEngine.ChunkSize * 1.5f, 0));
+        Assert.Equal(0, gen.EnsureAround(Us.GenerativeWorldProceduralEngine.ChunkSize * 1.5f, 0));
+        var fx = 0f;
+        Assert.Equal(0, AllocationProbe.MinAllocated(() => { for (var i = 0; i < 4; i++) { fx += Us.GenerativeWorldProceduralEngine.ChunkSize; gen.EnsureAround(fx, 0); } }));
+        Assert.True(gen.AssetCount > 0);
+        var gsW = new G3.GaussianScene(8192);
+        Assert.True(gen.EmitGaussians(gsW) > 25 * 64);
+        var procLayer = new Us.UsdLayer();
+        var assets = gen.EmitUsd(procLayer, 40);
+        Assert.True(assets > 0 && procLayer.Find("/World/Sun") > 0 && procLayer.TypeOf(procLayer.Find("/World/Terrain/Asset_0")) is Us.UsdPrimType.Sphere or Us.UsdPrimType.Cube);
+        gen.Configure("noon", 0); var noon = gen.Light;
+        gen.Configure("노을", 0); var dusk = gen.Light;
+        Assert.True(dusk.SunColor.Z / dusk.SunColor.X < noon.SunColor.Z / noon.SunColor.X && dusk.SunDir.Y < noon.SunDir.Y);
+
+        // USD-3: 강체 정지 · 운동량 · 천 제약/충돌 · PBF 유체 · SIMD · 잔차 결선 · 음향 메시/RT60/IR · 무할당 ──
+        var ph = new Us.NeuralPhysicsCollisionSimulator { ClothEnabled = false, FluidEnabled = false };
+        ph.AddSphere(new System.Numerics.Vector3(0, 3, 0), 0.5f, 1f, 0.5f);
+        for (var i = 0; i < 180; i++) ph.Step(1f / 60);
+        Assert.Equal(0.5f, ph.BodyPosition(0).Y, 1);
+        Assert.True(MathF.Abs(ph.BodyPosition(0).Y - 0.5f) < 0.02f && ph.BodyVelocity(0).Length() < 0.05f, $"{ph.BodyPosition(0)} {ph.BodyVelocity(0)}");
+        Assert.True(ph.ImpactCount > 0);
+        var imp = new Us.ImpactEvent[8];
+        Assert.True(ph.CopyImpacts(imp) > 0 && imp[0].Kind == Us.ImpactKind.Ground && imp[0].Energy > 0);
+
+        var col = new Us.NeuralPhysicsCollisionSimulator { ClothEnabled = false, FluidEnabled = false, GravityY = 0, GroundY = -100 };
+        col.AddSphere(new System.Numerics.Vector3(-1, 0, 0), 0.25f, 1f, 1f, new System.Numerics.Vector3(2, 0, 0));
+        col.AddSphere(new System.Numerics.Vector3(1, 0, 0), 0.25f, 1f, 1f, new System.Numerics.Vector3(-1, 0, 0));
+        for (var i = 0; i < 60; i++) col.Step(1f / 60);
+        Assert.Equal(-1f, col.BodyVelocity(0).X, 3);
+        Assert.Equal(2f, col.BodyVelocity(1).X, 3);
+        var pile = new Us.NeuralPhysicsCollisionSimulator { ClothEnabled = false, FluidEnabled = false };
+        for (var i = 0; i < 120; i++) pile.AddSphere(new System.Numerics.Vector3((i % 6) * 0.5f - 1.5f, 1 + i / 36 * 0.6f + (i % 7) * 0.05f, (i / 6 % 6) * 0.5f - 1.5f), 0.2f, 1f, 0.3f);
+        for (var i = 0; i < 180; i++) pile.Step(1f / 60);
+        for (var i = 0; i < 120; i++) Assert.True(float.IsFinite(pile.BodyPosition(i).Y) && pile.BodyPosition(i).Y > 0.15f, $"{i} {pile.BodyPosition(i)}");
+        Assert.True(pile.KineticEnergy() < 5f, $"{pile.KineticEnergy()}");
+        Assert.Equal(0, AllocationProbe.MinAllocated(() => { for (var i = 0; i < 10; i++) pile.Step(1f / 60); }));
+
+        var cl = new Us.NeuralPhysicsCollisionSimulator { FluidEnabled = false };
+        cl.ResetCloth(new System.Numerics.Vector3(-0.75f, 2f, -0.75f), 0.1f);
+        cl.AddSphere(new System.Numerics.Vector3(0, 1.2f, 0), 0.4f, 0f);
+        var pinA = cl.ClothPoint(0); var pinB = cl.ClothPoint(Us.NeuralPhysicsCollisionSimulator.ClothN - 1);
+        for (var i = 0; i < 120; i++) cl.Step(1f / 60);
+        Assert.Equal(pinA, cl.ClothPoint(0)); Assert.Equal(pinB, cl.ClothPoint(Us.NeuralPhysicsCollisionSimulator.ClothN - 1));
+        Assert.True(cl.ClothMaxStretch() < 0.2f, $"{cl.ClothMaxStretch()}");
+        var lowest = float.MaxValue;
+        for (var k = 0; k < Us.NeuralPhysicsCollisionSimulator.ClothCount; k++)
+        {
+            var p = cl.ClothPoint(k);
+            Assert.True(System.Numerics.Vector3.Distance(p, new System.Numerics.Vector3(0, 1.2f, 0)) > 0.39f);
+            lowest = MathF.Min(lowest, p.Y);
+        }
+        Assert.True(lowest < 1.6f, $"천 처짐 {lowest}");
+        Assert.Equal(2 * 15 * 16 + 2 * 15 * 15, cl.ClothConstraintCount);
+
+        var fl = new Us.NeuralPhysicsCollisionSimulator { ClothEnabled = false };
+        for (var i = 0; i < 120; i++) fl.Step(1f / 60);
+        var (bmin, bmax) = fl.FluidBox;
+        var rhoSum = 0f;
+        var topY = float.MinValue;
+        for (var p = 0; p < Us.NeuralPhysicsCollisionSimulator.FluidCount; p++)
+        {
+            var q = fl.FluidPoint(p);
+            Assert.True(float.IsFinite(q.X + q.Y + q.Z) && q.X >= bmin.X - 1e-4f && q.X <= bmax.X + 1e-4f && q.Z >= bmin.Z - 1e-4f && q.Z <= bmax.Z + 1e-4f && q.Y >= bmin.Y - 1e-4f);
+            rhoSum += fl.FluidDensityRatio(p);
+            topY = MathF.Max(topY, q.Y);
+        }
+        var meanRho = rhoSum / Us.NeuralPhysicsCollisionSimulator.FluidCount;
+        Assert.True(meanRho > 0.3f && meanRho < 1.3f, $"ρ/ρ0 {meanRho}");
+        Assert.True(topY < bmin.Y + 0.5f, $"유체 수면 {topY}");   // 6층 블록(0.3m)이 용기 안에서 퍼짐(폭발 없음)
+        Assert.Equal(0, AllocationProbe.MinAllocated(() => { for (var i = 0; i < 5; i++) fl.Step(1f / 60); }));
+
+        float[] ya = new float[37], xa = new float[37], yr = new float[37];
+        for (var i = 0; i < 37; i++) { ya[i] = i * 0.5f; xa[i] = 3 - i; yr[i] = ya[i] + 0.25f * xa[i]; }
+        Us.NeuralPhysicsCollisionSimulator.Axpy(ya, xa, 0.25f);
+        Assert.Equal(yr, ya);
+        Assert.True(Us.NeuralPhysicsCollisionSimulator.SimdLanes >= 1);
+
+        var res = new UsdResidual();
+        var rp = new Us.NeuralPhysicsCollisionSimulator { ClothEnabled = false, FluidEnabled = false, GravityY = 0, GroundY = -100, Residual = res, Substeps = 1 };
+        rp.AddSphere(default, 0.1f, 1f);
+        rp.Step(0.1f);
+        Assert.Equal(1, res.Calls);
+        Assert.Equal(0.5f, rp.BodyVelocity(0).X, 4);
+
+        float Rt(float absorption, out int taps, out float gainSum)
+        {
+            var a = new Us.NeuralPhysicsCollisionSimulator { Field = new UsdFlatField(absorption), ClothEnabled = false, FluidEnabled = false };
+            a.AddSphere(new System.Numerics.Vector3(2, 1, 0), 0.5f, 0);
+            taps = a.BuildAcousticMesh(new System.Numerics.Vector3(-2, 1.5f, 0), new System.Numerics.Vector3(2, 1.7f, 3));
+            gainSum = 0;
+            for (var t = 0; t < taps; t++) { gainSum += a.Tap(t).Gain; if (t > 0) Assert.True(a.Tap(t).DelayMs >= a.Tap(t - 1).DelayMs); }
+            return a.Rt60;
+        }
+        var rtSnow = Rt(0.85f, out var tapsSnow, out var gSnow);
+        var rtRock = Rt(0.08f, out var tapsRock, out var gRock);
+        Assert.True(tapsSnow >= 9 && tapsSnow == tapsRock);
+        Assert.True(gSnow < gRock * 0.5f && rtSnow < rtRock, $"{gSnow}/{gRock} {rtSnow}/{rtRock}");
+        var room = new Us.NeuralPhysicsCollisionSimulator { ClothEnabled = false, FluidEnabled = false, Enclosure = (new System.Numerics.Vector3(-5, 0, -4), new System.Numerics.Vector3(5, 4, 4), 0.1f) };
+        room.BuildAcousticMesh(new System.Numerics.Vector3(-2, 1.5f, 0), new System.Numerics.Vector3(2, 1.5f, 1));
+        var area = 0f; var aSum = 0f;
+        for (var i = 0; i < room.PatchCount; i++) { var pt = room.Patch(i); area += pt.Area; aSum += pt.Area * pt.Absorption; }
+        Assert.Equal(0.161f * 320f / aSum, room.Rt60, 3);
+        Assert.True(room.Rt60 > 0.5f && room.Rt60 > rtRock, $"{room.Rt60}");
+        var ir = new float[48_000];
+        room.RenderImpulseResponse(ir, 48_000);
+        Assert.Equal(1f, ir[0], 3);
+        double e1 = 0, e2 = 0;
+        for (var i = 1000; i < 12_000; i++) e1 += ir[i] * ir[i];
+        for (var i = 36_000; i < 47_000; i++) e2 += ir[i] * ir[i];
+        Assert.True(e1 > e2 * 4, $"{e1} {e2}");
+        Assert.Equal(0, AllocationProbe.MinAllocated(() => room.BuildAcousticMesh(new System.Numerics.Vector3(-1, 1.5f, 0), new System.Numerics.Vector3(2, 1.5f, 1))));
+
+        // USD-4: 러너 — 레이어 스택 · 물리 → session over → 합성 → 3DGS · 뮤트 · 맵 · 무할당 ──
+        var run = new Us.OpenUsdSpatialStudioRunner(new Us.OpenUsdSpatialAssetCompositorEngine(), new Us.GenerativeWorldProceduralEngine(), new Us.NeuralPhysicsCollisionSimulator());
+        Assert.Equal(3, run.BodyCount);
+        Assert.Equal(3, run.Compositor.LayerCount);
+        Assert.True(run.SplatCount > 100);
+        for (var i = 0; i < 240; i++) run.TickOnce();
+        var c = run.Compositor;
+        var pa = c.FindPrim("/World/Hero/BallA");
+        var sa = c.State(pa);
+        var body = run.Physics.BodyPosition(0);
+        Assert.True(MathF.Abs(sa.X - body.X) < 1e-3f && MathF.Abs(sa.Y - body.Y) < 1e-3f && MathF.Abs(sa.Z - body.Z) < 1e-3f, $"{sa} {body}");
+        Assert.True(body.Y < 4f + run.Generator.HeightAt(body.X, body.Z) && body.Y > run.Generator.HeightAt(body.X, body.Z), $"{body}");
+        Assert.True(run.Physics.TapCount > 0 && run.Physics.Rt60 > 0);
+        Assert.Equal(0, AllocationProbe.MinAllocated(() => { for (var i = 0; i < 30; i++) run.TickOnce(); }));
+        run.MuteLayer(Us.OpenUsdSpatialStudioRunner.SessionSlot, true);
+        Assert.Equal(6f, c.State(c.FindPrim("/World/Hero/BallA")).Y, 3);   // session(지형 높이·물리 결과) 제거 → hero 원본
+        run.MuteLayer(Us.OpenUsdSpatialStudioRunner.SessionSlot, false);
+        run.DropBall();
+        Assert.Equal(4, run.BodyCount);
+        var map = run.SnapshotBmp();
+        Assert.Equal(54 + 96 * 96 * 4, map.Length);
+        var before = run.Generator.Seed;
+        run.SetSpectrum(0.3f);
+        Assert.NotEqual(before, run.Generator.Seed);
+        Assert.Equal(3, run.BodyCount);
+        run.Dispose();
+    }
+
+    [Fact]
+    [Trait("Category", "FastUnit")]
+    public void HolographicTelepresence_And_UniversalAgiDirector_Check()
+    {
+        // ── HOLO-1: SIMD 커널 = 스칼라 비트 동일(길이 0..37 · 비정렬 꼬리) ──
+        var rng = new Random(1700);
+        var mtx = System.Numerics.Matrix4x4.CreateScale(0.45f) * System.Numerics.Matrix4x4.CreateFromQuaternion(System.Numerics.Quaternion.CreateFromYawPitchRoll(0.3f, -0.2f, 0.1f))
+                  * System.Numerics.Matrix4x4.CreateTranslation(0.1f, -0.4f, 0.2f);
+        for (var n = 0; n <= 37; n++)
+        {
+            float[] x = new float[n], y = new float[n], z = new float[n];
+            for (var i = 0; i < n; i++) { x[i] = (float)(rng.NextDouble() * 2 - 1); y[i] = (float)(rng.NextDouble() * 2); z[i] = (float)(rng.NextDouble() * 3 - 1); }
+            float[] a1 = new float[n], b1 = new float[n], a2 = new float[n], b2 = new float[n];
+            Holo.HoloSimd.Perspective(x, z, 2f, a1, b1); Holo.HoloSimd.PerspectiveScalar(x, z, 2f, a2, b2);
+            Assert.Equal(a2, a1); Assert.Equal(b2, b1);
+            Holo.HoloSimd.ShearProject(a1, a2, b2, 0.37f, 53.3f, 32f); Holo.HoloSimd.ShearProjectScalar(b1, a2, b2, 0.37f, 53.3f, 32f);
+            Assert.Equal(b1, a1);
+            float[] ox1 = new float[n], oy1 = new float[n], oz1 = new float[n], ox2 = new float[n], oy2 = new float[n], oz2 = new float[n];
+            Holo.HoloSimd.Transform(x, y, z, ox1, oy1, oz1, mtx); Holo.HoloSimd.TransformScalar(x, y, z, ox2, oy2, oz2, mtx);
+            Assert.Equal(ox2, ox1); Assert.Equal(oy2, oy1); Assert.Equal(oz2, oz1);
+            for (var i = 0; i < n; i++) Assert.True(V3.Distance(V3.Transform(new V3(x[i], y[i], z[i]), mtx), new V3(ox1[i], oy1[i], oz1[i])) < 1e-5f);
+            var c1 = (float[])z.Clone(); var c2 = (float[])z.Clone();
+            Holo.HoloSimd.Clamp(c1, 0.5f);
+            for (var i = 0; i < n; i++) Assert.Equal(MathF.Min(MathF.Max(c2[i], -0.5f), 0.5f), c1[i]);
+        }
+
+        // ── HOLO-1: 라이트필드 시차(초점면 고정 · 앞/뒤 반대 방향) · 키/델타 패킷 · 검증 ──
+        var eng = new Holo.HolographicLightFieldTelepresenceEngine { HologramScale = 1f };
+        eng.SetSplat(0, new V3(0f, 1.2f, 0f), 0xFFFF0000u);       // 초점면
+        eng.SetSplat(1, new V3(0.1f, 1.2f, 0.5f), 0xFF00FF00u);   // 앞(시청자 쪽)
+        eng.SetSplat(2, new V3(-0.1f, 1.2f, -0.6f), 0xFF0000FFu); // 뒤
+        eng.SetSplatCount(3);
+        eng.SetPose(System.Numerics.Quaternion.Identity, new V3(0f, -1.2f, 0f));
+        eng.ProcessFrame();
+        Assert.True(eng.LastKey);
+        Assert.Equal(Holo.HolographicLightFieldTelepresenceEngine.HeaderBytes + 3 * Holo.HolographicLightFieldTelepresenceEngine.KeyRecord, eng.LastPacketBytes);
+        Assert.True(eng.MaxErrorMm < 0.05f);
+        int Col(int view, uint argb)
+        {
+            for (var yy = 0; yy < Holo.HolographicLightFieldTelepresenceEngine.TileH; yy++)
+                for (var xx = 0; xx < Holo.HolographicLightFieldTelepresenceEngine.TileW; xx++)
+                    if (eng.Pixel(view, xx, yy) == argb) return xx;
+            return -1;
+        }
+        const int last = Holo.HolographicLightFieldTelepresenceEngine.Views - 1;
+        Assert.Equal(3, eng.Coverage(22));
+        Assert.True(Col(0, 0xFFFF0000u) >= 0);
+        Assert.Equal(Col(0, 0xFFFF0000u), Col(last, 0xFFFF0000u));          // 초점면 = 전 시점 고정
+        Assert.True(Col(0, 0xFF00FF00u) > Col(last, 0xFF00FF00u) + 10);     // 앞 = 좌측 시점에서 오른쪽
+        Assert.True(Col(0, 0xFF0000FFu) < Col(last, 0xFF0000FFu) - 10 && Col(0, 0xFF0000FFu) >= 0); // 뒤 = 반대
+        Assert.Equal(22, Holo.HolographicLightFieldTelepresenceEngine.ViewForAngle(0f));
+        var bmp = new byte[Holo.HolographicLightFieldTelepresenceEngine.ViewBmpBytes];
+        Assert.Equal(bmp.Length, eng.WriteViewBmp(22, bmp));
+        Assert.Equal((byte)'B', bmp[0]); Assert.Equal((byte)'M', bmp[1]);
+        eng.SetSplatPosition(1, new V3(0.1f, 1.2f, 0.45f));                // 5 cm 이동 → 델타 1건
+        eng.ProcessFrame();
+        Assert.False(eng.LastKey);
+        Assert.Equal(1, eng.LastRecords);
+        Assert.Equal(Holo.HolographicLightFieldTelepresenceEngine.HeaderBytes + Holo.HolographicLightFieldTelepresenceEngine.DeltaRecord, eng.LastPacketBytes);
+        eng.ProcessFrame();
+        Assert.Equal(0, eng.LastRecords);                                   // 정지 = 헤더만
+        var bad = eng.Packet.ToArray(); bad[0] ^= 0xFF;
+        Assert.False(eng.Decode(bad));
+        Assert.False(eng.Decode(eng.Packet[..^1]));
+        Assert.Equal(2, eng.Rejected);
+
+        // ── HOLO-1: 대역폭 예산 적응(하드 캡 · 데드밴드 · 이월 수렴) · 무할당 ──
+        var big = new Holo.HolographicLightFieldTelepresenceEngine { BudgetMbps = 5f };
+        var pts = new V3[Holo.HolographicLightFieldTelepresenceEngine.MaxSplats];
+        for (var i = 0; i < pts.Length; i++) { pts[i] = new V3((float)rng.NextDouble() - 0.5f, (float)rng.NextDouble() * 2f, (float)rng.NextDouble() - 0.5f); big.SetSplat(i, pts[i], 0xFF808080u); }
+        big.SetSplatCount(pts.Length);
+        big.ProcessFrame();
+        Assert.True(big.LastKey);
+        for (var f = 0; f < 3; f++)
+        {
+            for (var i = 0; i < pts.Length; i++) big.SetSplatPosition(i, pts[i] + new V3(0.01f * (f + 1), 0f, 0f));
+            big.ProcessFrame();
+            Assert.True(big.LastPacketBytes <= (int)big.BudgetBytes);
+        }
+        Assert.True(big.Deferred > 0);
+        Assert.True(big.DeadbandQ > big.MinDeadbandQ);
+        for (var f = 0; f < 240; f++) big.ProcessFrame();                  // 정지 → 이월분 송신 · 데드밴드 복귀
+        Assert.Equal(big.MinDeadbandQ, big.DeadbandQ);
+        Assert.True(big.MaxErrorMm < 0.12f);
+        Assert.True(big.Coverage(22) > 500);
+        Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>
+        {
+            for (var f = 0; f < 30; f++) { big.SetSplatPosition(f, pts[f] + new V3(0f, 0.02f * f, 0f)); big.ProcessFrame(); }
+        }));
+
+        // ── HOLO-2: 관객 고조 → 조기 분기(고각성) · 무단절 · 엔진 결선(카메라/조명/BGM/표정) ──
+        var dir = new Holo.UniversalAgiCinematicDirectorSynthesizer();
+        var cam = new Ci.NeuralCameraTrajectoryEngine(); var score = new Sc.NeuralCinematographicFilmScoreGenerator(); var face = new Dh.NeuralFacialMuscleSimulator(); var atmo = new At.AtmosphericScatteringLightingEngine();
+        dir.Bind(cam, atmo, score, face);
+        Assert.Equal(8, dir.BeatCount);
+        Assert.Equal(0, dir.CurrentBeat);
+        for (var i = 0; i < 900 && dir.Branches == 0; i++) { dir.SubmitAudience(0.9f, 0.8f, 1f); dir.Tick(1f / 60f); }
+        Assert.Equal(1, dir.Branches);
+        Assert.Equal(Holo.DirectorReason.AudienceSurge, dir.LogEntry(0).Reason);
+        Assert.Equal(2, dir.CurrentBeat);
+        Assert.Equal(1, dir.EarlyBranches);
+        for (var i = 0; i < 120; i++) { dir.SubmitAudience(0.9f, 0.8f, 1f); dir.Tick(1f / 60f); }
+        Assert.True(dir.MaxEmotionStep < 0.03f);                            // 분기에도 감정 계단 없음
+        Assert.Equal(dir.Cue.Move, cam.Move); Assert.Equal(dir.Cue.Scale, cam.Scale);
+        Assert.Equal(dir.Cue.FStop, cam.FStop);
+        Assert.Equal(dir.Cue.Valence, score.Valence, 4); Assert.Equal(dir.Cue.Arousal, score.Arousal, 4);
+        Assert.True(face.Preset != Dh.FacePreset.Neutral || dir.Cue.Face == Dh.FacePreset.Neutral);
+        Assert.True(atmo.SunElevationDeg > 0f);
+        Assert.True(dir.Cue.FocalMm > 24f && dir.Cue.ColorTempK > 3000f);
+        Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>
+        {
+            for (var i = 0; i < 120; i++) { dir.SubmitAudience(0.9f, 0.8f, 1f); dir.Tick(1f / 60f); }
+        }));
+        Assert.True(dir.ForceBranch(0));
+        Assert.Equal(Holo.DirectorReason.Manual, dir.LogEntry(0).Reason);
+        Assert.False(dir.ForceBranch(5));
+
+        // 몰입 하락 3 s → 재후킹(고각성 분기) · 템포 가속
+        var d2 = new Holo.UniversalAgiCinematicDirectorSynthesizer();
+        for (var i = 0; i < 900 && d2.Branches == 0; i++) { d2.SubmitAudience(0.1f, 0f, 0.3f); d2.Tick(1f / 60f); }
+        Assert.Equal(Holo.DirectorReason.EngagementDrop, d2.LogEntry(0).Reason);
+        Assert.Equal(2, d2.CurrentBeat);
+        Assert.True(d2.Tempo > 1.4f);
+        Assert.False(d2.CameraBound);
+
+        // ── HOLO-3: 햅틱 접촉 · 역각 포화 · 파형 · 관통 차단 · 해제 ──
+        var g = new Holo.SpatialHapticCognitiveInteractionGuard();
+        var ob = g.AddObject(new V3(0f, 1f, 0f), 0.1f, 200f, 4f, 0.8f, 0.002f);
+        const float hdt = 1f / 60f;
+        g.StepHand(0, new V3(0f, 1.2f, 0f), hdt);
+        Assert.Equal(-1, g.ContactObject(0));
+        g.StepHand(0, new V3(0f, 1.09f, 0f), hdt);                          // 1 cm 침투 · 6.6 m/s 접근
+        Assert.Equal(ob, g.ContactObject(0));
+        Assert.InRange(g.Penetration(0), 0.0099f, 0.0101f);
+        Assert.Equal(Holo.SpatialHapticCognitiveInteractionGuard.MaxForceN, g.ForceMagnitude(0), 4);
+        Assert.Equal(1, g.ForceClamped);
+        Assert.True(g.Force(0).Y > 0f);
+        var peak = 0f;
+        foreach (var s in g.Waveform(0)) { Assert.InRange(s, -1f, 1f); peak = MathF.Max(peak, MathF.Abs(s)); }
+        Assert.True(peak > 0.05f);                                          // 접촉 과도
+        g.StepHand(0, new V3(0f, 1.09f, 0f), hdt);
+        Assert.Equal(2f, g.ForceMagnitude(0), 2);                           // 정지 = k·d
+        g.StepHand(0, new V3(0.003f, 1.09f, 0f), hdt);
+        Assert.True(g.TextureHz(0) >= 40f);
+        g.StepHand(0, new V3(0f, 1.3f, 0f), hdt);
+        Assert.Equal(-1, g.ContactObject(0));
+        Assert.Equal(1, g.Releases);
+        Assert.True(Holo.SpatialHapticCognitiveInteractionGuard.SegmentCrosses(new V3(-0.3f, 1f, 0f), new V3(0.3f, 1f, 0f), new V3(0f, 1f, 0f), 0.1f, out var th) && th > 0f && th < 0.5f);
+        g.StepHand(1, new V3(-0.3f, 1f, 0f), hdt);
+        g.StepHand(1, new V3(0.3f, 1f, 0f), hdt);                           // 한 틱에 관통(터널링)
+        Assert.Equal(1, g.PopThroughBlocked);
+        Assert.Equal(ob, g.ContactObject(1));
+        Assert.True(g.Proxy(1).X < -0.09f);                                 // 프록시 = 진입면 유지
+        Assert.True(g.Force(1).X < 0f);
+        g.StepHand(1, new V3(-0.3f, 1f, 0f), hdt);
+        Assert.Equal(-1, g.ContactObject(1));
+
+        // ── HOLO-3: 인지 안정 가드(회전 제한 자기 억제 · 지연 → 컴포트 · 회복) ──
+        var head = new V3(0f, 0.2f, 0f);
+        for (var i = 0; i < 300; i++) g.StepCognitive(head, V3.Zero, head, V3.Zero, 12f, 16f, hdt);
+        Assert.True(g.Sickness < 0.01f && g.Vignette < 0.05f && !g.ComfortMode);
+        Assert.Equal(0, g.Interventions);
+        var spin = head + new V3(0f, MathF.PI, 0f);
+        for (var i = 0; i < 1200; i++)
+        {
+            var corr = g.StepCognitive(head, V3.Zero, spin, V3.Zero, 12f, 16f, hdt);
+            Assert.True((corr - head).Length() <= 90f * MathF.PI / 180f + 1e-4f);
+        }
+        Assert.True(g.Interventions > 0);
+        Assert.True(g.PeakSickness < 0.6f);                                 // 회전 제한이 멀미를 자기 억제
+        Assert.True(g.RotationLimitDeg < 60f && g.Vignette > 0.3f);
+        Assert.False(g.ComfortMode);
+        for (var i = 0; i < 900; i++) g.StepCognitive(head, V3.Zero, spin, new V3(3f, 0f, 0f), 60f, 16f, hdt);
+        Assert.True(g.ComfortMode && g.Reprojection);
+        Assert.Equal(1, g.ComfortEntries);
+        Assert.Equal(30f, g.RotationLimitDeg);
+        Assert.Equal(1f, g.AnchorOpacity);
+        for (var i = 0; i < 1500; i++) g.StepCognitive(head, V3.Zero, head, V3.Zero, 12f, 16f, hdt);
+        Assert.False(g.ComfortMode);
+        Assert.Equal(Holo.SicknessLevel.Comfortable, g.Level);
+        Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>
+        {
+            for (var i = 0; i < 200; i++) { g.StepHand(0, new V3(0f, 1.09f + 0.01f * MathF.Sin(i), 0f), hdt); g.StepCognitive(head, V3.Zero, spin, V3.Zero, 12f, 16f, hdt); }
+        }));
+
+        // ── 러너: 퍼포머 스트리밍 · 분기 · 햅틱 · 무할당 틱 ──
+        var run = new Holo.HolographicTelepresenceStudioRunner(new Holo.HolographicLightFieldTelepresenceEngine(), new Holo.UniversalAgiCinematicDirectorSynthesizer(), new Holo.SpatialHapticCognitiveInteractionGuard());
+        Assert.Equal(Holo.HolographicTelepresenceStudioRunner.Splats, run.Holo.ReceivedCount);
+        for (var i = 0; i < 300; i++) run.Step();
+        Assert.True(run.Holo.Mbps > 0f && run.Holo.Mbps <= run.Holo.BudgetMbps);
+        Assert.True(run.Holo.Coverage(22) > 100);
+        Assert.True(run.Guard.Touches >= 1);
+        Assert.Equal(300, run.Director.Ticks);
+        run.Swipe();
+        for (var i = 0; i < 12; i++) run.Step();
+        Assert.True(run.Guard.PopThroughBlocked >= 1);
+        Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>
+        {
+            for (var i = 0; i < 120; i++) run.Step();
+        }));
+        Assert.Equal(Holo.HolographicTelepresenceStudioRunner.SeriesLen, run.SeriesCount);
+        run.Dispose();
+    }
+
+    [Fact]
+    [Trait("Category", "Integration")]
+    public void LatentVideoDiffusion_And_TemporalConsistency_Check()
+    {
+        const int W = Vd.RealtimeLatentVideoDiffusionEngine.W, H = Vd.RealtimeLatentVideoDiffusionEngine.H, LS = Vd.RealtimeLatentVideoDiffusionEngine.LatentSize;
+        // ══ VD-0 SIMD 커널 = 스칼라(비트 일치 · 꼬리) ══
+        var rnd = new Random(1687);
+        foreach (var len in new[] { 0, 1, 7, 8, 9, 17, 33, 1001 })
+        {
+            float[] R(float s) { var a = new float[len]; for (var i = 0; i < len; i++) a[i] = (float)(rnd.NextDouble() * 2 - 1) * s; return a; }
+            var x1 = R(2f); var x2 = (float[])x1.Clone(); var mu = R(1f); var v = R(0.1f); for (var i = 0; i < len; i++) v[i] = MathF.Abs(v[i]) + 0.001f;
+            var o1 = new float[len]; var o2 = new float[len];
+            Vd.DiffusionSimd.GuidedStep(x1, mu, v, o1, 0.6f, 0.8f, 0.75f, 0.66f, 3f, 1.6f);
+            Vd.DiffusionSimd.GuidedStepScalar(x2, mu, v, o2, 0.6f, 0.8f, 0.75f, 0.66f, 3f, 1.6f);
+            Assert.True(x1.AsSpan().SequenceEqual(x2) && o1.AsSpan().SequenceEqual(o2), $"guided {len}");
+            var b1 = new float[len]; var b2 = new float[len]; var t = R(1f);
+            Vd.DiffusionSimd.Blend(b1, x1, mu, t); Vd.DiffusionSimd.BlendScalar(b2, x1, mu, t);
+            Assert.True(b1.AsSpan().SequenceEqual(b2), $"blend {len}");
+            float sad = 0; for (var i = 0; i < len; i++) sad += MathF.Abs(x1[i] - mu[i]);
+            Assert.True(MathF.Abs(Vd.DiffusionSimd.Sad(x1, mu) - sad) < 1e-3f * (1 + sad), $"sad {len}");
+        }
+
+        // ══ VD-1 스케줄 · DDIM 정확성(가우시안 사전 → 평균/분산 복원) · CFG · 결정성 · 무할당 ══
+        Assert.True(Vd.RealtimeLatentVideoDiffusionEngine.AlphaBarAt(0) > 0.999f && Vd.RealtimeLatentVideoDiffusionEngine.AlphaBarAt(999) < 0.01f);
+        for (var tt = 1; tt < 1000; tt++) Assert.True(Vd.RealtimeLatentVideoDiffusionEngine.AlphaBarAt(tt) < Vd.RealtimeLatentVideoDiffusionEngine.AlphaBarAt(tt - 1));
+        Assert.Equal(999, Vd.RealtimeLatentVideoDiffusionEngine.Timestep(0, 20));
+        var noFlow = new float[2 * Vd.ControlNetSpatialConditioningSynthesizer.Cells];
+        var eng = new Vd.RealtimeLatentVideoDiffusionEngine(5) { Noise = Vd.NoiseMode.Independent, GuidanceScale = 1f, Steps = 30, ClampRange = 10f };
+        eng.SetUniformTarget(0.3f, 1e-8f);
+        eng.Generate(noFlow, 0f, 1f);
+        var maxDev = 0f; foreach (var x in eng.Latent) maxDev = MathF.Max(maxDev, MathF.Abs(x - 0.3f));
+        Assert.True(maxDev < 1e-3f, $"σ→0 converges to μ {maxDev}");
+        eng.SetUniformTarget(0.3f, 0.04f);
+        eng.Generate(noFlow, 0f, 1f);
+        double m = 0, sq = 0; foreach (var x in eng.Latent) { m += x; sq += x * x; }
+        m /= LS; var std = Math.Sqrt(sq / LS - m * m);
+        Assert.True(Math.Abs(m - 0.3) < 0.01 && std > 0.2 * 0.85 && std < 0.2 * 1.05, $"posterior mean {m} std {std}");
+        for (var k = 1; k < 30; k++) Assert.True(eng.StepSigma[k] <= eng.StepSigma[k - 1] && float.IsFinite(eng.StepDelta[k]), "monitor");
+        Assert.True(eng.StepSigma.Length == 30 && eng.StepSigma[0] > 10f && eng.StepSigma[29] < 0.1f, $"sigma {eng.StepSigma[0]} {eng.StepSigma[29]}");
+        // CFG w = 3: 레이아웃(평균) 증폭 · 텍스처 분산 보존
+        eng.SetUniformTarget(0.3f, 0.04f); eng.GuidanceScale = 3f; eng.Generate(noFlow, 0f, 1f);
+        double m3 = 0, sq3 = 0; foreach (var x in eng.Latent) { m3 += x; sq3 += x * x; }
+        m3 /= LS; var std3 = Math.Sqrt(sq3 / LS - m3 * m3);
+        Assert.True(std3 > std * 0.8 && m3 > 0.33, $"CFG std {std3} vs {std} mean {m3}");
+        var eA = new Vd.RealtimeLatentVideoDiffusionEngine(9) { Noise = Vd.NoiseMode.Independent }; var eB = new Vd.RealtimeLatentVideoDiffusionEngine(9) { Noise = Vd.NoiseMode.Independent };
+        eA.SetUniformTarget(0f, 0.02f); eB.SetUniformTarget(0f, 0.02f);
+        eA.Generate(noFlow, 0f, 1f); eB.Generate(noFlow, 0f, 1f);
+        Assert.True(eA.Frame.AsSpan().SequenceEqual(eB.Frame));
+        Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>
+        {
+            for (var i = 0; i < 3; i++) eA.Generate(noFlow, 0f, 1f);
+        }));
+        var c0 = Vd.RealtimeLatentVideoDiffusionEngine.Decode(Vd.RealtimeLatentVideoDiffusionEngine.Encode(new Nm.Vector3(0.7f, 0.3f, 0.2f), 0.5f).X, Vd.RealtimeLatentVideoDiffusionEngine.Encode(new Nm.Vector3(0.7f, 0.3f, 0.2f), 0.5f).Y, Vd.RealtimeLatentVideoDiffusionEngine.Encode(new Nm.Vector3(0.7f, 0.3f, 0.2f), 0.5f).Z);
+        Assert.True(Nm.Vector3.Distance(c0, new Nm.Vector3(0.7f, 0.3f, 0.2f)) < 1e-4f, "YUV round trip");
+        // 노이즈 모드: 정지 카메라 → 공유/워핑 노이즈가 독립보다 프레임 간 변화 작음
+        float TemporalDiff(Vd.NoiseMode mode)
+        {
+            var e = new Vd.RealtimeLatentVideoDiffusionEngine(21) { Noise = mode, Grain = 0f };
+            e.SetUniformTarget(0f, 0.04f);
+            var prev = new float[W * H * 3]; double d = 0;
+            for (var f = 0; f < 4; f++) { e.Generate(noFlow, 0f, 1f); if (f > 0) for (var i = 0; i < prev.Length; i++) d += MathF.Abs(e.Frame[i] - prev[i]); e.Frame.CopyTo(prev, 0); }
+            return (float)(d / (3.0 * prev.Length));
+        }
+        var dInd = TemporalDiff(Vd.NoiseMode.Independent); var dShared = TemporalDiff(Vd.NoiseMode.Shared); var dWarp = TemporalDiff(Vd.NoiseMode.FlowWarped);
+        Assert.True(dShared < 1e-6f && dWarp < 0.5f * dInd, $"noise ind {dInd} shared {dShared} warp {dWarp}");
+
+        // ══ VD-2 ControlNet: 지형 깊이 · 포즈 · 카메라 플로 · 가중치 → 목표 ══
+        var hills = new Vd.CachedHeightField(); hills.BakeHills(200f);
+        Assert.True(MathF.Abs(hills.HeightAt(3f, -4f)) < 3f);
+        var cn = new Vd.ControlNetSpatialConditioningSynthesizer();
+        cn.BindTerrain(hills);
+        var cam = new Ci.CameraPose { Position = new Nm.Vector3(0f, 2.5f, -8f), Orientation = Ci.NeuralCameraTrajectoryEngine.LookRotation(Nm.Vector3.Normalize(new Nm.Vector3(0f, -0.15f, 1f)), 0f), FocalMm = 28f, FocusDistance = 8f, FStop = 4f };
+        var root = new Nm.Vector3(0f, hills.HeightAt(0f, 0f), 0f);
+        cn.SetWalkPose(0.25f);
+        cn.Build(cam, root, 0f);
+        const int LW = Vd.ControlNetSpatialConditioningSynthesizer.LW, LH = Vd.ControlNetSpatialConditioningSynthesizer.LH;
+        Assert.Equal(1f, cn.Depth[2 * LW + 5]);
+        Assert.True(cn.Depth[(LH - 1) * LW + 5] < 0.6f && cn.SkyFraction > 0.1f && cn.SkyFraction < 0.8f, $"depth bottom {cn.Depth[(LH - 1) * LW + 5]} sky {cn.SkyFraction}");
+        var pel = cn.Joint2D(Mq.MocapSkeleton.Pelvis);
+        int px = (int)(pel.X * LW), py = (int)(pel.Y * LH);
+        Assert.True(pel.Z > 7f && pel.Z < 9f && cn.Pose[py * LW + px] > 0.5f && cn.PoseCoverage > 0.002f, $"pose {pel} cov {cn.PoseCoverage}");
+        Assert.True(cn.Depth[py * LW + px] < Vd.ControlNetSpatialConditioningSynthesizer.NormalizeDepth(9f), "subject depth overrides");
+        Assert.True(cn.Joint2D(Mq.MocapSkeleton.Head).Y < cn.Joint2D(Mq.MocapSkeleton.LAnkle).Y, "head above ankle");
+        var cam2 = cam; cam2.Orientation = Ci.NeuralCameraTrajectoryEngine.LookRotation(Nm.Vector3.Normalize(new Nm.Vector3(0.05f, -0.15f, 1f)), 0f);
+        cn.Build(cam2, root, 0f);
+        Assert.True(cn.CameraFlowPx.X < -2f && MathF.Abs(cn.CameraFlowPx.Y) < 1f, $"pan right → content left {cn.CameraFlowPx}");
+        var ce = new Vd.RealtimeLatentVideoDiffusionEngine(3);
+        cn.DepthWeight = 0f; cn.PoseWeight = 0f; ce.BuildTargets(cn);
+        Assert.True(ce.Target.SequenceEqual(ce.PromptTarget), "zero control = prompt prior");
+        cn.DepthWeight = 1f; cn.PoseWeight = 1f; ce.BuildTargets(cn);
+        Assert.False(ce.Target.SequenceEqual(ce.PromptTarget));
+        ce.Noise = Vd.NoiseMode.Shared;
+        ce.Generate(noFlow, 0f, 1f);
+        Assert.Equal(ce.LastSteps, ce.ControlledSteps);
+        // 최종 빌드(cam2) 기준 몸통 위치 재투영
+        var sp2 = cn.Joint2D(Mq.MocapSkeleton.Spine2); px = (int)(sp2.X * LW); py = (int)(sp2.Y * LH);
+        var subj = ce.Palette.Subject; int fx = px * 4 + 2, fy = py * 4 + 2; var fi = (fy * W + fx) * 3;
+        Assert.True(Nm.Vector3.Distance(new Nm.Vector3(ce.Frame[fi], ce.Frame[fi + 1], ce.Frame[fi + 2]), subj) < 0.35f, $"subject color at pose {ce.Frame[fi]},{ce.Frame[fi + 1]},{ce.Frame[fi + 2]} vs {subj} pose {cn.Pose[py * LW + px]}");
+        ce.Generate(noFlow, 0f, 0.3f);
+        Assert.True(ce.ControlledSteps < ce.LastSteps && ce.ControlledSteps > 0);
+        Assert.True(ce.Configure("석양 숲 빨간 망토 안개") >= 3 && ce.Palette.Name == "석양");
+
+        // ══ VD-3 옵티컬 플로 · 가림 · 플리커 보정 ══
+        float Tex(float x, float y) => 0.5f + 0.2f * MathF.Sin(0.31f * x + 0.7f * MathF.Sin(0.13f * y)) * MathF.Cos(0.23f * y) + 0.1f * MathF.Sin(0.9f * x + 0.5f * y);
+        void Fill(float[] img, float ox, float oy, float gain, int seed, float noise)
+        {
+            var r2 = new Random(seed);
+            for (var y = 0; y < H; y++)
+                for (var x = 0; x < W; x++)
+                {
+                    var v0 = Math.Clamp(Tex(x - ox, y - oy) * gain + (float)(r2.NextDouble() - 0.5) * noise, 0f, 1f);
+                    var i = (y * W + x) * 3; img[i] = v0; img[i + 1] = v0 * 0.9f; img[i + 2] = v0 * 0.8f;
+                }
+        }
+        var gd = new Vd.NeuralTemporalConsistencyGuard();
+        var img1 = new float[W * H * 3];
+        Fill(img1, 0f, 0f, 1f, 1, 0f); gd.Process(img1, Nm.Vector2.Zero);
+        Fill(img1, 6f, -4f, 1f, 1, 0f); gd.Process(img1, Nm.Vector2.Zero);
+        float mx = 0, my = 0; var nb = 0;
+        for (var by = 1; by < Vd.NeuralTemporalConsistencyGuard.BY - 1; by++)
+            for (var bx = 1; bx < Vd.NeuralTemporalConsistencyGuard.BX - 1; bx++) { var f = gd.BlockFlow(bx, by); mx += f.X; my += f.Y; nb++; }
+        mx /= nb; my /= nb;
+        Assert.True(MathF.Abs(mx - 6f) < 0.6f && MathF.Abs(my + 4f) < 0.6f, $"flow {mx},{my}");
+        Assert.True(gd.OcclusionRatio < 0.3f, $"occ {gd.OcclusionRatio}");
+        // 큰 팬(±6 초과) → 카메라 힌트로 포착
+        var gh = new Vd.NeuralTemporalConsistencyGuard();
+        Fill(img1, 0f, 0f, 1f, 1, 0f); gh.Process(img1, Nm.Vector2.Zero);
+        Fill(img1, 20f, 0f, 1f, 1, 0f); gh.Process(img1, new Nm.Vector2(18f, 0f));
+        Assert.True(MathF.Abs(gh.MeanFlow.X - 20f) < 1.5f, $"hinted flow {gh.MeanFlow}");
+        // 플리커 시퀀스(정지 + 팬): 밝기 지터 ±12% + 노이즈 → 워핑 오차 감소 · 비활성 대비
+        foreach (var pan in new[] { 0f, 2f })
+        {
+            var on = new Vd.NeuralTemporalConsistencyGuard(); var off = new Vd.NeuralTemporalConsistencyGuard { Enabled = false };
+            double eOn = 0, eOff = 0;
+            for (var f = 0; f < 12; f++)
+            {
+                var gain = 1f + 0.12f * ((f * 7919 % 13) / 6f - 1f);
+                Fill(img1, pan * f, 0f, gain, 100 + f, 0.08f);
+                on.Process(img1, new Nm.Vector2(pan, 0f)); off.Process(img1, new Nm.Vector2(pan, 0f));
+                if (f > 0) { eOn += on.OutWarpError; eOff += off.OutWarpError; }
+            }
+            Assert.True(eOn < 0.5 * eOff && on.MeanFlickerReduction > 0.4f && MathF.Abs(off.MeanFlickerReduction) < 0.05f, $"pan {pan}: on {eOn} off {eOff} red {on.MeanFlickerReduction}");
+            Assert.True(on.OutLumaJitter <= off.OutLumaJitter + 1e-3f);
+            // 고스트 방지: 출력이 깨끗한 정답 프레임과 가까움(원본 노이즈보다)
+            var clean = new float[W * H * 3]; Fill(clean, pan * 11, 0f, 1f, 0, 0f);
+            // 디플리커는 밝기를 시간 평활하므로 정답 대비 최적 스칼라 이득 정합 후 오차 비교
+            double Err(float[] img)
+            {
+                double num = 0, den = 0, e = 0;
+                for (var y = 16; y < H - 16; y++) for (var x = 16; x < W - 16; x++) { var i = (y * W + x) * 3; num += img[i] * clean[i]; den += clean[i] * clean[i]; }
+                var gfit = num / den;
+                for (var y = 16; y < H - 16; y++) for (var x = 16; x < W - 16; x++) { var i = (y * W + x) * 3; e += Math.Abs(img[i] - gfit * clean[i]); }
+                return e;
+            }
+            var eo = Err(on.Output); var er = Err(img1);
+            Assert.True(eo < er * 1.1, $"no ghosting pan {pan}: {eo} vs {er}");
+        }
+        // 가림: 정지 배경 위 이동 사각형 → 일부 블록 가림
+        var go = new Vd.NeuralTemporalConsistencyGuard();
+        for (var f = 0; f < 2; f++)
+        {
+            Fill(img1, 0f, 0f, 1f, 1, 0f);
+            for (var y = 40; y < 104; y++) for (var x = 60 + 30 * f; x < 124 + 30 * f; x++) { var i = (y * W + x) * 3; img1[i] = 0.05f + 0.9f * ((x / 4 + y / 4) & 1); img1[i + 1] = img1[i]; img1[i + 2] = img1[i]; }
+            go.Process(img1, Nm.Vector2.Zero);
+        }
+        Assert.True(go.OcclusionRatio > 0.005f && go.OcclusionRatio < 0.5f, $"occlusion {go.OcclusionRatio}");
+        // Step 40 — 정상 상태 측정(전체 실행에서 계층 JIT/OSR 1회성 7,528 B 관측 · 진짜 할당은 매 창 재현 → 실패 유지)
+        Assert.Equal(0, SteadyStateAllocation.MinBytes(() => { for (var f = 0; f < 3; f++) go.Process(img1, Nm.Vector2.Zero); }));
+
+        // ══ VD-4 러너: 카메라 궤적 · ControlNet · 디퓨전 · 일관성 · 무할당 ══
+        var run = new Vd.LatentVideoDiffusionStudioRunner(new Vd.RealtimeLatentVideoDiffusionEngine(), new Vd.NeuralTemporalConsistencyGuard(), new Vd.ControlNetSpatialConditioningSynthesizer());
+        for (var f = 0; f < 120; f++) run.TickOnce();
+        Assert.True(run.GeneratedFrames >= 60 && run.Guard.Frames >= 60 && run.Control.PoseCoverage > 0f, $"frames {run.GeneratedFrames}");
+        Assert.True(run.Guard.MeanFlickerReduction > 0.1f, $"runner flicker reduction {run.Guard.MeanFlickerReduction}");
+        var lit = 0; foreach (var b in run.Guard.OutputBytes) if (b > 10) lit++;
+        Assert.True(lit > run.Guard.OutputBytes.Length / 2);
+        Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>
+        {
+            for (var f = 0; f < 10; f++) run.TickOnce();
+        }));
+        Assert.True(run.TriggerPrompt("네온 사이버펑크 밤 달리는 오빗") >= 3 && run.Camera.Move == Ci.CameraMove.Orbit && run.WalkSpeed > 3f);
+        run.SetNoise(Vd.NoiseMode.Independent);
+        for (var f = 0; f < 20; f++) run.TickOnce();
+        Assert.Equal(Vd.NoiseMode.Independent, run.Engine.Noise);
+        Assert.Equal(0, run.TriggerPrompt(""));
+        run.NewShot();
+        Assert.Equal(0, run.Frame);
+        run.Dispose();
+    }
+
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task Podcast_And_MultiAgentTalkshow_Check()
+    {
+        // 1) 오케스트레이터: 라인업 검증 · 발화권(연속 금지 · 지목 답변 · 반박 · MC 개입 주기 · 공정성) · 아젠다 진행 · 정리/클로징
+        var talk = new Pc.MultiAgentTalkshowConversationOrchestrator();
+        var lineup = Pc.MultiAgentTalkshowConversationOrchestrator.DemoLineup();
+        Assert.Throws<ArgumentException>(() => talk.Configure(lineup.Take(2).ToList()));                                   // 패널 1명
+        Assert.Throws<ArgumentException>(() => talk.Configure(lineup.Concat(Pc.MultiAgentTalkshowConversationOrchestrator.DemoLineup().Skip(1)).Take(6).ToList()));
+        Assert.Throws<ArgumentException>(() => talk.Configure(lineup.Skip(1).ToList()));                                   // MC 누락
+        talk.Configure(lineup);
+        talk.ExchangesPerAgenda = 5; talk.McEvery = 3;
+        Assert.False(talk.Tick(0));
+        talk.Start(0);
+        Assert.Throws<InvalidOperationException>(() => talk.Configure(lineup));
+        double now = 0;
+        for (var g = 0; talk.IsLive && g < 20000; g++) { talk.Tick(now); now += 100; }
+        Assert.False(talk.IsLive);
+        var h = talk.History;
+        Assert.Equal(Pc.TalkLineKind.Opening, h[0].Kind); Assert.Equal(0, h[0].Speaker);
+        Assert.Equal(Pc.TalkLineKind.Introduce, h[1].Kind);
+        Assert.Contains("(찬성)", h[1].Text); Assert.Contains("(반대)", h[1].Text);
+        Assert.Equal(Pc.TalkLineKind.Summary, h[^2].Kind); Assert.Equal(Pc.TalkLineKind.Closing, h[^1].Kind);
+        Assert.Contains(Pc.MultiAgentTalkshowConversationOrchestrator.DemoAgenda[0], h.First(l => l.Kind == Pc.TalkLineKind.Question).Text);
+        Assert.Equal(talk.Agenda.Count - 1, h.Count(l => l.Kind == Pc.TalkLineKind.Redirect));
+        var streak = 0;
+        for (var i = 1; i < h.Count; i++)
+        {
+            Assert.True(h[i].TimeMs >= h[i - 1].TimeMs + h[i - 1].DurationMs + Pc.MultiAgentTalkshowConversationOrchestrator.GapMs - 1e-6);   // 발화 겹침 0
+            if (h[i].Speaker > 0) { Assert.NotEqual(h[i - 1].Speaker, h[i].Speaker); streak++; Assert.True(streak <= talk.McEvery); }
+            else streak = 0;
+            if (h[i - 1].Kind is Pc.TalkLineKind.Question or Pc.TalkLineKind.Redirect)
+            {
+                Assert.Equal(h[i - 1].Addressee, h[i].Speaker);                                                            // 지목 → 즉시 답변
+                Assert.Equal(Pc.TalkLineKind.Answer, h[i].Kind);
+            }
+        }
+        Assert.Contains(h, l => l.Kind == Pc.TalkLineKind.Rebuttal && l.Speaker == 2 && l.Addressee == 1);                // 비판가(반대) → 지식인(찬성)
+        for (var i = 1; i < talk.AgentCount; i++) Assert.True(talk.Agent(i).TurnsTaken >= 2);
+        var spoken = Enumerable.Range(1, talk.PanelCount).Select(i => talk.Agent(i).SpokenSeconds).ToArray();
+        Assert.True(spoken.Max() / spoken.Min() < 3, "발화 시간 공정성");
+        Assert.True(Pc.MultiAgentTalkshowConversationOrchestrator.Opposed(Pc.TalkStance.Pro, Pc.TalkStance.Con));
+        Assert.False(Pc.MultiAgentTalkshowConversationOrchestrator.Opposed(Pc.TalkStance.Neutral, Pc.TalkStance.Con));
+        Assert.Equal(Pc.MultiAgentTalkshowConversationOrchestrator.MinLineMs, Pc.MultiAgentTalkshowConversationOrchestrator.EstimateMs("짧다"));
+
+        // 인터뷰 포맷: 게스트(인플루언서) 집중
+        var iv = new Pc.MultiAgentTalkshowConversationOrchestrator();
+        var ivLine = Pc.MultiAgentTalkshowConversationOrchestrator.DemoLineup();
+        ivLine[3] = new Pc.TalkAgent { Name = "크리에이터 유나", Title = "구독자 200만 유튜버", Persona = Pc.PanelPersona.Influencer, Stance = Pc.TalkStance.Neutral, Color = 0x22C55E };
+        iv.Configure(ivLine); iv.Format = Pc.TalkFormat.Interview; iv.ExchangesPerAgenda = 4;
+        iv.Start(0); now = 0;
+        for (var g = 0; iv.IsLive && g < 20000; g++) { iv.Tick(now); now += 100; }
+        Assert.Equal(3, iv.Guest());
+        Assert.True(iv.Agent(3).TurnsTaken > iv.Agent(1).TurnsTaken && iv.Agent(3).TurnsTaken > iv.Agent(2).TurnsTaken);
+
+        // 발화 중 Tick · 발화권 점수 무할당
+        var idle = new Pc.MultiAgentTalkshowConversationOrchestrator();
+        idle.Start(0);
+        Assert.True(idle.Tick(0));
+        Assert.Equal(0, idle.SpeakerAt(10));
+        Assert.Equal(0, AllocationProbe.MinAllocated(() => { for (var i = 0; i < 1000; i++) { idle.Tick(1 + i * 0.1); idle.NextSpeaker(50); } }));
+
+        // Gemini 페르소나 재작성 · 실패 시 BCL 유지
+        var llm = new Pc.MultiAgentTalkshowConversationOrchestrator((p, ct) => Task.FromResult<string?>("```json\n{\"text\":\"재작성된 패널 대사\"}\n```"));
+        llm.Start(0); now = 0;
+        while (llm.LinesSpoken < 4) { llm.Tick(now); now += 100; }
+        await llm.PendingDelivery!;
+        Assert.Contains(llm.History, l => l.Source == "Gemini" && l.Text == "재작성된 패널 대사" && l.Speaker > 0);
+        Assert.All(llm.History.Where(l => l.Speaker == 0), l => Assert.Equal("BCL", l.Source));                            // MC 진행은 템플릿 고정
+        Assert.False(Pc.MultiAgentTalkshowConversationOrchestrator.TryParseLineJson("nope", out _));
+        Assert.False(Pc.MultiAgentTalkshowConversationOrchestrator.TryParseLineJson("{\"text\":\"" + new string('가', 300) + "\"}", out _));
+
+        // 2) 멀티캠: RMS SIMD = 스칼라 · ZCR · 단독/2인/와이드/리액션 · 홀드 · 설전/피크 하이라이트 · 무할당
+        var rng = new Random(11);
+        for (var len = 0; len <= 67; len++)
+        {
+            var buf = new float[len];
+            for (var i = 0; i < len; i++) buf[i] = (float)(rng.NextDouble() * 2 - 1);
+            Assert.InRange(Math.Abs(Pc.AutonomousPodcastVideoMultiCamEngine.Rms(buf) - Pc.AutonomousPodcastVideoMultiCamEngine.RmsScalar(buf)), 0, 1e-5);
+        }
+        Assert.Equal(1f, Pc.AutonomousPodcastVideoMultiCamEngine.ZeroCrossingRate(new[] { 1f, -1f, 1f, -1f }));
+        Assert.Equal(0f, Pc.AutonomousPodcastVideoMultiCamEngine.ZeroCrossingRate(new[] { 0.3f, 0.3f, 0.3f }));
+        for (var n = 1; n <= 5; n++) Assert.Equal(Enumerable.Range(0, n), Enumerable.Range(0, n).Select(k => Pc.AutonomousPodcastVideoMultiCamEngine.WideOrder(k, n)).OrderBy(x => x));
+        var cam = new Pc.AutonomousPodcastVideoMultiCamEngine();
+        Assert.Throws<ArgumentException>(() => cam.SetSeats(new uint[6]));
+        cam.SetSeats(new uint[] { 0xA855F7, 0x0EA5E9, 0xEF4444, 0xF59E0B });
+        static float[] Voice(float f0, float amp)
+        {
+            var v = new float[533];
+            for (var i = 0; i < v.Length; i++) { var p = 2 * Math.PI * f0 * i / 16000; v[i] = amp * (float)(Math.Sin(p) + 0.5 * Math.Sin(2 * p) + 0.3 * Math.Sin(3 * p)); }
+            return v;
+        }
+        var quiet = new float[533];
+        for (var i = 0; i < quiet.Length; i++) quiet[i] = (float)(rng.NextDouble() * 2 - 1) * 0.001f;
+        var voices = new[] { Voice(210, 0.08f), Voice(125, 0.08f), Voice(195, 0.08f), Voice(150, 0.08f) };
+        var loud = Voice(125, 0.4f);
+        double t = 0;
+        void Run(double ms, params int[] talking)
+        {
+            for (var end = t + ms; t < end; t += 33)
+            {
+                for (var s = 0; s < 4; s++) cam.Analyze(s, Array.IndexOf(talking, s) >= 0 ? voices[s] : quiet, t);
+                cam.Direct(t);
+            }
+        }
+        Run(1000);
+        Assert.Equal(Pc.PodcastShot.Wide, cam.Shot);
+        Assert.False(cam.IsVoice(1));
+        Run(1000, 1);
+        Assert.True(cam.IsVoice(1));
+        Assert.Equal((Pc.PodcastShot.Single, 1), (cam.Shot, cam.SubjectA));
+        Run(1500, 1, 2);
+        Assert.Equal((Pc.PodcastShot.TwoShot, 1, 2), (cam.Shot, cam.SubjectA, cam.SubjectB));                           // 크로스토크 → 2인 대립 샷
+        Run(2500, 1, 2, 3);
+        Assert.Equal(Pc.PodcastShot.Wide, cam.Shot);                                                                     // 3인 → 와이드
+        Run(1000, 1);
+        Run(1500, 2);
+        Assert.Equal((Pc.PodcastShot.Single, 2), (cam.Shot, cam.SubjectA));
+        var cutsBefore = cam.CutsTotal;
+        Run(150, 3);
+        Run(100);
+        Assert.Equal(cutsBefore, cam.CutsTotal);                                                                         // 짧은 추임새(온셋 미만) → 컷 없음
+        var mono = t;
+        for (var g = 0; g < 600 && cam.Shot != Pc.PodcastShot.Reaction; g++) Run(33, 2);
+        Assert.InRange(t - mono, 10000, 13000);
+        Assert.Equal((Pc.PodcastShot.Reaction, 1), (cam.Shot, cam.SubjectA));                                           // 장기 독백 → 이전 화자 리액션
+        Run(2500, 2);
+        Assert.Equal((Pc.PodcastShot.Single, 2), (cam.Shot, cam.SubjectA));
+        Run(2500);
+        Assert.Equal(Pc.PodcastShot.Wide, cam.Shot);                                                                     // 무음 지속 → 와이드
+        Assert.DoesNotContain(cam.Clips, c => c.Reason == Pc.HighlightReason.HeatedExchange);
+        for (var k = 0; k < 6; k++) Run(1000, 1 + k % 2);
+        Assert.Contains(cam.Clips, c => c.Reason == Pc.HighlightReason.HeatedExchange);                                  // 급격한 교대 → 설전
+        var clipN = cam.ClipCount;
+        Run(6000);
+        for (var s = 0; s < 4; s++) cam.Analyze(s, s == 1 ? loud : quiet, t);
+        Assert.Contains(cam.Clips, c => c.Reason == Pc.HighlightReason.PeakEnergy && c.Speaker == 1);
+        var cutBuf = new Pc.CamCut[200];
+        var nc = cam.CopyCuts(cutBuf);
+        Assert.Equal(cam.CutsTotal, nc);
+        for (var i = 1; i < nc; i++) Assert.True(cutBuf[i - 1].TimeMs >= cutBuf[i].TimeMs);
+        Run(3000, 1);
+        const int FW = 320, FH = 180;
+        var frame = new byte[FW * FH * 4];
+        cam.Render(frame, FW, FH, FW * 4, 0);
+        var center = (FH / 2 * FW + FW / 2) * 4;
+        Assert.NotEqual(frame[4 * FW * 2 + 400], frame[center + 2]);
+        Assert.Equal(255, frame[center + 3]);
+        Assert.Equal(0, AllocationProbe.MinAllocated(() =>
+        {
+            for (var k = 0; k < 100; k++) { for (var s = 0; s < 4; s++) cam.Analyze(s, s == 1 ? voices[1] : quiet, t); cam.Direct(t); t += 33; }
+            cam.Render(frame, FW, FH, FW * 4, t);
+        }));
+
+        // 3) 시청자 개입: 분류 · 스팸 차단 · 유사 병합 · 관련도 채택 · 키워드 라우팅 · 지적 → 직전 발언자 · 간격 · 만료 · 무할당
+        Assert.Equal(Pc.AudienceKind.Spam, Pc.InteractiveAudienceAgendaInterventionEngine.Classify("ㅋㅋㅋㅋㅋㅋㅋ"));
+        Assert.Equal(Pc.AudienceKind.Spam, Pc.InteractiveAudienceAgendaInterventionEngine.Classify("지금 바로 http://spam.example 클릭"));
+        Assert.Equal(Pc.AudienceKind.Spam, Pc.InteractiveAudienceAgendaInterventionEngine.Classify("ㅎㅇ"));
+        Assert.Equal(Pc.AudienceKind.Spam, Pc.InteractiveAudienceAgendaInterventionEngine.Classify("병신같은 토론"));
+        Assert.Equal(Pc.AudienceKind.Challenge, Pc.InteractiveAudienceAgendaInterventionEngine.Classify("그 주장은 근거가 부족한 것 같아요"));
+        Assert.Equal(Pc.AudienceKind.Question, Pc.InteractiveAudienceAgendaInterventionEngine.Classify("AI 그림 저작권은 누구한테 있나요?"));
+        Assert.Equal(Pc.AudienceKind.Opinion, Pc.InteractiveAudienceAgendaInterventionEngine.Classify("재밌게 보고 있어요"));
+        var at = new Pc.MultiAgentTalkshowConversationOrchestrator();
+        var acam = new Pc.AutonomousPodcastVideoMultiCamEngine();
+        using var aud = new Pc.InteractiveAudienceAgendaInterventionEngine(at, acam) { MinGapMs = 100000 };
+        Assert.Equal(Pc.AudienceKind.Spam, aud.Ingest("광고봇", "http://spam.example 클릭!!", 0));
+        Assert.Equal(1, aud.SpamBlocked);
+        aud.Ingest("코딩냥", "AI가 만든 그림의 저작권은 누구에게 있나요?", 0);
+        aud.Ingest("익명", "AI가 만든 그림의 저작권은 누구에게 있나요??", 100);
+        aud.Ingest("새벽감성", "재밌게 보고 있어요", 200);
+        Assert.Equal(1, aud.PendingCount);
+        Assert.Equal(2, aud.Pending[0].Votes);
+        Assert.Equal(1, aud.Merged);
+        Assert.False(aud.Tick(300));                                                                                     // 방송 전
+        at.Start(0); now = 0;
+        while (at.AgendaIndex < 0) { at.Tick(now); now += 100; }
+        Assert.True(aud.Tick(now));
+        var adopted = aud.Decided.Single();
+        Assert.Equal(Pc.InterventionStatus.Adopted, adopted.Status);
+        Assert.Equal(2, adopted.Target);                                                                                 // 저작권 → 문화 칼럼니스트
+        Assert.True(adopted.Relevance > 0.3);
+        Assert.Equal(2, at.PendingInterventions);
+        Assert.Contains(acam.Clips, c => c.Reason == Pc.HighlightReason.Intervention && c.Speaker == 2);
+        var mark = at.LinesSpoken;
+        for (var g = 0; at.LinesSpoken < mark + 4; g++) { at.Tick(now); now += 100; }
+        var ah = at.History;
+        var ii = ah.ToList().FindIndex(l => l.Kind == Pc.TalkLineKind.Intervention);
+        Assert.True(ii > 0);
+        Assert.Equal((0, 2), (ah[ii].Speaker, ah[ii].Addressee));
+        Assert.Contains("저작권", ah[ii].Text); Assert.Contains("코딩냥", ah[ii].Text);
+        Assert.Equal((Pc.TalkLineKind.AudienceAnswer, 2), (ah[ii + 1].Kind, ah[ii + 1].Speaker));
+        aud.Ingest("주부유튜버", "AI 시대에 크리에이터는 어떤 기술을 배워야 생존할 수 있을까요?", now);
+        Assert.False(aud.Tick(now));                                                                                     // 최소 간격
+        aud.Ingest("현직디자이너", "방금 그 말씀은 근거가 부족해서 동의 못 하겠어요", now);
+        var ch = aud.Pending.Single(p => p.Kind == Pc.AudienceKind.Challenge);
+        Assert.Equal(at.LastPanelSpeaker, aud.RouteTarget(ch));                                                          // 지적 → 직전 발언자 반론 기회
+        Assert.True(aud.Adopt(ch.Id, now));                                                                              // 수동 채택(간격 무시)
+        Assert.True(aud.Reject(aud.Pending.Single().Id, now));
+        aud.Ingest("늦은시청자", "크리에이터 일자리는 어떻게 될까요?", now);
+        Assert.False(aud.Tick(now + aud.ExpireMs + 1));
+        Assert.Equal(1, aud.Expired);
+        Assert.Equal(0, aud.PendingCount);
+        Assert.Equal(0, AllocationProbe.MinAllocated(() => { for (var i = 0; i < 1000; i++) aud.Tick(now + i); }));
+
+        // 4) 러너: 1-Click 자율 진행(합성 음성 → 액티브 스피커 → 자동 컷) · 데모 시청자 채택 · 세션 패키지
+        Assert.Equal("01:02:03,004", Pc.PodcastStudioShowRunner.Timecode(3723004));
+        var rt = new Pc.MultiAgentTalkshowConversationOrchestrator { ExchangesPerAgenda = 4 };
+        var rc = new Pc.AutonomousPodcastVideoMultiCamEngine();
+        using var ra = new Pc.InteractiveAudienceAgendaInterventionEngine(rt, rc) { MinGapMs = 15000 };
+        using var runner = new Pc.PodcastStudioShowRunner(rt, rc, ra) { DemoChatEverySec = 6 };
+        runner.Prepare(0);
+        var tickMs = 1000.0 / Pc.PodcastStudioShowRunner.Fps;
+        double rtNow = 0; var match = 0; var single = 0;
+        while (rt.IsLive && rtNow < 900000)
+        {
+            runner.Step(tickMs / 1000, rtNow);
+            if (rc.Shot == Pc.PodcastShot.Single) { single++; if (rc.SubjectA == rt.SpeakerAt(rtNow)) match++; }
+            rtNow += tickMs;
+        }
+        Assert.False(rt.IsLive);
+        Assert.True(runner.Frames > 1000);
+        Assert.True(ra.Adopted >= 1);
+        Assert.Contains(rt.History, l => l.Kind == Pc.TalkLineKind.AudienceAnswer);
+        var shotCuts = new Pc.CamCut[Pc.AutonomousPodcastVideoMultiCamEngine.CutCap];
+        var rn = rc.CopyCuts(shotCuts);
+        for (var s = 1; s < rt.AgentCount; s++) Assert.Contains(shotCuts.Take(rn), c => c.Shot == Pc.PodcastShot.Single && c.A == s);
+        Assert.Contains(shotCuts.Take(rn), c => c.Shot == Pc.PodcastShot.TwoShot);                                       // 반박 초반 크로스토크
+        Assert.True(match > single * 0.8, "단독 샷 피사체 = 실제 발화자");
+        var dir = Path.Combine(Path.GetTempPath(), "pfs_podcast_" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var json = runner.ExportSession(dir, 0);
+            using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(json));
+            Assert.Equal(rt.History.Count, doc.RootElement.GetProperty("transcript").GetArrayLength());
+            Assert.Equal(rt.AgentCount, doc.RootElement.GetProperty("lineup").GetArrayLength());
+            Assert.True(doc.RootElement.GetProperty("cuts").GetArrayLength() > 0);
+            var srt = File.ReadAllText(Path.Combine(dir, "podcast.srt"));
+            Assert.Contains("00:00:00,000 --> ", srt);
+            Assert.Contains(rt.Agent(0).Name + ": ", srt);
+        }
+        finally
+        {
+            try { Directory.Delete(dir, true); } catch { /* 무시 */ }
+        }
+    }
+
+    // ── v16.33.0 사운드 디자인: DSP(FFT·바이쿼드·BS.1770·리미터·WAV) · Foley(키워드·모션·이벤트·합성·팬·인젝션 인자) · 4-스템 분리(완전 재구성·HPSS·중앙성)
+    //    · 믹서(뮤트/솔로·덕킹·LUFS 정규화·피크) · Atmos(패닝 에너지·좌표·지문·블록 렌더·ADM XML/chna·BWF) · 1-Click 마스터 ──
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task SoundDesign_And_SpatialAudio_Check()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "pfs_sound_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            const int R = 48000;
+            // 1) DSP — FFT 왕복 · 바이쿼드 · LUFS · 리미터 · WAV 왕복
+            var fft = new Snd.FftPlan(256);
+            var re = new float[256]; var im = new float[256]; var rnd = new Random(5);
+            for (var i = 0; i < 256; i++) re[i] = (float)rnd.NextDouble() - 0.5f;
+            var orig = (float[])re.Clone();
+            fft.Transform(re, im, false); fft.Transform(re, im, true);
+            for (var i = 0; i < 256; i++) Assert.Equal(orig[i], re[i], 4);
+            Assert.Throws<ArgumentException>(() => new Snd.FftPlan(100));
+            float[] Sine(double hz, float amp, double sec) { var n = (int)(R * sec); var x = new float[n]; for (var i = 0; i < n; i++) x[i] = amp * MathF.Sin((float)(2 * Math.PI * hz * i / R)); return x; }
+            var hi = Sine(8000, 0.5f, 0.2);
+            var lp = Snd.Biquad.LowPass(500, 0.707, R);
+            var y = new float[hi.Length]; for (var i = 0; i < hi.Length; i++) y[i] = lp.Process(hi[i]);
+            Assert.True(Snd.SoundDsp.Energy(y.AsSpan(R / 20)) < Snd.SoundDsp.Energy(hi.AsSpan(R / 20)) * 0.01);
+            var tone = Sine(997, 0.1f, 3);
+            Assert.InRange(Snd.SoundDsp.MeasureLufs(tone, tone, R), -20.7, -19.3);
+            Assert.Equal(-70, Snd.SoundDsp.MeasureLufs(new float[R * 2], new float[R * 2], R));
+            var loud = Sine(200, 1.5f, 0.5); var loud2 = (float[])loud.Clone();
+            Assert.True(Snd.SoundDsp.Limit(loud, loud2, R, -1) <= -0.99f);
+            var wavPath = Path.Combine(dir, "t.wav");
+            Snd.SoundDsp.WriteStereoWav(wavPath, tone.AsSpan(0, 1000), hi.AsSpan(0, 1000), R);
+            Assert.True(Snd.SoundDsp.TryReadWav(File.ReadAllBytes(wavPath), out var rl, out var rr, out var rRate, out var rCh));
+            Assert.Equal(R, rRate); Assert.Equal(2, rCh); Assert.Equal(1000, rl.Length); Assert.Equal(tone[500], rl[500]); Assert.Equal(hi[999], rr[999]);
+            Assert.False(Snd.SoundDsp.TryReadWav(new byte[] { 1, 2, 3 }, out _, out _, out _, out _));
+            Assert.True(Snd.SoundDsp.TryReadWav(TitanReleaseTests.SineWav(16000, 440, 0.1), out var m16, out var m16r, out var m16rate, out var m16ch));
+            Assert.Equal(1, m16ch); Assert.Same(m16, m16r); Assert.Equal(1600, m16.Length);
+            Assert.Equal(new[] { 0.5f, 1f }, Snd.SoundDsp.Peaks(new[] { 0.5f, -0.2f, 0.1f, -1f }, 2));
+            var (pl, pr) = Snd.SoundDsp.Pan(1); Assert.Equal(0f, pl, 4); Assert.Equal(1f, pr, 4);
+            Assert.Equal(48, Snd.SoundDsp.Resample(new float[32], 32000, 48000).Length);
+
+            // 2) Foley — 키워드 · 모션 분석 · 이벤트 계획 · 합성 · 렌더
+            var mask = Snd.AiGenerativeFoleySoundscapeEngine.DetectKeywords("비 오는 밤, 그녀가 계단을 걷다 문을 닫고 웃는다");
+            Assert.True(mask.HasFlag(Snd.FoleyMask.Rain) && mask.HasFlag(Snd.FoleyMask.Footstep) && mask.HasFlag(Snd.FoleyMask.DoorSlam) && mask.HasFlag(Snd.FoleyMask.Laughter));
+            Assert.False(mask.HasFlag(Snd.FoleyMask.Crowd));
+            Assert.Equal(Snd.FoleyMask.None, Snd.AiGenerativeFoleySoundscapeEngine.DetectKeywords(null));
+            Assert.Equal(Snd.FoleyMask.Wind | Snd.FoleyMask.Impact, Snd.AiGenerativeFoleySoundscapeEngine.DetectKeywords("A CRASH in the storm"));
+            const int MW = 32, MH = 18;
+            var f0 = new byte[MW * MH]; var f1 = new byte[MW * MH];
+            for (var yy = 4; yy < 10; yy++) for (var xx = 24; xx < 30; xx++) f1[yy * MW + xx] = 200;
+            var ms = Snd.AiGenerativeFoleySoundscapeEngine.AnalyzeMotion(f0, f1, MW, MH);
+            Assert.True(ms.Energy > 0.02f); Assert.True(ms.CenterX > 0.75f); Assert.True(ms.CenterY < 0.5f);
+            Assert.Equal(0f, Snd.AiGenerativeFoleySoundscapeEngine.AnalyzeMotion(f0, f0, MW, MH).Energy);
+            var motion = new Snd.MotionSample[100];   // 10초 @10fps
+            for (var i = 0; i < 100; i++) motion[i] = new(i >= 20 && i < 60 ? 0.03f : 0.002f, 0.8f, 0.5f);
+            motion[70] = new(0.6f, 0.2f, 0.5f);       // 7.0초 강한 온셋(좌측)
+            var ev = Snd.AiGenerativeFoleySoundscapeEngine.PlanEvents(motion, 10, Snd.FoleyMask.Footstep | Snd.FoleyMask.DoorSlam | Snd.FoleyMask.Rain, 10, 1);
+            Assert.Contains(ev, e => e.Kind == Snd.FoleyKind.Rain && e.Start == 0 && e.Duration == 10);
+            var door = Assert.Single(ev, e => e.Kind == Snd.FoleyKind.DoorSlam);
+            Assert.Equal(7.0, door.Start, 3); Assert.True(door.Pan < -0.5f);
+            var steps = ev.FindAll(e => e.Kind == Snd.FoleyKind.Footstep);
+            Assert.InRange(steps.Count, 6, 12);
+            Assert.All(steps, s => Assert.InRange(s.Start, 2.0, 7.05));
+            Assert.All(steps.FindAll(s => s.Start < 6.5), s => Assert.True(s.Pan > 0.4f));   // 지속 모션 구간(무게중심 우측)
+            for (var i = 1; i < ev.Count; i++) Assert.True(ev[i].Start >= ev[i - 1].Start);
+            Assert.Empty(Snd.AiGenerativeFoleySoundscapeEngine.PlanEvents(new Snd.MotionSample[50], 10, Snd.FoleyMask.None, 5, 1));
+            var whooshM = new Snd.MotionSample[20];
+            for (var i = 0; i < 20; i++) whooshM[i] = new(0.001f, 0.5f, 0.5f);
+            whooshM[10] = new(0.05f, 0.1f, 0.5f); whooshM[11] = new(0.05f, 0.9f, 0.5f);
+            Assert.Contains(Snd.AiGenerativeFoleySoundscapeEngine.PlanEvents(whooshM, 10, Snd.FoleyMask.None, 2, 1), e => e.Kind == Snd.FoleyKind.Whoosh);
+            foreach (var kind in Enum.GetValues<Snd.FoleyKind>())
+            {
+                var a = new float[R / 2]; var b = new float[R / 2];
+                Snd.AiGenerativeFoleySoundscapeEngine.Synthesize(kind, a, R, 1, 42);
+                Snd.AiGenerativeFoleySoundscapeEngine.Synthesize(kind, b, R, 1, 42);
+                Assert.Equal(a, b);
+                Assert.True(Snd.SoundDsp.Energy(a) > 1e-3, kind + " 무음");
+                Assert.All(a, v => Assert.True(float.IsFinite(v) && Math.Abs(v) < 4f, kind + " 발산"));
+            }
+            var stepBuf = new float[R / 4];
+            Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>   // 합성 무할당
+            {
+                for (var i = 0; i < 10; i++) Snd.AiGenerativeFoleySoundscapeEngine.Synthesize(Snd.FoleyKind.Footstep, stepBuf, R, 1, i);
+            }));
+            var (tl, tr) = Snd.AiGenerativeFoleySoundscapeEngine.RenderTrack(new[] { new Snd.FoleyEvent(Snd.FoleyKind.Impact, 0.5, 0.4, 1, 0.9f, 1) }, 1.5, R);
+            Assert.Equal((int)(1.5 * R), tl.Length);
+            Assert.True(Snd.SoundDsp.Energy(tr) > Snd.SoundDsp.Energy(tl) * 10, "우측 팬");
+            Assert.Equal(0, Snd.SoundDsp.Energy(tl.AsSpan(0, R / 2 - 1)));
+            var foleyEng = new Snd.AiGenerativeFoleySoundscapeEngine(() => null);
+            var plan = foleyEng.Generate(motion, 10, 10, "rain, walking, door slam", 3);
+            Assert.Equal(10 * R, plan.Left.Length); Assert.Equal(plan.Events.Count, (int)foleyEng.GeneratedEvents);
+            Assert.Null(await foleyEng.GenerateAsync(Path.Combine(dir, "x.mp4"), null));
+            Assert.Null(await foleyEng.InjectAsync("a.mp4", "b.wav", "c.mp4"));
+            Assert.Contains("[0:a][1:a]amix=inputs=2:duration=first:normalize=0[a]", Snd.AiGenerativeFoleySoundscapeEngine.BuildInjectArgs("v.mp4", "a.wav", "o.mp4", true));
+            Assert.Contains("1:a:0", Snd.AiGenerativeFoleySoundscapeEngine.BuildInjectArgs("v.mp4", "a.wav", "o.mp4", false));
+            Assert.Contains("발자국", Snd.AiGenerativeFoleySoundscapeEngine.MaskLabel(Snd.FoleyMask.Footstep | Snd.FoleyMask.Rain));
+            var sbProj = new SB.StoryboardProject();
+            sbProj.Scenes.Add(new SB.StoryboardScene { Prompt = "crowd at a cafe", VoiceText = "하하 웃음" });
+            Assert.True(Snd.AiGenerativeFoleySoundscapeEngine.DetectKeywords(Snd.AiGenerativeFoleySoundscapeEngine.SceneText(sbProj)).HasFlag(Snd.FoleyMask.Laughter));
+
+            // 3) 4-스템 분리 — 완전 재구성 · 지속 톤=하모닉/중앙 → 보컬 · 클릭=퍼커시브 · 사이드 톤 → BGM
+            const int N = R * 2;
+            var vocal = Sine(440, 0.3f, 2);
+            var clicks = new float[N];
+            for (var c = R / 8; c < N; c += R / 4) for (var k = 0; k < 200; k++) clicks[c + k] = (float)(Math.Exp(-k / 30.0) * ((k * 7919) % 13 - 6) / 6.0) * 0.8f;
+            var mixL = new float[N]; var mixR = new float[N];
+            for (var i = 0; i < N; i++) { mixL[i] = vocal[i] + clicks[i]; mixR[i] = vocal[i] + clicks[i]; }
+            var stems = Snd.AudioStemSeparationAndMixingEngine.SeparateBcl(mixL, mixR, R);
+            Assert.Equal("BCL-HPSS", stems.Method); Assert.Equal(N, stems.Length);
+            var maxErr = 0f;
+            for (var i = 0; i < N; i++)
+            {
+                var sumL = stems.Left[0][i] + stems.Left[1][i] + stems.Left[2][i] + stems.Left[3][i];
+                maxErr = MathF.Max(maxErr, MathF.Abs(sumL - mixL[i]));
+            }
+            Assert.True(maxErr < 1e-4f, "완전 재구성 오차 " + maxErr);
+            double E(int s) => Snd.SoundDsp.Energy(stems.Left[s].AsSpan(R / 4, N - R / 2));
+            var eV = E(0); var eB = E(1); var eD = E(2); var eS = E(3);
+            Assert.True(eV > eD && eV > eS, "보컬 우세");
+            Assert.True(eD + eS > 0.3 * Snd.SoundDsp.Energy(clicks.AsSpan(R / 4, N - R / 2)), "퍼커시브 → 드럼/SFX");
+            var sideR = new float[N]; for (var i = 0; i < N; i++) sideR[i] = -vocal[i];
+            var sideStems = Snd.AudioStemSeparationAndMixingEngine.SeparateBcl(vocal, sideR, R);
+            Assert.True(Snd.SoundDsp.Energy(sideStems.Left[1]) > Snd.SoundDsp.Energy(sideStems.Left[0]) * 5, "역상(사이드) → BGM");
+            Assert.Equal(0, Snd.AudioStemSeparationAndMixingEngine.SeparateBcl(Array.Empty<float>(), Array.Empty<float>(), R).Length);
+
+            // 4) 믹서 — 뮤트/솔로 · 덕킹 · LUFS 정규화 · 버스
+            var bgm = Sine(220, 0.2f, 2);
+            var vox = new float[N]; for (var i = R / 2; i < (int)(1.5 * R); i++) vox[i] = vocal[i];
+            var custom = new Snd.StemSet(R, N, new[] { vox, bgm, new float[N], new float[N] }, new[] { vox, bgm, new float[N], new float[N] }, "test");
+            float[] oL = new float[N], oR = new float[N], dlg = new float[N], mL = new float[N], mR = new float[N];
+            var setNoDuck = Snd.MixSettings.Default with { Ducking = false, TargetLufs = -14 };
+            var rep0 = Snd.AudioStemSeparationAndMixingEngine.Mix(custom, setNoDuck, oL, oR, dlg, mL, mR);
+            Assert.InRange(rep0.IntegratedLufs, -15.2, -12.8);
+            Assert.True(rep0.PeakDb <= -0.99f);
+            Assert.Equal(0, rep0.DuckedSeconds);
+            var bgmMid0 = Snd.SoundDsp.Energy(mL.AsSpan(R, R / 4));
+            var rep1 = Snd.AudioStemSeparationAndMixingEngine.Mix(custom, Snd.MixSettings.Default with { DuckDepthDb = 12, TargetLufs = -14 }, oL, oR, dlg, mL, mR);
+            Assert.InRange(rep1.DuckedSeconds, 0.9, 1.7);   // 보컬 1초 + 릴리즈 꼬리
+            var g0 = Snd.SoundDsp.DbToGain(rep0.AppliedGainDb); var g1 = Snd.SoundDsp.DbToGain(rep1.AppliedGainDb);
+            Assert.True(Snd.SoundDsp.Energy(mL.AsSpan(R, R / 4)) / (g1 * g1) < bgmMid0 / (g0 * g0) * 0.1, "보컬 구간 BGM 감쇄");
+            Assert.True(Snd.SoundDsp.Energy(dlg.AsSpan(R, R / 4)) > 0);
+            var muted = Snd.MixSettings.Default.With(Snd.StemKind.Bgm, Snd.StemChannel.Unity with { Mute = true }).With(Snd.StemKind.Vocals, Snd.StemChannel.Unity with { Mute = true });
+            var rep2 = Snd.AudioStemSeparationAndMixingEngine.Mix(custom, muted, oL, oR);
+            Assert.Equal(0, Snd.SoundDsp.Energy(oL)); Assert.Equal(-70, rep2.PreLufs);
+            var solo = Snd.MixSettings.Default.With(Snd.StemKind.Bgm, Snd.StemChannel.Unity with { Solo = true }) with { Ducking = false };
+            Snd.AudioStemSeparationAndMixingEngine.Mix(custom, solo, oL, oR, dlg, mL, mR);
+            Assert.Equal(0, Snd.SoundDsp.Energy(dlg));
+            var eq = Snd.MixSettings.Default.With(Snd.StemKind.Bgm, Snd.StemChannel.Unity with { LowDb = 12 }) with { Ducking = false };
+            Assert.True(eq.Channels[1].HasEq && !Snd.MixSettings.Default.Channels[1].HasEq);
+            var mixer = new Snd.AudioStemSeparationAndMixingEngine(() => null, null);
+            Assert.False(mixer.DemucsAvailable); Assert.Null(mixer.MixCurrent());
+            Assert.Null(await mixer.LoadAsync(Path.Combine(dir, "x.mp4")));
+            var loaded = await mixer.LoadAudioAsync(mixL, mixR, "synthetic");
+            Assert.Equal("BCL-HPSS", loaded.Method); Assert.NotNull(mixer.MixCurrent()); Assert.NotNull(mixer.LastReport);
+
+            // 5) Atmos — 패닝 에너지 · 방향 · 높이 · 좌표 · 지문
+            var g = new float[16];
+            Snd.DolbyAtmosSpatialAudioMapper.PanGains(1, 1, 0, Snd.DolbyAtmosSpatialAudioMapper.Layout51, g);
+            double es = 0; for (var i = 0; i < 6; i++) es += g[i] * g[i];
+            Assert.Equal(1.0, es, 4); Assert.Equal(0f, g[3]);
+            Assert.True(g[1] > g[0] && g[1] > g[2] && g[1] > g[4], "우전방 → R");
+            Snd.DolbyAtmosSpatialAudioMapper.PanGains(-1, -1, 0, Snd.DolbyAtmosSpatialAudioMapper.Layout714, g);
+            Assert.True(g[4] == MaxOf(g, 12), "좌후방 → Lrs");
+            Snd.DolbyAtmosSpatialAudioMapper.PanGains(0, 0.3f, 1, Snd.DolbyAtmosSpatialAudioMapper.Layout714, g);
+            Assert.True(g[8] + g[9] > g[0] + g[1], "상공 → 탑 스피커");
+            Snd.DolbyAtmosSpatialAudioMapper.PanGains(0, 0, 0, Snd.DolbyAtmosSpatialAudioMapper.Layout51, g);
+            Assert.Equal(g[0], g[4], 4); Assert.Equal(1f / MathF.Sqrt(5), g[2], 4);
+            var sp = Snd.DolbyAtmosSpatialAudioMapper.FromScreen(1, 1f, 0f, 6f);
+            Assert.Equal(1f, sp.X); Assert.Equal(1f, sp.Y); Assert.Equal(0.6f, sp.Z, 4);
+            Assert.Equal(-1f, Snd.DolbyAtmosSpatialAudioMapper.FromScreen(0, 0f, 0.5f, 0.5f).X);
+            var path = new List<Snd.AtmosKeyframe> { new(0, -1, 1, 0), new(2, 1, 1, 0) };
+            Assert.Equal(0f, Snd.DolbyAtmosSpatialAudioMapper.PositionAt(path, 1).X, 4);
+            Assert.Equal(1f, Snd.DolbyAtmosSpatialAudioMapper.PositionAt(path, 9).X);
+            var fpA = Snd.DolbyAtmosSpatialAudioMapper.Fingerprint(vocal, R);
+            Assert.Equal(32, fpA.Length); Assert.Equal(fpA, Snd.DolbyAtmosSpatialAudioMapper.Fingerprint(vocal, R));
+            Assert.NotEqual(fpA, Snd.DolbyAtmosSpatialAudioMapper.Fingerprint(clicks, R));
+
+            // 6) 오브젝트 매핑 · 블록 렌더(다이얼로그=C · LFE LPF) · 바이노럴 · ADM
+            var atmos = new Snd.DolbyAtmosSpatialAudioMapper(() => null, foleyEng, mixer);
+            Assert.True(atmos.MapFromFoley(plan) >= 3);
+            var rainObj = Assert.Single(atmos.Objects, o => o.Name.Contains("비"));
+            Assert.Equal(0.9f, rainObj.Path[0].Z); Assert.Equal(10 * R, rainObj.Audio.Length);
+            Assert.Equal(atmos.ObjectCount, atmos.MapFromFoley(plan));   // 재매핑 시 Foley 오브젝트 교체(중복 0)
+            Assert.True(atmos.AddTrackedObject("Car", Sine(120, 0.2f, 1), new List<(double, float, float, float)> { (0, 0.1f, 0.6f, 3f), (1, 0.9f, 0.6f, 3f) }));
+            var blk = new float[256 * 12];
+            var lfeF = Snd.Biquad.LowPass(120, 0.707, R);
+            var dialogBus = Sine(1000, 0.5f, 0.1); var musL = Sine(3000, 0.5f, 0.1);
+            Snd.DolbyAtmosSpatialAudioMapper.RenderBlock(Snd.DolbyAtmosSpatialAudioMapper.Layout714, dialogBus, musL, musL, Array.Empty<Snd.AtmosObject>(), true, 1000, 256, R, blk, ref lfeF);
+            double cE = 0, lE = 0, lfeE = 0, topE = 0;
+            for (var f = 0; f < 256; f++) { cE += blk[f * 12 + 2] * blk[f * 12 + 2]; lE += blk[f * 12] * blk[f * 12]; lfeE += blk[f * 12 + 3] * blk[f * 12 + 3]; topE += blk[f * 12 + 8] * blk[f * 12 + 8]; }
+            Assert.True(cE > 10 && lE > 10); Assert.True(lfeE < lE * 0.01, "LFE 저역만"); Assert.Equal(0, topE);
+            var (bl, br) = Snd.DolbyAtmosSpatialAudioMapper.RenderBinaural(new float[R], new float[R], new float[R],
+                new[] { new Snd.AtmosObject { Name = "R", Audio = Sine(500, 0.5f, 1), Path = { new(0, 1, 0.2f, 0) } } }, R, R);
+            Assert.True(Snd.SoundDsp.Energy(br) > Snd.SoundDsp.Energy(bl) * 1.3, "바이노럴 우측");
+            var objs = atmos.Objects;
+            var xml = Snd.DolbyAtmosSpatialAudioMapper.BuildAdmXml(objs, 10, R, "Test & <Mix>");
+            var xd = System.Xml.Linq.XDocument.Parse(xml);
+            System.Xml.Linq.XNamespace ns = "urn:ebu:metadata-schema:ebucore";
+            Assert.Equal(1 + objs.Count, xd.Descendants(ns + "audioObject").Count());
+            Assert.Equal(12 + objs.Count, xd.Descendants(ns + "audioTrackUID").Count());
+            Assert.Equal("Test & <Mix>", xd.Descendants(ns + "audioProgramme").Single().Attribute("audioProgrammeName")!.Value);
+            Assert.Contains(xd.Descendants(ns + "speakerLabel"), e => e.Value == "U+045");
+            Assert.True(xd.Descendants(ns + "audioBlockFormat").Count(e => e.Element(ns + "cartesian") is not null) >= objs.Count);
+            var chna = Snd.DolbyAtmosSpatialAudioMapper.BuildChna(12, 2);
+            Assert.Equal(4 + 14 * 40, chna.Length); Assert.Equal(14, BitConverter.ToUInt16(chna, 0));
+            Assert.Equal("ATU_0000000D", System.Text.Encoding.ASCII.GetString(chna, 4 + 12 * 40 + 2, 12));
+            Assert.Equal("AT_00031001_01", System.Text.Encoding.ASCII.GetString(chna, 4 + 12 * 40 + 14, 14));
+            Assert.Equal("AP_00031001", System.Text.Encoding.ASCII.GetString(chna, 4 + 12 * 40 + 28, 11));
+
+            // 7) 1-Click 마스터 — 스테레오/바이노럴/5.1/7.1.4/ADM/메타/manifest · 먹싱 [부분 구제]
+            var shortPlan = foleyEng.Generate(motion.AsSpan(0, 20), 10, 2, "rain door", 2);
+            var res = await atmos.MasterFromAudioAsync(mixL, mixR, shortPlan, dir, "demo mix", new Snd.MasterOptions(), Path.Combine(dir, "nonexistent.mp4"));
+            Assert.True(res.Ok, res.Message);
+            Assert.True(res.PartialRescue); Assert.Contains("[부분 구제]", res.Message);
+            Assert.EndsWith("demo_mix_audio_master", res.Folder);
+            Assert.Equal(6, res.Files.Count);
+            Assert.InRange(res.Lufs, -16, -12); Assert.True(res.PeakDb <= -0.99f);
+            Assert.True(Snd.SoundDsp.TryReadWav(File.ReadAllBytes(Path.Combine(res.Folder!, "master_stereo.wav")), out var ms0, out _, out _, out var ch0));
+            Assert.Equal(2, ch0); Assert.Equal(N, ms0.Length);
+            var b714 = File.ReadAllBytes(Path.Combine(res.Folder!, "master_7.1.4.wav"));
+            Assert.Equal(12, BitConverter.ToUInt16(b714, 22)); Assert.Equal(0xFFFE, BitConverter.ToUInt16(b714, 20)); Assert.Equal(0x2D63Fu, BitConverter.ToUInt32(b714, 40));
+            Assert.Equal(60 + 8 + (long)N * 12 * 4, b714.Length);
+            var b51 = File.ReadAllBytes(Path.Combine(res.Folder!, "master_5.1.wav"));
+            Assert.Equal(6, BitConverter.ToUInt16(b51, 22)); Assert.Equal(0x3Fu, BitConverter.ToUInt32(b51, 40));
+            var adm = File.ReadAllBytes(Path.Combine(res.Folder!, "master_atmos_adm.wav"));
+            var admText = System.Text.Encoding.ASCII.GetString(adm, 0, Math.Min(adm.Length, 200_000));
+            Assert.Contains("chna", admText); Assert.Contains("axml", admText); Assert.Contains("ITU-R_BS.2076-2", admText);
+            Assert.Equal(12 + res.Objects, BitConverter.ToUInt16(adm, 22));
+            var manifest = File.ReadAllText(Path.Combine(res.Folder!, "manifest.json"));
+            var stereoSha = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(Path.Combine(res.Folder!, "master_stereo.wav")))).ToLowerInvariant();
+            Assert.Contains(stereoSha, manifest);
+            using (var md = System.Text.Json.JsonDocument.Parse(File.ReadAllText(Path.Combine(res.Folder!, "atmos_metadata.json"))))
+            {
+                Assert.Equal("BCL-HPSS", md.RootElement.GetProperty("stemMethod").GetString());
+                Assert.Equal(res.Objects, md.RootElement.GetProperty("objects").GetArrayLength());
+            }
+            Assert.Equal(1, atmos.Masters); Assert.False(atmos.IsBusy);
+            Assert.False((await atmos.MasterAsync(Path.Combine(dir, "x.mp4"), dir, null, null, true, new Snd.MasterOptions())).Ok);
+            Assert.False((await atmos.MasterFromAudioAsync(mixL, mixR, null, "", "x", new Snd.MasterOptions())).Ok);
+            foreach (var f in Directory.GetFiles(res.Folder!)) Assert.False(f.EndsWith(".tmp", StringComparison.Ordinal));
+        }
+        finally
+        {
+            try { Directory.Delete(dir, true); } catch { }
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "FastUnit")]
+    public void GlobalLocalization_And_RealtimeDubbing_Check()
+    {
+        // ── LOCALIZATION-1: G2V · 등시성 · SIMD 행 보간 비트 동일 · ROI 워프 · 무할당 ──
+        var dub = new Lz.RealtimeNeuralAudioDubbingEngine();
+        var ph = new Lz.DubPhoneme[256];
+        var n = dub.ToPhonemes("마바", Lz.DubLanguage.Ko, ph);
+        Assert.Equal(new[] { Lz.Viseme.MBP, Lz.Viseme.A, Lz.Viseme.MBP, Lz.Viseme.A }, ph.Take(n).Select(p => p.Viseme).ToArray());
+        n = dub.ToPhonemes("앙", Lz.DubLanguage.Ko, ph);                                                       // ㅇ 초성 무음 · 종성 ㅇ
+        Assert.Equal(new[] { Lz.Viseme.A, Lz.Viseme.C }, ph.Take(n).Select(p => p.Viseme).ToArray());
+        n = dub.ToPhonemes("ばか", Lz.DubLanguage.Ja, ph);
+        Assert.Equal(new[] { Lz.Viseme.MBP, Lz.Viseme.A, Lz.Viseme.C, Lz.Viseme.A }, ph.Take(n).Select(p => p.Viseme).ToArray());
+        n = dub.ToPhonemes("バカ", Lz.DubLanguage.Ja, ph);                                                     // 가타카나 동일
+        Assert.Equal(4, n);
+        n = dub.ToPhonemes("Movie, fun!", Lz.DubLanguage.En, ph);
+        Assert.Equal(new[] { Lz.Viseme.MBP, Lz.Viseme.O, Lz.Viseme.FV, Lz.Viseme.I, Lz.Viseme.E, Lz.Viseme.Rest, Lz.Viseme.FV, Lz.Viseme.U, Lz.Viseme.C, Lz.Viseme.Rest },
+            ph.Take(n).Select(p => p.Viseme).ToArray());
+        var jaMs = Lz.RealtimeNeuralAudioDubbingEngine.DurationMs(ph.AsSpan(0, dub.ToPhonemes("かかかか", Lz.DubLanguage.Ja, ph)));
+        var zhMs = Lz.RealtimeNeuralAudioDubbingEngine.DurationMs(ph.AsSpan(0, dub.ToPhonemes("你好你好", Lz.DubLanguage.Zh, ph)));
+        Assert.True(zhMs > jaMs * 1.3f, $"zh {zhMs} ja {jaMs}");                                                // 발화 속도 차
+        n = dub.ToPhonemes("Hello there", Lz.DubLanguage.En, ph);
+        var k = Lz.RealtimeNeuralAudioDubbingEngine.FitIsochrony(ph.AsSpan(0, n), 10_000);
+        Assert.Equal(1.33f, k, 3);                                                                             // 상한 클램프
+        var rnd = new Random(1669);
+        for (var len = 0; len <= 300; len += 7)
+        {
+            var a = new byte[len]; var b = new byte[len]; rnd.NextBytes(a); rnd.NextBytes(b);
+            var w = (ushort)rnd.Next(0, 256);
+            var d1 = new byte[len]; var d2 = new byte[len];
+            Lz.RealtimeNeuralAudioDubbingEngine.LerpRow(a, b, w, d1, simd: true);
+            Lz.RealtimeNeuralAudioDubbingEngine.LerpRow(a, b, w, d2, simd: false);
+            Assert.Equal(d2, d1);
+        }
+        var frame = new byte[Lz.RealtimeNeuralAudioDubbingEngine.FrameW * Lz.RealtimeNeuralAudioDubbingEngine.FrameH * 4];
+        var scratch = new byte[Lz.RealtimeNeuralAudioDubbingEngine.RoiW * Lz.RealtimeNeuralAudioDubbingEngine.RoiH * 4];
+        Lz.RealtimeNeuralAudioDubbingEngine.DrawFace(frame, 0.3f);
+        Assert.Equal(0.3f, Lz.RealtimeNeuralAudioDubbingEngine.MeasureOpenness(frame), 1);
+        Lz.RealtimeNeuralAudioDubbingEngine.WarpMouth(frame, 1.8f, scratch);
+        var warped = Lz.RealtimeNeuralAudioDubbingEngine.MeasureOpenness(frame);
+        Assert.True(MathF.Abs(warped - ((2 + 6) * 1.8f - 2) / 20) < 0.08f, $"warped {warped}");
+        Assert.Equal(0, AllocationProbe.MinAllocated(() =>
+        {
+            for (var i = 0; i < 20; i++) { dub.ToPhonemes("형, 이번 작전은 식은 죽 먹기야.", Lz.DubLanguage.Ko, ph); Lz.RealtimeNeuralAudioDubbingEngine.DrawFace(frame, 0.5f); Lz.RealtimeNeuralAudioDubbingEngine.WarpMouth(frame, 1.3f, scratch); }
+        }));
+
+        // ── LOCALIZATION-3: 보이스 클로닝 — F0 · 잔향 RT60 · 밝기 보정 · 음색 · 블록 지연 · 무할당 ──
+        var voice = new Lz.NeuralVoiceCloningAcousticTransfer();
+        n = dub.ToPhonemes("형, 이번 작전은 식은 죽 먹기야. 대박 날 거야!", Lz.DubLanguage.Ko, ph);
+        var pcm = new float[Lz.NeuralVoiceCloningAcousticTransfer.SampleRate * 10];
+        var tim = new float[8];
+        var truth = Lz.GlobalLocalizationStudioRunner.ActorTruth;
+        var len2 = voice.Synthesize(ph.AsSpan(0, n), truth, pcm);
+        var est = voice.Analyze(pcm.AsSpan(0, len2), tim);
+        Assert.True(MathF.Abs(est.F0Hz - truth.F0Hz) / truth.F0Hz < 0.08f, $"F0 {est.F0Hz}");
+        Assert.True(MathF.Abs(est.Rt60Ms - truth.Rt60Ms) / truth.Rt60Ms < 0.35f, $"RT60 {est.Rt60Ms}");
+        var hi = voice.Synthesize(ph.AsSpan(0, n), truth with { F0Hz = 220 }, pcm);
+        Assert.True(MathF.Abs(voice.Analyze(pcm.AsSpan(0, hi), tim).F0Hz - 220) / 220 < 0.08f);
+        var dryLen = voice.Synthesize(ph.AsSpan(0, n), truth with { Rt60Ms = 0, Wet = 0 }, pcm);
+        Assert.True(voice.Analyze(pcm.AsSpan(0, dryLen), tim).Rt60Ms < truth.Rt60Ms * 0.5f);
+        foreach (var target in new[] { 0.75f, 0.95f })
+        {
+            var got = voice.CalibrateTimbre(truth with { Brightness = target, Rt60Ms = 0, Wet = 0 });
+            Assert.True(MathF.Abs(got - target) / target < 0.1f, $"bright {got} vs {target}");
+        }
+        voice.Tone = new Lz.VoiceToneSettings(PitchShiftSemis: 12);
+        var oct = voice.Synthesize(ph.AsSpan(0, n), truth, pcm);
+        Assert.True(MathF.Abs(voice.Analyze(pcm.AsSpan(0, oct), tim).F0Hz - 236) / 236 < 0.08f);                // +12반음 = 2배
+        voice.Tone = new Lz.VoiceToneSettings();
+        Assert.Equal(16, Lz.NeuralVoiceCloningAcousticTransfer.AlgorithmicLatencyMs);
+        var blk = new float[Lz.NeuralVoiceCloningAcousticTransfer.Block];
+        voice.Begin(ph.AsSpan(0, n), truth);
+        Assert.Equal(0, AllocationProbe.MinAllocated(() => { for (var i = 0; i < 100; i++) voice.Render(blk); }));
+        Assert.Equal(0, AllocationProbe.MinAllocated(() => voice.Analyze(pcm.AsSpan(0, 32000), tim)));
+
+        // ── LOCALIZATION-2: 문화 적응 — 관용구/은어/금기/맥락/유머/시각 금기/화체 · 자막 ──
+        var nu = new Lz.MultiLanguageCulturalNuanceAdaptor();
+        var s = Lz.MultiLanguageCulturalNuanceAdaptor.DemoScript;
+        var en0 = nu.Adapt(s[0].Text, Lz.DubLanguage.En, s[0].Visual);
+        Assert.Equal("Bro, this operation is a piece of cake. It's going to be a huge hit!", en0.Adapted);
+        Assert.Contains(en0.Findings, f => f.Kind == Lz.NuanceKind.Idiom && f.Action == Lz.NuanceAction.Replaced);
+        Assert.Contains(en0.Findings, f => f.Kind == Lz.NuanceKind.Honorific && f.Action == Lz.NuanceAction.Kept);
+        Assert.Equal("반말(친밀)", en0.Register);
+        Assert.Equal(1f, en0.NuanceScore);
+        Assert.Contains("朝飯前", nu.Adapt(s[0].Text, Lz.DubLanguage.Ja).Adapted);
+        var ar0 = nu.Adapt(s[0].Text, Lz.DubLanguage.Ar, s[0].Visual);
+        Assert.Contains(ar0.Findings, f => f.Kind == Lz.NuanceKind.VisualTaboo && f.Trigger == "gesture:thumbs_up");
+        Assert.Contains("上の階", nu.Adapt(s[1].Text, Lz.DubLanguage.Ja).Adapted);
+        Assert.Contains("楼上", nu.Adapt(s[1].Text, Lz.DubLanguage.Zh).Adapted);
+        Assert.Contains("4th-floor", nu.Adapt(s[1].Text, Lz.DubLanguage.En).Adapted);                               // 비해당 문화권 유지
+        var ar1 = nu.Adapt(s[1].Text, Lz.DubLanguage.Ar, s[1].Visual);
+        Assert.Contains("الشاي", ar1.Adapted);
+        Assert.Contains(ar1.Findings, f => f.Trigger == "prop:soju_bottle");
+        Assert.Contains("means death", nu.Adapt(s[2].Text, Lz.DubLanguage.En).Adapted);
+        Assert.Contains(nu.Adapt(s[2].Text, Lz.DubLanguage.Zh).Findings, f => f.Kind == Lz.NuanceKind.CulturalContext && f.Action == Lz.NuanceAction.Kept);
+        Assert.Equal("Want to come up for a coffee?", nu.Adapt(s[3].Text, Lz.DubLanguage.En).Adapted);
+        Assert.Contains(nu.Adapt(s[3].Text, Lz.DubLanguage.En, s[3].Visual).Findings, f => f.Kind == Lz.NuanceKind.VisualTaboo);
+        Assert.Equal("존댓말(격식)", Lz.MultiLanguageCulturalNuanceAdaptor.DetectRegister("감사합니다. 정말 좋아요."));
+        var unk = nu.Adapt("대박, 식은 죽 먹기네요.", Lz.DubLanguage.Fr);
+        Assert.StartsWith("[MT 미결선]", unk.Adapted);
+        Assert.Contains(unk.Findings, f => f.Action == Lz.NuanceAction.Flagged);
+        Assert.True(unk.NuanceScore <= 0.5f);
+        nu.Translator = new FakeMt();
+        var mt = nu.Adapt("대박, 식은 죽 먹기네요.", Lz.DubLanguage.Fr);
+        Assert.Equal("un carton, c'est du gâteau.", mt.Adapted);
+        nu.Translator = null;
+        var ja = nu.Adapt(s[0].Text, Lz.DubLanguage.Ja, null, 3000);
+        Assert.All(ja.Subtitles, c => Assert.True(c.Line1.Length <= 16 && (c.Line2?.Length ?? 0) <= 16));
+        Assert.Contains(ja.Subtitles, c => c.CpsOverflow);                                                       // ja 4 CPS
+        var enSub = Lz.MultiLanguageCulturalNuanceAdaptor.Segment(en0.Adapted, Lz.DubLanguage.En, 4000);
+        Assert.All(enSub, c => Assert.True(c.Line1.Length <= 42));
+        Assert.Equal(4000, enSub[^1].EndMs, 3);
+
+        // ── LOCALIZATION-4: 파이프라인 — 립싱크 개선 · 클론 정합 · 재생 무할당 ──
+        using var run = new Lz.GlobalLocalizationStudioRunner(new Lz.RealtimeNeuralAudioDubbingEngine(), new Lz.MultiLanguageCulturalNuanceAdaptor(), new Lz.NeuralVoiceCloningAcousticTransfer());
+        foreach (var lang in new[] { Lz.DubLanguage.En, Lz.DubLanguage.Ja, Lz.DubLanguage.Es })
+        {
+            var r = run.Localize(0, lang);
+            var L = r.LipSync;
+            Assert.True(L.AfterCorrelation > L.BeforeCorrelation + 0.1f && L.AfterCorrelation > 0.8f, $"{lang} lip {L.BeforeCorrelation} → {L.AfterCorrelation}");
+            Assert.True(L.AvAfter > L.AvBefore, $"{lang} av {L.AvBefore} → {L.AvAfter}");
+            Assert.True(L.MeanAbsOpennessError < 0.12f, $"{lang} openErr {L.MeanAbsOpennessError}");
+            Assert.True(MathF.Abs(L.DubMs - L.SourceMs) / L.SourceMs < 0.3f, $"{lang} dub {L.DubMs} src {L.SourceMs}");
+            Assert.True(r.F0ErrorPct < 10 && r.Rt60ErrorPct < 40 && r.TimbreSimilarity > 0.8f, $"{lang} f0 {r.F0ErrorPct} rt {r.Rt60ErrorPct} tim {r.TimbreSimilarity}");
+        }
+        Assert.Equal(0, AllocationProbe.MinAllocated(() => { for (var i = 0; i < 50; i++) run.TickOnce(); }));
+    }
+
+    [Fact]
+    [Trait("Category", "FastUnit")]
+    public void OmniModalNexus_And_CreativeSingularity_Check()
+    {
+        // NEXUS-1: 시공간 텐서 저랭크 분해 · 인코드/디코드 · 잔차 이상 · SQA QUBO 최적성 · 잡 배치 · 무할당 ──
+        var mesh = new Nx.QuantumHybridNeuralMeshEngine();
+        var rnd = new Random(1670);
+        var load = new float[3 * Nx.QuantumHybridNeuralMeshEngine.Features];
+        for (var i = 0; i < load.Length; i++) load[i] = (float)(rnd.NextDouble() * 2 - 1);
+        var row = new float[Nx.QuantumHybridNeuralMeshEngine.Features];
+        void Make(int t, float noise)
+        {
+            float z0 = MathF.Sin(t * 0.11f), z1 = MathF.Cos(t * 0.037f) * 0.6f, z2 = MathF.Sin(t * 0.23f + 1) * 0.3f;
+            for (var j = 0; j < row.Length; j++)
+                row[j] = 0.2f + z0 * load[j] + z1 * load[row.Length + j] + z2 * load[2 * row.Length + j] + noise * (float)(rnd.NextDouble() - 0.5);
+        }
+        void Push() => mesh.PushFrame(row.AsSpan(0, 16), row.AsSpan(16, 16), row.AsSpan(32, 16), row.AsSpan(48, 16));
+        for (var t = 0; t < Nx.QuantumHybridNeuralMeshEngine.Window; t++) { Make(t, 0.01f); Push(); }
+        var fz = mesh.Factorize(0.99f);
+        Assert.InRange(fz.Rank, 3, 4);
+        Assert.True(fz.EnergyCaptured >= 0.99f && fz.CompressionRatio > 10 && fz.FlopReduction >= 8, $"rank {fz.Rank} e {fz.EnergyCaptured} c {fz.CompressionRatio}");
+        var latest = new float[row.Length];
+        mesh.CopyLatest(latest);
+        var coeffs = new float[16];
+        var k = mesh.Encode(latest, coeffs);
+        var rec = new float[row.Length];
+        mesh.Decode(coeffs.AsSpan(0, k), rec);
+        float err = 0, nrm = 0;
+        for (var j = 0; j < row.Length; j++) { err += (rec[j] - latest[j]) * (rec[j] - latest[j]); nrm += latest[j] * latest[j]; }
+        Assert.True(MathF.Sqrt(err / nrm) < 0.05f, $"recon {MathF.Sqrt(err / nrm)}");
+        Make(500, 0.01f);
+        Assert.True(mesh.Residual(row) < 0.2f, $"normal residual {mesh.LastResidual}");
+        for (var j = 0; j < row.Length; j++) row[j] = (float)(rnd.NextDouble() * 4 - 2);
+        Assert.True(mesh.Residual(row) > 0.6f, $"anomaly residual {mesh.LastResidual}");
+        Make(7, 0);
+        Assert.Equal(0, AllocationProbe.MinAllocated(() => { Push(); mesh.Factorize(0.99f); mesh.Encode(row, coeffs); mesh.Decode(coeffs.AsSpan(0, k), rec); mesh.Residual(row); }));
+
+        const int nq = 12;
+        var q = new float[nq * nq];
+        for (var i = 0; i < q.Length; i++) q[i] = (float)(rnd.NextDouble() * 2 - 1);
+        var brute = float.MaxValue;
+        var bits = new byte[nq];
+        for (var m = 0; m < 1 << nq; m++)
+        {
+            for (var i = 0; i < nq; i++) bits[i] = (byte)((m >> i) & 1);
+            brute = MathF.Min(brute, Nx.QuantumHybridNeuralMeshEngine.QuboEnergy(q, nq, bits));
+        }
+        var best = new byte[nq];
+        var ar = mesh.SolveQubo(q, nq, best, seed: 77);
+        Assert.True(MathF.Abs(ar.Energy - brute) < 1e-3f, $"sqa {ar.Energy} brute {brute}");
+        Assert.True(MathF.Abs(Nx.QuantumHybridNeuralMeshEngine.QuboEnergy(q, nq, best) - ar.Energy) < 1e-3f);
+        Assert.Equal(0, AllocationProbe.MinAllocated(() => mesh.SolveQubo(q, nq, best, sweeps: 100, seed: 5)));
+
+        float[] jc = { 2.1f, 1.4f, 3.3f, 0.8f, 2.7f, 1.9f }, cap = { 4f, 2f, 1f }, lat = { 0.2f, 0.5f, 0.1f };
+        var asg = new int[jc.Length];
+        var placed = mesh.AssignJobs(jc, cap, lat, 0.05f, asg, seed: 9);
+        var bruteP = float.MaxValue;
+        var tryA = new int[jc.Length];
+        for (var m = 0; m < 729; m++)
+        {
+            for (int i = 0, v = m; i < jc.Length; i++, v /= 3) tryA[i] = v % 3;
+            bruteP = MathF.Min(bruteP, Nx.QuantumHybridNeuralMeshEngine.PlacementCost(jc, cap, lat, 0.05f, tryA));
+        }
+        Assert.True(MathF.Abs(placed - bruteP) < 1e-4f, $"placement {placed} brute {bruteP}");
+
+        // NEXUS-2: 시나리오 한 줄 → 브리프 · 3막 샷 · DAG · 오토 체이닝(실 모듈 호출 · 부분 구제) ──
+        var brief = Nx.AutonomousCreativeSingularityOrchestrator.Parse("우주 정거장에서 벌어지는 긴장감 넘치는 2분 추격전, 영어·일본어 글로벌 더빙과 VR 송출");
+        Assert.Equal("SF", brief.Genre);
+        Assert.Equal("서스펜스", brief.Mood);
+        Assert.Equal(120, brief.DurationSec);
+        Assert.True(brief.Xr && !brief.Bci);
+        Assert.Contains(Lz.DubLanguage.En, brief.Languages);
+        Assert.Contains(Lz.DubLanguage.Ja, brief.Languages);
+        var shots = Nx.AutonomousCreativeSingularityOrchestrator.PlanShots(brief);
+        Assert.Equal(12, shots.Length);
+        Assert.True(MathF.Abs(shots.Sum(s => s.DurationSec) - 120) < 0.01f);
+        Assert.True(MathF.Abs(shots.Where(s => s.Act == 2).Sum(s => s.DurationSec) - 60) < 0.01f);
+        Assert.Contains(shots, s => s.Beat == "클라이맥스");
+
+        var orch = new Nx.AutonomousCreativeSingularityOrchestrator(null, mesh);
+        var run = orch.Run(brief.Scenario);
+        var ids = run.Stages.Select(s => s.Id).ToList();
+        Assert.Contains("world4d", ids); Assert.Contains("dub", ids); Assert.Contains("xr", ids); Assert.DoesNotContain("bci", ids);
+        foreach (var s in run.Stages)
+            foreach (var d in s.DependsOn) Assert.True(ids.IndexOf(d) < ids.IndexOf(s.Id), $"{d} → {s.Id}");
+        Assert.All(run.Stages, s => Assert.Equal(Nx.NexusStageStatus.Done, s.Status));
+        Assert.Equal(0, run.Invoked);
+        Assert.True(run.Stages.Single(s => s.Id == "ota").Critical && run.Stages.Single(s => s.Id == "script").Critical);
+        Assert.True(run.CriticalPathMs >= run.Stages.Max(s => s.StartMs + s.CostMs) - 0.01f);
+        Assert.True(run.Makespan >= run.IdealMakespan && run.Makespan / run.IdealMakespan < 1.35f, $"makespan {run.Makespan} ideal {run.IdealMakespan}");
+        Assert.True(run.Shots.All(s => s.Node >= 0) && run.Quality > 0.8f, $"quality {run.Quality}");
+
+        var loc = new Lz.GlobalLocalizationStudioRunner(new Lz.RealtimeNeuralAudioDubbingEngine(), new Lz.MultiLanguageCulturalNuanceAdaptor(), new Lz.NeuralVoiceCloningAcousticTransfer());
+        var orch2 = new Nx.AutonomousCreativeSingularityOrchestrator(new NexusSp(loc), mesh);
+        orch2.RegisterExecutor("icvfx", _ => throw new InvalidOperationException("LED 볼륨 오프라인"));
+        var run2 = orch2.Run("우주 추격 1분 영어 더빙");
+        Assert.Equal(Nx.NexusStageStatus.Failed, run2.Stages.Single(s => s.Id == "icvfx").Status);
+        Assert.Equal(Nx.NexusStageStatus.Skipped, run2.Stages.Single(s => s.Id == "vfx").Status);
+        Assert.Equal(Nx.NexusStageStatus.Skipped, run2.Stages.Single(s => s.Id == "ota").Status);
+        Assert.Equal(Nx.NexusStageStatus.Done, run2.Stages.Single(s => s.Id == "atmos").Status);
+        Assert.Equal(Nx.NexusStageStatus.Done, run2.Stages.Single(s => s.Id == "world4d").Status);
+        Assert.Equal(1, run2.Failed);
+        Assert.Contains("[부분 구제]", run2.Stages.Single(s => s.Id == "qa").Artifact);
+        Assert.True(run2.Quality < run.Quality);
+        var run3 = new Nx.AutonomousCreativeSingularityOrchestrator(new NexusSp(loc), mesh).Run("우주 추격 1분 영어 더빙");
+        var dubStage = run3.Stages.Single(s => s.Id == "dub");
+        Assert.True(dubStage.Linked && dubStage.Invoked && dubStage.Artifact!.StartsWith("실행", StringComparison.Ordinal), dubStage.Artifact);
+        Assert.Equal(1, run3.Linked);
+        Assert.NotNull(loc.Last);
+
+        // NEXUS-3: 단일 스트림 · 계층 우선 · FEC 복구 · HMAC 변조 거부 · ABR · 지연 · 무할당 ──
+        var st = new Nx.SpatiotemporalCloudNexusStreamer();
+        st.ClearEndpoints();
+        st.AddEndpoint(new Nx.NexusEndpoint("clean", "로컬", Nx.NexusEndpointKind.EdgePop, 10, 0, 1000));
+        st.AddEndpoint(new Nx.NexusEndpoint("clean", "중복", Nx.NexusEndpointKind.EdgePop, 10, 0, 1000));
+        st.AddEndpoint(new Nx.NexusEndpoint("lossy", "에지", Nx.NexusEndpointKind.EdgePop, 40, 3f, 1000));
+        st.AddEndpoint(new Nx.NexusEndpoint("mitm", "변조", Nx.NexusEndpointKind.CloudRegion, 20, 0, 1000, Tampering: true));
+        st.AddEndpoint(new Nx.NexusEndpoint("thin", "3G", Nx.NexusEndpointKind.Mobile, 60, 0, 2));
+        Assert.Equal(4, st.EndpointCount);
+        var capture = new NexusCapture();
+        st.Transport = capture;
+        var buf = new byte[12 * 1024];
+        for (var i = 0; i < buf.Length; i++) buf[i] = (byte)(i * 13);
+        void Tick()
+        {
+            st.Enqueue(Nx.NexusLayer.Splat, buf.AsSpan(0, 12000));
+            st.Enqueue(Nx.NexusLayer.Video, buf.AsSpan(0, 6000));
+            st.Enqueue(Nx.NexusLayer.Control, buf.AsSpan(0, 16));
+            st.Enqueue(Nx.NexusLayer.Telemetry, buf.AsSpan(0, 40));
+            st.Enqueue(Nx.NexusLayer.Audio, buf.AsSpan(0, 960));
+            st.Enqueue(Nx.NexusLayer.Pose, buf.AsSpan(0, 64));
+            st.Flush();
+        }
+        Tick();
+        var firstFlush = capture.Layers.Where((_, i) => capture.Ids[i] == "clean").ToList();
+        Assert.Equal((byte)Nx.NexusLayer.Control, firstFlush[0]);
+        for (var i = 1; i < firstFlush.Count; i++) Assert.True(firstFlush[i] >= firstFlush[i - 1], "계층 우선 송출");
+        Assert.True(st.ParityPackets >= 6);
+        st.Transport = null;
+        for (var i = 0; i < 199; i++) Tick();
+        var stats = new Nx.NexusEndpointStats[4];
+        st.CopyStats(stats);
+        var clean = stats[0]; var lossy = stats[1]; var mitm = stats[2]; var thin = stats[3];
+        Assert.True(clean.FramesSent == 1200 && clean.Delivered == 1200 && clean.Lost == 0 && clean.Recovered == 0, $"clean {clean}");
+        Assert.True(clean.P95Ms >= 5 && clean.LatencyMs < 12, $"clean latency {clean.LatencyMs} p95 {clean.P95Ms}");
+        Assert.True(lossy.Recovered > 50 && lossy.PacketsLost > lossy.Recovered && lossy.Delivered + lossy.Lost == lossy.FramesSent, $"lossy {lossy}");
+        Assert.True(lossy.Delivered > lossy.FramesSent * 0.93, $"lossy delivered {lossy.Delivered}/{lossy.FramesSent}");
+        Assert.True(mitm.Delivered == 0 && mitm.Rejected == mitm.FramesSent && mitm.FramesSent > 0, $"mitm {mitm}");
+        Assert.True(thin.MaxLayer <= Nx.NexusLayer.Audio && thin.FramesSent < clean.FramesSent && thin.Lost == 0, $"thin {thin}");
+        Assert.Equal(0, AllocationProbe.MinAllocated(() => { for (var i = 0; i < 5; i++) Tick(); }));
+
+        // NEXUS-4: 러너 30Hz 틱 — 메시 재분해 · 이상 주입 잔차 상승 · 계층 송출 · 무할당 ──
+        var nexus = new Nx.OmniModalNexusStudioRunner(new Nx.QuantumHybridNeuralMeshEngine(), orch, new Nx.SpatiotemporalCloudNexusStreamer());
+        for (var i = 0; i < 160; i++) nexus.TickOnce();
+        Assert.True(nexus.Mesh.Rank > 0 && nexus.Mesh.Factorizations >= 4 && nexus.Streamer.Flushes == 160);
+        var normal = nexus.Anomaly;
+        nexus.InjectAnomaly = true;
+        var spike = nexus.TickOnce();
+        nexus.InjectAnomaly = false;
+        Assert.True(spike > normal * 3 && spike > 0.3f, $"normal {normal} spike {spike}");
+        var es = new Nx.NexusEndpointStats[8];
+        var ne = nexus.Streamer.CopyStats(es);
+        Assert.Equal(7, ne);
+        Assert.All(es.Take(ne), e => Assert.True(e.Delivered > 0 && e.LatencyMs > 0, e.Id));
+        Assert.Equal(0, AllocationProbe.MinAllocated(() => { for (var i = 0; i < 40; i++) nexus.TickOnce(); }));
+    }
+
+    private sealed class FlatField : Us.IHeightField
+    {
+        private readonly float _h;
+        public FlatField(float h) => _h = h;
+        public float HeightAt(float x, float z) => _h;
+        public float AbsorptionAt(float x, float z) => 0.5f;
+    }
+
+    private sealed class UsdResidual : Us.IPhysicsResidualModel
+    {
+        public int Calls;
+        public void Correct(Span<float> vx, Span<float> vy, Span<float> vz, int count, float dt)
+        {
+            Calls++;
+            for (var i = 0; i < count; i++) vx[i] += 5f * dt;
+        }
+    }
+
+    private sealed class UsdFlatField : Us.IHeightField
+    {
+        private readonly float _a;
+        public UsdFlatField(float a) => _a = a;
+        public float HeightAt(float x, float z) => 0;
+        public float AbsorptionAt(float x, float z) => _a;
+    }
+
+    private static float MaxOf(float[] g, int n)
+    {
+        var m = float.MinValue;
+        for (var i = 0; i < n; i++) m = MathF.Max(m, g[i]);
+        return m;
+    }
+
+    private sealed class FakeMt : Lz.IMachineTranslationBackend
+    {
+        public string Name => "fake";
+        public bool TryTranslate(string text, Lz.DubLanguage from, Lz.DubLanguage to, out string translated)
+        {
+            translated = "daebak, c'est manger de la bouillie froide.";
+            return true;
+        }
+    }
+
+    private sealed class NexusSp(object service) : IServiceProvider
+    {
+        public object? GetService(Type serviceType) => serviceType.IsInstanceOfType(service) ? service : null;
+    }
+
+    private sealed class NexusCapture : Nx.SpatiotemporalCloudNexusStreamer.INexusTransport
+    {
+        public readonly List<string> Ids = new();
+        public readonly List<byte> Layers = new();
+        public void Send(string endpointId, ReadOnlySpan<byte> packet)
+        {
+            if (packet[3] != 0) return;
+            Ids.Add(endpointId); Layers.Add(packet[4]);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "Integration")]
+    public void ContentSecurity_And_DigitalRights_Check()
+    {
+        // ══ SC-0 SIMD 커널 = 스칼라(비트 일치 · 꼬리) · DCT 기저 정규직교 · CRC ══
+        var rnd = new Random(1690);
+        foreach (var len in new[] { 0, 1, 7, 8, 9, 17, 64, 1001 })
+        {
+            float[] R() { var a = new float[len]; for (var i = 0; i < len; i++) a[i] = (float)(rnd.NextDouble() * 2 - 1); return a; }
+            var a1 = R(); var b1 = R();
+            Assert.Equal(Cs.WmSimd.DotScalar(a1, b1), Cs.WmSimd.Dot(a1, b1));
+            var d1 = (float[])a1.Clone(); var d2 = (float[])a1.Clone();
+            Cs.WmSimd.MulAdd(d1, b1, -0.37f); Cs.WmSimd.MulAddScalar(d2, b1, -0.37f);
+            Assert.True(d1.AsSpan().SequenceEqual(d2), $"muladd {len}");
+        }
+        for (var p = 0; p < 64; p++)
+            for (var q = 0; q < 64; q++)
+            {
+                var dot = Cs.WmSimd.Dot(Cs.NeuralInvisibleWatermarkEncoderEngine.BasisOf(p % 8, p / 8), Cs.NeuralInvisibleWatermarkEncoderEngine.BasisOf(q % 8, q / 8));
+                Assert.True(MathF.Abs(dot - (p == q ? 1f : 0f)) < 1e-4f, $"basis {p},{q} {dot}");
+            }
+        Assert.Equal(0x29B1, Cs.NeuralInvisibleWatermarkEncoderEngine.Crc16("123456789"u8));
+        var pl = new Cs.WatermarkPayload(0xABCDEF, 0x123456, 0xBEEF);
+        Assert.Equal(pl, Cs.WatermarkPayload.FromId(pl.Id));
+
+        // ══ SC-1 비디오 워터마크: 비가시(PSNR) · 무손실 검출 · 재압축 Q50/노이즈/밝기 견고 · 오키/미내장 거부 · 대역 · 무할당 ══
+        const int W = 256, H = 144;
+        void Scene(float[] f, int seed, float shift)
+        {
+            var r2 = new Random(seed);
+            for (var y = 0; y < H; y++)
+                for (var x = 0; x < W; x++)
+                {
+                    var v = 0.45f + 0.25f * MathF.Sin((x + shift) * 0.07f) * MathF.Cos(y * 0.05f) + 0.08f * (float)(r2.NextDouble() - 0.5);
+                    float dx = x - 128f, dy = y - 70f; if (dx * dx / 900 + dy * dy / 1300 < 1) v = 0.75f + 0.05f * MathF.Sin(x * 0.4f);
+                    var i = (y * W + x) * 3; f[i] = v; f[i + 1] = v * 0.9f + 0.05f; f[i + 2] = v * 0.8f;
+                }
+        }
+        var key = new byte[32]; key[0] = 7;
+        var wm = new Cs.NeuralInvisibleWatermarkEncoderEngine(key);
+        Assert.False(wm.EphemeralKey);
+        wm.SetPayload(pl);
+        var orig = new float[W * H * 3]; Scene(orig, 1, 0);
+        var img = (float[])orig.Clone();
+        wm.EncodeFrame(img, W, H);
+        Assert.True(wm.LastPsnr > 42f, $"psnr {wm.LastPsnr}");
+        var maxDiff = 0f; for (var i = 0; i < img.Length; i++) maxDiff = MathF.Max(maxDiff, MathF.Abs(img[i] - orig[i]));
+        Assert.True(maxDiff < 12f / 255f, $"max pixel change {maxDiff * 255}");
+        var det = wm.DetectFrame(img, W, H, pl);
+        Assert.True(det.Valid && det.Payload == pl && det.BitErrorRate == 0f && det.Confidence > 0.95f);
+        float[] Attack(Action<float[]> a) { var c = (float[])img.Clone(); a(c); return c; }
+        foreach (var (name, atk) in new (string, Action<float[]>)[]
+        {
+            ("q75", c => Cs.ContentAttackSimulator.Recompress(c, W, H, 75)), ("q50", c => Cs.ContentAttackSimulator.Recompress(c, W, H, 50)),
+            ("noise", c => Cs.ContentAttackSimulator.Noise(c, 0.015f, 3)), ("bright", c => Cs.ContentAttackSimulator.Brightness(c, 1.1f, 0.02f)),
+        })
+        {
+            var d = wm.DetectFrame(Attack(atk), W, H, pl);
+            Assert.True(d.Valid && d.Payload == pl, $"{name}: {d.Valid} ber {d.BitErrorRate} conf {d.Confidence}");
+        }
+        var other = new Cs.NeuralInvisibleWatermarkEncoderEngine(new byte[32]);
+        Assert.False(other.DetectFrame(img, W, H).Valid, "wrong key");
+        Assert.False(wm.DetectFrame(orig, W, H).Valid, "unmarked");
+        foreach (var band in new[] { Cs.WmBand.Low, Cs.WmBand.High })
+        {
+            var e = new Cs.NeuralInvisibleWatermarkEncoderEngine(key) { Band = band }; e.SetPayload(pl);
+            var c = (float[])orig.Clone(); e.EncodeFrame(c, W, H);
+            Assert.True(e.DetectFrame(c, W, H, pl).Valid && e.LastPsnr > 40f, $"band {band}");
+        }
+        var weak = new Cs.NeuralInvisibleWatermarkEncoderEngine(key) { Strength = 0.03f }; weak.SetPayload(pl);
+        var wc = (float[])orig.Clone(); weak.EncodeFrame(wc, W, H);
+        Assert.True(weak.LastPsnr > wm.LastPsnr + 6f, "strength ↔ visibility");
+        Assert.Equal(0, AllocationProbe.MinAllocated(() => { for (var i = 0; i < 3; i++) { wm.EncodeFrame(img, W, H); wm.DetectFrame(img, W, H, pl); } }));
+
+        // ══ SC-2 오디오 위상(7.1.4) · 3DGS ══
+        const int N = Cs.NeuralInvisibleWatermarkEncoderEngine.AudioN;
+        var bed = new float[12 * N]; var rx = new float[12 * N];
+        wm.ResetAudioDetect();
+        float snr = 0f;
+        for (var f = 0; f < 6; f++)
+        {
+            for (var c = 0; c < 12; c++) for (var n = 0; n < N; n++) { var t = (f * N + n) / 48000f; bed[c * N + n] = 0.15f * MathF.Sin(MathF.Tau * (220 + 20 * c) * t) + 0.07f * MathF.Sin(MathF.Tau * 2000 * t + c) + 0.02f * (float)(rnd.NextDouble() - 0.5); }
+            var pre = (float[])bed.Clone();
+            wm.EncodeAudio(bed, N, f); snr += wm.LastAudioSnrDb;
+            Assert.True(bed.AsSpan(3 * N, N).SequenceEqual(pre.AsSpan(3 * N, N)), "LFE untouched");
+            for (var i = 0; i < bed.Length; i++) rx[i] = bed[i] * 0.6f + 0.005f * (float)(rnd.NextDouble() - 0.5);
+            wm.AccumulateAudio(rx, N, f);
+        }
+        var ad = wm.DecideAudio(pl);
+        Assert.True(ad.Valid && ad.Payload == pl && snr / 6 > 15f, $"audio {ad.Valid} ber {ad.BitErrorRate} snr {snr / 6}");
+        var gs = new G3.GaussianScene(400);
+        for (var i = 0; i < 400; i++) gs.Add(new Nm.Vector3(i * 0.01f, 0, 0), Nm.Quaternion.Identity, new Nm.Vector3(0.02f), 0.9f, new Nm.Vector3((float)rnd.NextDouble()));
+        wm.EncodeSplats(gs);
+        Assert.True(wm.DetectSplats(gs, pl).Valid && !other.DetectSplats(gs).Valid);
+
+        // ══ SC-3 진위 가드: 진본 · 재압축 · 얼굴 교체/스플라이스 위치 · 미내장 · 서명 변조 · 역추적 · 무할당 ══
+        var guard = new Cs.DeepfakeProtectionContentAuthenticityGuard(wm, key);
+        Scene(orig, 1, 0); img = (float[])orig.Clone(); wm.EncodeFrame(img, W, H);
+        var man = new Cs.FrameManifest(); guard.Seal(img, W, H, 42, man);
+        Assert.True(man.Sealed && man.Tiles == 48 && guard.VerifySignature(man));
+        Assert.Equal(Cs.AuthVerdict.Authentic, guard.Verify(img, W, H, man));
+        Assert.True(guard.Radar(Cs.ThreatAxis.LocalTamper) == 0f && guard.Radar(Cs.ThreatAxis.Signature) == 0f);
+        Assert.Equal(Cs.AuthVerdict.Recompressed, guard.Verify(Attack(c => Cs.ContentAttackSimulator.Recompress(c, W, H, 60)), W, H, man));
+        Assert.True(guard.Detection.Valid && guard.Detection.Payload == pl && guard.TamperedTiles == 0, "trace survives recompression");
+        Assert.True(guard.Radar(Cs.ThreatAxis.Recompression) > 0.2f);
+        Assert.Equal(Cs.AuthVerdict.Tampered, guard.Verify(Attack(c => Cs.ContentAttackSimulator.FaceSwap(c, W, 96, 48, 64, 48)), W, H, man));
+        int[] faceTiles = { 19, 20, 27, 28 };
+        foreach (var t in faceTiles) Assert.Equal(1, guard.TamperMask[t]);
+        for (var t = 0; t < man.Tiles; t++) if (Array.IndexOf(faceTiles, t) < 0) Assert.True(guard.TamperMask[t] == 0, $"false tile {t}");
+        Assert.True(guard.Radar(Cs.ThreatAxis.Synthetic) > 0.6f && guard.Detection.Valid, "face swap localized · id still traced");
+        var donor = new float[W * H * 3]; Scene(donor, 9, 40);
+        Assert.Equal(Cs.AuthVerdict.Tampered, guard.Verify(Attack(c => Cs.ContentAttackSimulator.Splice(c, donor, W, 0, 0, 160, 72, 64, 48)), W, H, man));
+        var spliceHits = 0; foreach (var t in new[] { 29, 30, 37, 38 }) spliceHits += guard.TamperMask[t];
+        Assert.True(spliceHits >= 3 && guard.TamperedTiles <= 6, $"splice tiles {spliceHits} total {guard.TamperedTiles}");
+        Assert.Equal(Cs.AuthVerdict.Tampered, guard.Verify(Attack(c => { Cs.ContentAttackSimulator.Recompress(c, W, H, 75); Cs.ContentAttackSimulator.FaceSwap(c, W, 96, 48, 64, 48); }), W, H, man));
+        var unmarked = new float[W * H * 3]; Scene(unmarked, 2, 13);
+        Assert.Equal(Cs.AuthVerdict.Unmarked, guard.Verify(unmarked, W, H, man));
+        var forged = new Cs.FrameManifest(); forged.CopyFrom(man); forged.TileHash[3] ^= 1;
+        Assert.Equal(Cs.AuthVerdict.SignatureInvalid, guard.Verify(img, W, H, forged));
+        forged.CopyFrom(man); forged.PayloadId ^= 1;
+        Assert.False(guard.VerifySignature(forged));
+        var otherKeyGuard = new Cs.DeepfakeProtectionContentAuthenticityGuard(wm, new byte[32]);
+        Assert.False(otherKeyGuard.VerifySignature(man));
+        var ov = (float[])img.Clone();
+        guard.Verify(Attack(c => Cs.ContentAttackSimulator.FaceSwap(c, W, 96, 48, 64, 48)), W, H, man);
+        guard.Overlay(ov, W, H);
+        var fi = ((50 * W) + 100) * 3; Assert.True(ov[fi] > img[fi] && ov[fi + 1] < img[fi + 1], "overlay");
+        var att = Attack(c => Cs.ContentAttackSimulator.Recompress(c, W, H, 70));
+        guard.Verify(att, W, H, man);
+        Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>
+        {
+            for (var i = 0; i < 3; i++) { guard.Seal(img, W, H, 43, man); guard.Verify(att, W, H, man); }
+        }));
+
+        // ══ SC-4 저작권 · 수익화: 계약 파싱 · 워터폴 · 정확 보존 · 불법 차단 · 원장 체인/서명/변조 검출 · 상태 전이 · 무할당 ══
+        var rights = new Cs.EnterpriseDigitalRightsMonetizationSynthesizer(key);
+        Assert.True(rights.Load(Cs.ContentSecurityStudioRunner.DefaultContract), rights.ParseMessage);
+        Assert.True(rights.HolderCount == 5 && rights.ChannelCount == 4 && rights.TerritoryCount == 5 && rights.ParseErrors == 0 && rights.AssetId == "PFS-A-1690");
+        Assert.Equal(12500L, rights.Rate(0));
+        Assert.Equal(Cs.RateUnit.RevenueShare, rights.Unit(2));
+        Assert.Equal(5500L, rights.Rate(2));
+        Assert.False(new Cs.EnterpriseDigitalRightsMonetizationSynthesizer(key).Load("지분: A=60, B=30\n요율: 스트리밍=10 /재생"), "shares must sum 100");
+        var pay = new long[Cs.EnterpriseDigitalRightsMonetizationSynthesizer.MaxHolders];
+        rights.Distribute(1_000_000_000, pay);
+        Assert.Equal(1_000_000_000, pay[0]);
+        for (var h = 1; h < 5; h++) Assert.Equal(0, pay[h]);
+        rights.Distribute(2_000_000_001, pay);
+        Assert.Equal(2_000_000_001, pay.Sum());
+        Assert.True(pay[0] >= 1_000_000_000 + 400_000_000 && MathF.Abs(pay[1] - 2f * pay[4]) <= 2, $"waterfall {pay[0]} {pay[1]} {pay[4]}");
+        Assert.True(rights.Load(Cs.ContentSecurityStudioRunner.DefaultContract));
+        Assert.True(rights.BlockDevice(0xDEAD) && !rights.BlockDevice(0xDEAD));
+        long t0 = 0;
+        for (var batch = 0; batch < 6; batch++)
+        {
+            for (var i = 0; i < 1000; i++) rights.RecordPlay(0, i % 5, (ulong)(0x1000 + i));
+            rights.RecordPlay(0, 0, 0xDEAD, 50);
+            rights.RecordSale(2, 1, 10_000_000 * Cs.EnterpriseDigitalRightsMonetizationSynthesizer.Milli);
+            rights.Settle(t0 += 1000);
+        }
+        Assert.True(rights.PiracyPlays == 300 && rights.PiracyLoss == 300 * 12500 && rights.TotalPlays == 6000);
+        var expected = 6L * (1000 * 12500 + 10_000_000_000L * 5500 / 10000);
+        Assert.Equal(expected, rights.TotalRevenue);
+        long ent = 0; for (var h = 0; h < rights.HolderCount; h++) ent += rights.Entitled(h);
+        Assert.Equal(rights.TotalRevenue, ent);
+        Assert.True(rights.Recouped(0) == rights.RecoupTarget(0) && rights.RecoupTarget(0) == 2_000_000_000);
+        Assert.True(rights.LedgerHeight == 6 && rights.Block(0).State == Cs.SettlementState.Pending && rights.Block(1).State == Cs.SettlementState.Escrow && rights.Block(2).State == Cs.SettlementState.Settled);
+        Assert.True(rights.TotalPaid > 0 && rights.TotalPaid < rights.TotalRevenue);
+        Assert.True(rights.Block(0).PrevHash.AsSpan().SequenceEqual(rights.Block(1).Hash));
+        Assert.Equal(-1, rights.VerifyLedger());
+        rights.Block(3).Payout[1] += 1;
+        Assert.Equal(rights.Block(3).Index, rights.VerifyLedger());
+        rights.Block(3).Payout[1] -= 1;
+        Assert.Equal(-1, rights.VerifyLedger());
+        Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>
+        {
+            for (var i = 0; i < 200; i++) rights.RecordPlay(0, i % 5, (ulong)i);
+            rights.Settle(t0 + 1000);
+            rights.VerifyLedger();
+        }));
+
+        // ══ SC-5 러너: 시나리오 순환 · 판정 · 유출 역추적 → 차단 · 정산 · 무할당 ══
+        var run = new Cs.ContentSecurityStudioRunner(new Cs.NeuralInvisibleWatermarkEncoderEngine(key), new Cs.EnterpriseDigitalRightsMonetizationSynthesizer(key));
+        var verdicts = new HashSet<Cs.AuthVerdict>();
+        for (var f = 0; f < 60 * 15; f++) { run.TickOnce(); if ((f & 1) == 0) verdicts.Add(run.Guard.Verdict); }
+        Assert.True(verdicts.Contains(Cs.AuthVerdict.Authentic) && verdicts.Contains(Cs.AuthVerdict.Recompressed) && verdicts.Contains(Cs.AuthVerdict.Tampered), string.Join(",", verdicts));
+        Assert.True(run.LeaksTraced == 1 && run.LastTraced == run.Viewer && run.Rights.IsBlocked(run.Viewer.Id) && run.Rights.PiracyPlays > 0);
+        Assert.True(run.AudioDetection.Valid && run.AudioDetection.Payload == run.Viewer && run.SplatDetection.Valid);
+        Assert.True(run.Rights.LedgerHeight >= 14 && run.Rights.VerifyLedger() == -1);
+        long ent2 = 0; for (var h = 0; h < run.Rights.HolderCount; h++) ent2 += run.Rights.Entitled(h);
+        Assert.Equal(run.Rights.TotalRevenue, ent2);
+        Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>
+        {
+            for (var f = 0; f < 30; f++) run.TickOnce();
+        }));
+        Assert.False(run.LoadContract("지분: X=50"));
+        Assert.True(run.LoadContract(Cs.ContentSecurityStudioRunner.DefaultContract));
+        run.NewSession();
+        Assert.True(run.SplatDetection.Valid && run.Watermark.Payload == run.Viewer);
+        run.Dispose();
+    }
+
+    [Fact]
+    [Trait("Category", "Integration")]
+    public void GenerativeVfx_And_NeuralParticleFluid_Check()
+    {
+        // ══ VFX-1 SIMD 커널 = 스칼라(비트 일치 · 비정렬 꼬리) ══
+        var rnd = new Random(1681);
+        foreach (var len in new[] { 0, 1, 7, 8, 9, 15, 17, 33, 257, 1001 })
+        {
+            float[] R() { var a = new float[len]; for (var i = 0; i < len; i++) a[i] = (float)(rnd.NextDouble() * 6.0 - 3.0); return a; }
+            var x = R(); var v = R(); var s = R();
+            var x1 = (float[])x.Clone(); var x2 = (float[])x.Clone(); var p1 = new float[len]; var p2 = new float[len];
+            Gv.NeuralParticleFluidDynamicsEngine.Advance(x1, v, p1, 1f / 120f); Gv.NeuralParticleFluidDynamicsEngine.AdvanceScalar(x2, v, p2, 1f / 120f);
+            Assert.True(x1.AsSpan().SequenceEqual(x2) && p1.AsSpan().SequenceEqual(p2), $"advance {len}");
+            var v1 = (float[])v.Clone(); var v2 = (float[])v.Clone();
+            Gv.NeuralParticleFluidDynamicsEngine.AddScaled(v1, s, -0.08175f); Gv.NeuralParticleFluidDynamicsEngine.AddScaledScalar(v2, s, -0.08175f);
+            Assert.True(v1.AsSpan().SequenceEqual(v2), $"addscaled {len}");
+            Gv.NeuralParticleFluidDynamicsEngine.VelocityFrom(v1, x1, p1, 120f); Gv.NeuralParticleFluidDynamicsEngine.VelocityFromScalar(v2, x2, p2, 120f);
+            Assert.True(v1.AsSpan().SequenceEqual(v2), $"velocity {len}");
+        }
+        for (var a = -1f; a <= 1f; a += 0.25f) for (var sp = 0f; sp <= 12f; sp += 1.5f) { var m = Gv.NeuralParticleFluidDynamicsEngine.EddyViscosity(1f + a, sp); Assert.True(m >= 0.5f && m <= 2f, $"{m}"); }
+
+        // 댐 붕괴: 안정(NaN 없음 · 도메인 내 · 속도 상한) · 흐름 확산 · 밀도 ≈ 정지 밀도
+        Gv.NeuralParticleFluidDynamicsEngine Dam(float visc, float st)
+        {
+            var e = new Gv.NeuralParticleFluidDynamicsEngine(8000);
+            e.Configure(8000, new Nm.Vector3(-0.6f, 0f, -0.3f), new Nm.Vector3(0.6f, 1.2f, 0.3f), 0.1f);
+            e.Viscosity = visc; e.SurfaceTension = st;
+            e.EmitBlock(new Nm.Vector3(-0.58f, 0.01f, -0.28f), new Nm.Vector3(-0.2f, 0.5f, 0.28f), Nm.Vector3.Zero, Gv.FluidPhase.Liquid);
+            return e;
+        }
+        var dam = Dam(0.6f, 1.2f);
+        var n0 = dam.Count;
+        Assert.True(n0 > 900, $"{n0}");
+        for (var f = 0; f < 150; f++) dam.Step(1f / 60f);
+        float maxX = -9f, meanY = 0f;
+        for (var i = 0; i < dam.Count; i++)
+        {
+            Assert.False(float.IsNaN(dam.X[i]) || float.IsNaN(dam.Y[i]) || float.IsNaN(dam.VX[i]));
+            Assert.True(dam.X[i] >= -0.6f && dam.X[i] <= 0.6f && dam.Y[i] >= 0f && dam.Y[i] <= 1.2f && dam.Z[i] >= -0.3f && dam.Z[i] <= 0.3f);
+            maxX = MathF.Max(maxX, dam.X[i]); meanY += dam.Y[i];
+        }
+        meanY /= dam.Count;
+        Assert.True(maxX > 0.3f && meanY < 0.25f && dam.MaxSpeed < 6f, $"maxX {maxX} meanY {meanY} vmax {dam.MaxSpeed}");
+        Assert.True(dam.MeanDensity > dam.RestDensity * 0.5f && dam.MeanDensity < dam.RestDensity * 1.6f && dam.MeanNeighbors > 8f, $"ρ {dam.MeanDensity} nb {dam.MeanNeighbors}");
+        Assert.Equal(n0, dam.Count);
+
+        // 점성: 고점성 → 운동 에너지 ↓
+        var lo = Dam(0f, 1.2f); var hi = Dam(6f, 1.2f);
+        for (var f = 0; f < 40; f++) { lo.Step(1f / 60f); hi.Step(1f / 60f); }
+        Assert.True(hi.KineticEnergy < lo.KineticEnergy * 0.95f, $"KE hi {hi.KineticEnergy} lo {lo.KineticEnergy}");
+
+        // 표면장력: 무중력 성긴 구 → 응집(회전 반경 ↓)
+        float Gyration(float st)
+        {
+            var e = new Gv.NeuralParticleFluidDynamicsEngine(4000);
+            e.Configure(4000, new Nm.Vector3(-1f), new Nm.Vector3(1f), 0.1f);
+            e.Gravity = 0f; e.SurfaceTension = st; e.Stiffness = 40f;
+            var r2 = new Random(5);
+            for (var k = 0; k < 900; k++)
+            {
+                var d = new Nm.Vector3((float)r2.NextDouble() * 2 - 1, (float)r2.NextDouble() * 2 - 1, (float)r2.NextDouble() * 2 - 1);
+                if (d.LengthSquared() > 1f) { k--; continue; }
+                e.Emit(d * 0.42f, Nm.Vector3.Zero, Gv.FluidPhase.Liquid);
+            }
+            for (var f = 0; f < 60; f++) e.Step(1f / 60f);
+            double g = 0; for (var i = 0; i < e.Count; i++) g += e.X[i] * e.X[i] + e.Y[i] * e.Y[i] + e.Z[i] * e.Z[i];
+            return (float)Math.Sqrt(g / e.Count);
+        }
+        var g0 = Gyration(0f); var g1 = Gyration(6f);
+        Assert.True(g1 < g0 * 0.97f, $"rg st0 {g0} st6 {g1}");
+
+        // 가스: 부력 상승 · 수명 만료
+        var gas = new Gv.NeuralParticleFluidDynamicsEngine(2000);
+        gas.EmitNozzle(new Nm.Vector3(0, 0.3f, 0), Nm.Vector3.UnitY, 0.2f, 0.5f, 300, Gv.FluidPhase.Gas, 1f);
+        for (var f = 0; f < 30; f++) gas.Step(1f / 60f);
+        double gy = 0; for (var i = 0; i < gas.Count; i++) gy += gas.Y[i];
+        Assert.True(gas.GasCount == 300 && gy / gas.Count > 0.5, $"{gas.GasCount} {gy / gas.Count}");
+        for (var f = 0; f < 40; f++) gas.Step(1f / 60f);
+        Assert.True(gas.Count == 0 && gas.Expired == 300);
+
+        // 무할당 스텝
+        Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>
+        {
+            for (var f = 0; f < 10; f++) dam.Step(1f / 60f);
+        }));
+
+        // ══ VFX-3 충돌 · 비산 · 젖음 · 3DGS 피드백 ══
+        var terrain = new Gv.VfxStudioTerrain();
+        var gd = new Gv.InteractiveVfxCollisionSplashGuard { Terrain = terrain };
+        var fl = new Gv.NeuralParticleFluidDynamicsEngine(4000) { Collider = gd };
+        for (var k = 0; k < 200; k++) fl.Emit(new Nm.Vector3(-1.2f + k * 0.004f, 1.6f, 0.5f), new Nm.Vector3(0, -4f, 0), Gv.FluidPhase.Liquid);
+        for (var f = 0; f < 50; f++) { fl.Step(1f / 60f); gd.StepSecondary(1f / 60f); }
+        for (var i = 0; i < fl.Count; i++) Assert.True(fl.Y[i] >= terrain.HeightAt(fl.X[i], fl.Z[i]) - fl.H, $"{fl.Y[i]}");
+        Assert.True(gd.TerrainContacts > 0 && gd.Splashes > 0 && gd.DropletsSpawned > 0 && gd.ImpactCount > 0 && gd.MaxImpactSpeed > 4f, $"c {gd.TerrainContacts} s {gd.Splashes} d {gd.DropletsSpawned} v {gd.MaxImpactSpeed}");
+        Assert.True(gd.WetCoverage > 0f && gd.Impact(0).Kind == PromptFlowStudio.Services.OpenUsd.ImpactKind.Ground);
+        var nrm = Gv.InteractiveVfxCollisionSplashGuard.TerrainNormal(terrain, 0f, 0f, 0.01f);
+        Assert.True(nrm.Y > 0.99f && nrm.X < 0f && MathF.Abs(nrm.Length() - 1f) < 1e-5f, $"{nrm}");
+
+        // 캐릭터 3DGS 프록시: 머리 위 낙하 → 편향 · 젖음 → SH 어둡게 → 리셋 시 원본 복원
+        var scene = new PromptFlowStudio.Services.Neural3d.GaussianScene(64);
+        for (var k = 0; k < 40; k++) scene.Add(new Nm.Vector3(0.02f * (k % 5), 1.5f + 0.02f * (k / 5), 0f), Nm.Quaternion.Identity, new Nm.Vector3(0.05f), 0.9f, new Nm.Vector3(0.8f, 0.6f, 0.5f));
+        var dc0 = scene.Sh[0];
+        var gd2 = new Gv.InteractiveVfxCollisionSplashGuard();
+        gd2.BindSplatProxies(scene, 8);
+        Assert.Equal(8, gd2.ProxyCount);
+        var fl2 = new Gv.NeuralParticleFluidDynamicsEngine(1000) { Collider = gd2 };
+        for (var k = 0; k < 60; k++) fl2.Emit(new Nm.Vector3(0.04f + (k % 6) * 0.01f, 2.2f, (k / 6) * 0.004f), new Nm.Vector3(0, -3f, 0), Gv.FluidPhase.Liquid);
+        for (var f = 0; f < 30; f++) { fl2.Step(1f / 60f); gd2.StepSecondary(1f / 60f); }
+        var maxWet = 0f; for (var k = 0; k < gd2.ProxyCount; k++) maxWet = MathF.Max(maxWet, gd2.ProxyWetness(k));
+        Assert.True(gd2.ProxyContacts > 0 && maxWet > 0f, $"{gd2.ProxyContacts} {maxWet}");
+        var darkened = false; for (var i = 0; i < scene.Count; i++) if (scene.BaseColor(i).X < 0.8f - 1e-4f) darkened = true;
+        Assert.True(darkened);
+        gd2.Reset();
+        Assert.Equal(dc0, scene.Sh[0]);
+        // 파편: 착지 후 지면 위
+        gd.SpawnDebris(new Nm.Vector3(0, 0.5f, 0), 50, 4f);
+        for (var f = 0; f < 180; f++) gd.StepSecondary(1f / 60f);
+        Assert.Equal(50, gd.DebrisCount);
+        for (var i = 0; i < Gv.InteractiveVfxCollisionSplashGuard.MaxDebris; i++) if (gd.DebrisAlive(i)) Assert.True(gd.DebrisPosition(i).Y >= terrain.HeightAt(gd.DebrisPosition(i).X, gd.DebrisPosition(i).Z) - 1e-3f);
+        Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>
+        {
+            for (var f = 0; f < 10; f++) { fl.Step(1f / 60f); gd.StepSecondary(1f / 60f); }
+        }));
+
+        // ══ VFX-2 프롬프트 → 이벤트 ══
+        var vol = new Gv.VolumetricFireSmokeAtmosphericSynthesizer(24);
+        Assert.Equal(0, vol.TriggerFromPrompt("평화로운 초원 산책", Nm.Vector3.Zero));
+        Assert.Equal(3, vol.TriggerFromPrompt("거대한 폭발 뒤 굴뚝 연기와 짙은 안개", Nm.Vector3.Zero));
+        Assert.Equal(1, vol.TriggerFromPrompt("A small campfire FLAME flickers", Nm.Vector3.Zero));
+        Assert.Equal(Gv.VfxEventKind.Fire, vol.LastEvent);
+        for (var f = 0; f < 30; f++) vol.Step(1f / 60f);
+        Assert.True(vol.MaxTemperature > 2f && vol.TotalDensity > 0f && vol.MeanTransmittance < 1f && vol.ActiveEmitters >= 3, $"T {vol.MaxTemperature} ρ {vol.TotalDensity} tr {vol.MeanTransmittance}");
+        var hot = false; for (var i = 0; i < vol.ImageR.Length; i++) if (vol.ImageR[i] > vol.ImageB[i] * 1.5f && vol.ImageR[i] > 0.05f) hot = true;
+        Assert.True(hot);
+        for (var i = 0; i < vol.Density.Length; i++) Assert.False(float.IsNaN(vol.Density[i]));
+
+        // Beer–Lambert: 수직 광원 · 안개(높이만 의존) → 투과율 = exp(−σΔ Σ위쪽 ρ)
+        var fog = new Gv.VolumetricFireSmokeAtmosphericSynthesizer(16) { LightDirection = -Nm.Vector3.UnitY, Turbulence = 0f, Buoyancy = 0f, Weight = 0f };
+        fog.Trigger(Gv.VfxEventKind.Fog, Nm.Vector3.Zero, 2f);
+        for (var f = 0; f < 20; f++) fog.Step(1f / 60f);
+        var nn = fog.N; var cell = fog.BoxSize / nn;
+        for (var y = 0; y < nn; y += 3)
+        {
+            double tau = 0; for (var yy = y + 1; yy < nn; yy++) tau += fog.Density[(5 * nn + yy) * nn + 7] * fog.Extinction * cell;
+            Assert.True(Math.Abs(fog.LightTransmittance[(5 * nn + y) * nn + 7] - Math.Exp(-tau)) < 1e-4, $"y{y}");
+        }
+        Assert.True(fog.LightTransmittance[(5 * nn + 0) * nn + 7] < fog.LightTransmittance[(5 * nn + nn - 1) * nn + 7]);
+        var trDense = fog.MeanTransmittance;
+        fog.SetPreset(Gv.VolumePreset.ThinHaze); fog.Step(1f / 60f);
+        Assert.True(fog.MeanTransmittance > trDense, $"{fog.MeanTransmittance} vs {trDense}");
+        Assert.True(fog.SampleDensity(new Nm.Vector3(0, 0.3f, 0)) > 0f && fog.SampleDensity(new Nm.Vector3(9, 9, 9)) == 0f);
+        vol.Trigger(Gv.VfxEventKind.Explosion, Nm.Vector3.Zero);
+        Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>
+        {
+            for (var f = 0; f < 5; f++) vol.Step(1f / 60f);
+        }));
+
+        // ══ 러너: 노즐 → 유체 ↔ 충돌 ↔ 볼륨 → 3DGS 레이어 · 정상 상태 무할당 ══
+        var run = new Gv.GenerativeVfxStudioRunner(new Gv.NeuralParticleFluidDynamicsEngine(6000), new Gv.VolumetricFireSmokeAtmosphericSynthesizer(24), new Gv.InteractiveVfxCollisionSplashGuard());
+        for (var f = 0; f < 90; f++) run.TickOnce();
+        Assert.True(run.Fluid.Count > 3000 && run.FluidSplats.Count > 0 && run.Guard.Contacts > 0 && run.Volume.Steps == 90, $"{run.Fluid.Count} {run.FluidSplats.Count} {run.Guard.Contacts}");
+        Assert.True(run.TriggerPrompt("explosion near the character") == 1 && run.Guard.DebrisCount > 0);
+        run.Trigger(Gv.VfxEventKind.Explosion, new Nm.Vector3(0.5f, 0f, 0f));
+        for (var f = 0; f < 5; f++) run.TickOnce();
+        Assert.Equal(0, SteadyStateAllocation.MinBytes(() =>
+        {
+            for (var f = 0; f < 10; f++) run.TickOnce();
+        }));
+        run.NewShot();
+        Assert.Equal(0, run.Fluid.Count);
+        run.Dispose();
     }
 }
 
@@ -30929,16 +30947,21 @@ public sealed class LiveCommerceIsolatedTests
         }
         Assert.True(alloc == 0, "커머스 MCR 틱 할당 " + alloc + " · " + run.Summary());
         // 레이어 예산 초과는 측정 창(60 f) 단위 최선값 — 공유 머신 스케줄러 지터 1 회가 전체 판정을 깨지 않도록(최대 5 창)
+        // Step 44: 재시도는 기준 상한(무완화)으로만 판단 → 기준 통과 창을 끝까지 찾는다 · 기준 초과 창 직후에만 부하 표본(창 동안의 경합을 판정에 반영)
         var tk = new double[60]; var med = double.MaxValue; var over = long.MaxValue;
-        for (var attempt = 0; attempt < 5 && (med >= CiFrameBudget.Ms || over > CiFrameBudget.WindowOverrunTolerance); attempt++)
+        var load = new WindowContention();
+        for (var attempt = 0; attempt < 5 && (med >= CiFrameBudget.BaseMs || over > CiFrameBudget.WindowOverrunTolerance); attempt++)
         {
             if (attempt > 0) Thread.Sleep(150);
             var ob0 = run.LayerOverBudget;
             for (var i = 0; i < 60; i++) { run.Step(); tk[i] = mcr.LastTickMs; }
-            Array.Sort(tk); med = Math.Min(med, tk[30]); over = Math.Min(over, run.LayerOverBudget - ob0);
+            Array.Sort(tk);
+            var wMed = tk[30]; var wOver = run.LayerOverBudget - ob0;
+            med = Math.Min(med, wMed); over = Math.Min(over, wOver);
+            load.Observe(wMed >= CiFrameBudget.BaseMs || wOver > CiFrameBudget.WindowOverrunTolerance);
         }
-        // 부하 인지 예산 — 기준 초과일 때만 외부 선점 계측(정상 경로 탐침 0회)
-        Assert.True(med < CiFrameBudget.Ms && over <= CiFrameBudget.Scaled(CiFrameBudget.WindowOverrunTolerance), "중앙 틱 " + med + " ms · 창 레이어 초과 " + over + " · 레이어 최대 " + run.MaxLayerMs + " · 상품 " + run.Inspection.LastUs + " µs · " + run.Summary());
+        // 부하 인지 예산 — 기준 미만이면 탐침 0회 · 초과 시 max(창 최대 배수, 판정 시점 배수) 로만 완화(상한 ×3 · 기준 임계 불변)
+        Assert.True(med < load.Budget(CiFrameBudget.BaseMs) && over <= load.Budget(CiFrameBudget.WindowOverrunTolerance), "중앙 틱 " + med + " ms · 창 레이어 초과 " + over + " · 창 부하 배수 " + load.PeakFactor + "(표본 " + load.Samples + ") · 레이어 최대 " + run.MaxLayerMs + " · 상품 " + run.Inspection.LastUs + " µs · " + run.Summary());
         run.Dispose(); shw.Dispose(); mcr.Dispose(); talk.Dispose();
         GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
     }

@@ -143,3 +143,36 @@ internal readonly struct FrameBudget
 
     public override string ToString() => Base.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture) + " ms(기준)";
 }
+
+/// <summary>
+/// Step 44 — 창 단위 부하 표본. 최선 창 재시도 게이트에서 판정 시점 1 회 탐침은 '경합이 창 동안 있다가 판정 직전에 사라진' 경우
+/// 배수 1.0 으로 실패한다(LiveCommerce 레이어 초과 창 · 기준 실행 실패 실측). 기준을 넘긴 창 직후에만 탐침해 최대 배수를 보관하고
+/// 최종 판정은 <c>max(창 최대 배수, 판정 시점 배수)</c> — 기준 통과 창 · 유휴(배수 1.0)에서는 기준 상한 그대로 엄격, 탐침 0 회.
+/// </summary>
+internal sealed class WindowContention
+{
+    private readonly Func<double> _rawFactorProbe;
+
+    public WindowContention() : this(CiFrameBudget.CurrentFactor) { }
+
+    /// <summary>부하 계수 공급자 주입(결정론 테스트용).</summary>
+    public WindowContention(Func<double> rawFactorProbe) => _rawFactorProbe = rawFactorProbe ?? throw new ArgumentNullException(nameof(rawFactorProbe));
+
+    /// <summary>기준 초과 창에서 관측한 최대 적용 배수(1 ~ 3 · 표본 없음 → 1.0).</summary>
+    public double PeakFactor { get; private set; } = 1.0;
+
+    /// <summary>탐침 횟수(기준 초과 창 수).</summary>
+    public int Samples { get; private set; }
+
+    /// <summary>창 직후 호출 — 창이 기준을 통과했으면 탐침하지 않는다.</summary>
+    public void Observe(bool windowMissedBase)
+    {
+        if (!windowMissedBase) return;
+        Samples++;
+        var f = CiFrameBudget.NormalizeFactor(_rawFactorProbe());
+        if (f > PeakFactor) PeakFactor = f;
+    }
+
+    /// <summary>부하 인지 예산 — 기준 미만 값은 탐침 없이 통과 · 초과일 때만 <c>max(PeakFactor, 현재 배수)</c> 로 재판정.</summary>
+    public FrameBudget Budget(double baseBudget) => CiFrameBudget.Custom(baseBudget, () => Math.Max(PeakFactor, CiFrameBudget.NormalizeFactor(_rawFactorProbe())));
+}

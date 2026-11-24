@@ -20,6 +20,9 @@ public sealed class TitanHeavyComputeBCollection { }
 //   3 번째 사슬(TitanHeavyComputeC)은 실측 후 폐기: xUnit 동기화 컨텍스트 슬롯(maxParallelThreads 4)을 동기 CPU 중량 테스트 4 개
 //   (A · B · C · 단독 BroadcastMcr)가 모두 점유하자 경량 async 테스트의 연속이 ≈ 45 s 정지 → 소켓/마감 타임아웃 5 건(VisionIntelligence ·
 //   LocalVlmHttpClient · ServiceLifecycle · WanEngine · MediaFoundation 수명). 규칙: 동시 중량 사슬 ≤ 2(경량 연속용 슬롯 ≥ 2 확보).
+// Step 44 — TitanReleaseTests(ProcessGcMode · 비병렬) 순수 계산 메서드 19 개를 TitanReleaseChainATests(A 몫) / TitanReleaseChainBTests(B 몫)로 분리.
+//   실측(16 코어 · 유휴): 이관 전 A 177 s / B 216 s(경합 호스트) → 이관 후 A 136 s / B 144 s(1 차 158 / 147 s → 2 메서드 A→B 재균형). 비병렬 구간 -68 s.
+//   사슬 수는 그대로 2 — 새 컬렉션 정의 없이 기존 A/B 에만 배치.
 
 /// <summary>Step 35 — 컬렉션 병렬 실행 시 스레드 풀 기아 방지. 기본 최소 스레드(= 코어 수)로는 동기 대기를 섞는 테스트 4 개가
 ///   동시에 돌 때 풀 확장(초당 ~1–2 스레드) 지연이 async 연속을 수백 ms~수십 s 밀어 타임아웃 · 프로브 창 레이스를 만든다.
@@ -38,7 +41,8 @@ internal static class ParallelExecutionGuards
 
 /// <summary>
 /// Step 39 — 스레드 국소 무할당 단언의 정상 상태(steady-state) 측정기.
-///   <c>TitanReleaseTests</c> 는 이미 <c>[Collection("ProcessGcMode")]</c>(DisableParallelization)라 다른 테스트와 겹쳐 돌지 않으며,
+///   <c>TitanReleaseTests</c> 는 <c>[Collection("ProcessGcMode")]</c>(DisableParallelization)라 다른 테스트와 겹쳐 돌지 않으며
+///   (Step 44: 분리된 <c>TitanReleaseChainA/BTests</c> 는 A/B 사슬에서 병렬 구간과 겹친다 — 무할당 단언이 전부 이 재시도 창이라 가능),
 ///   측정값 <see cref="GC.GetAllocatedBytesForCurrentThread"/> 는 스레드 국소라 다른 스레드의 할당이 섞일 수 없다.
 ///   전체 실행에서만 보인 1회성 4,688 B 는 런타임 자체 전이(계층 JIT 승격 · OSR 패치포인트 · 호출 카운팅 완료 처리)가
 ///   측정 창 안의 <em>호출 스레드</em>에서 1회 할당한 것 — 앞선 수백 개 테스트의 JIT 부하가 계층 승격 지연(100 ms 타이머)을 밀어

@@ -108,3 +108,15 @@
   - `PlutoBidirectionalSyncAndFullContextTests.WriteBack_OnReconnect…` 비확장 2 s 다운 창 — 병렬 구간 경합 중 잠금 쓰기 지연으로 "직후 다운" 단언 전 창 만료(1 회 실측) → 5 s 창(재연결은 기존 폴링 · 10 s 상한 · 단언 동일).
   - LiveCommerce 레이어 초과 창 게이트는 호스트 경합 민감(기준 실행 실패 · 비병렬 · 최선 5 창 기존) — 변경 없음, 타 프로세스 동시 실행 금지 재확인.
 - 측정(동일 세션 · 16 코어): 기준 `225c7bd` 경합 호스트 14 m 14 s(857 s · 실패 2) / 유휴 호스트 8 m 40 s(523 s · 실패 1) → Step 43 시도 8 m 6 s(488 s · 1424/1424) · 공식 검증 9 m 44 s(588 s · 1424/1424 · 종료 코드 0). 비병렬 구간 472 → 342–432 s — 단일 코어 구간 축소로 호스트 경합 민감도 감소. 벽시계는 호스트 부하에 따라 ±100 s 변동 · 병렬 구간 꼬리는 B 사슬 ≈ 140–150 s(다음 후보: A/B 재균형).
+
+## TitanRelease 사슬 분리 · A/B 재균형 · 창 단위 부하 표본 (Step 44)
+- `TitanReleaseTests`(`ProcessGcMode` · 106 메서드 · 경합 호스트 168 s) 중 분류 기준(Step 43) 0 건인 순수 계산 · 가상 시계 메서드 19 개를 **새 컬렉션 없이** 기존 사슬로 분리 — `TitanReleaseChainATests`(`TitanHeavyCompute` · 8 메서드) / `TitanReleaseChainBTests`(`TitanHeavyComputeB` · 11 메서드). 동시 중량 사슬 ≤ 2 유지(소스 가드가 `TitanHeavy*` 컬렉션 정의 정확히 2 개를 단언).
+- 제외(비병렬 유지): RealtimeGamingVision(라이브 `Fps > 20` 벽시계 게이트) · HardwareAcceleration(`SpinUntil` 1.5 s 하트비트 창 + 실 인코더 스레드) · UniversalMediaEmpire(`Task.Delay` 동시 처리 피크 단언) · 환경변수/실 프로세스/GC 모드·지표/`Stopwatch`/`CiFrameBudget` 사용 메서드 전부.
+- 분리 중 발견 위해 요소(가드):
+  1. **원시 문자열 리터럴 경계 함정** — `"""` 본문의 열 0 `}` · 4 칸 `    }` 줄(USDA · Razor 샘플)이 줄 기반 메서드/클래스 끝 탐지를 속여 본문이 잘림(1 차 시도 컴파일 오류 49 건) → 추출기는 `"""` 홀수 줄로 원시 문자열 상태를 추적. `[Fact]`/`[Theory]` 226 = 226 으로 테스트 손실 0 확인.
+  2. **비공개 헬퍼 · 정적 가변 프로브 결합** — 이동 메서드 전용 헬퍼 12 개(`DomProbeComponent` 정적 카운터 · `NexusCapture` · `FakeMt` · `UsdResidual` 등)는 사용처와 함께 이동, 직렬 쪽과 공유하는 2 개(`CrewTestProvider` · `SineWav`)만 `internal` + `TitanReleaseTests.` 한정. 소스 가드: 직렬 클래스 `DomProbeComponent` 참조 0.
+  3. **병렬 구간 GC 간섭** — 분리 클래스의 무할당 단언은 이제 A 사슬 `MassiveCrowd`(LOH · Gen2 → `ArrayPool` 트림)와 겹친다 → 전부 `SteadyStateAllocation.MinBytes` 재시도 창(사슬당 ≥ 10)만 허용 · 단발 `GetAllocatedBytesForCurrentThread` 금지(소스 가드). `PFS_ALLOC_FORCE_ALL_WINDOWS=1` 멱등성 감사 19/19 통과.
+  4. 임시 경로는 전부 `GetTempPath()` + `Guid.NewGuid()` 같은 줄(소스 가드) — 병렬 구간 경로 충돌 0.
+- `WindowContention`(`CiFrameBudget.cs`): 최선 창 재시도 게이트에서 **기준 초과 창 직후에만** 부하 배수를 표본해 최대값을 보관, 최종 판정 `max(창 최대 배수, 판정 시점 배수)`. 판정 시점 1 회 탐침은 "창 동안 경합 → 판정 직전 해소" 를 배수 1.0 으로 판정해 실패(LiveCommerce 기준 실행 실패 원인). 기준 상한(33.3 ms · 창 초과 6) 불변 · 유휴/기준 통과 창 탐침 0 회 · 상한 ×3. LiveCommerce 레이어 초과 창 게이트에 적용 · 재시도 루프는 기준 상한으로만 판단(기준 통과 창을 최대 5 창까지 탐색).
+- 측정(16 코어): 기준 `06d15ff` 경합 호스트(타 프로젝트 테스트 동시 실행) 13 m 21 s(801 s · 1424/1424 · A 177 / B 216 / ProcessGcMode 303 / Timing 279 s) → Step 44 1 차 8 m 7 s(487 s · 1426/1426 · 첫 실행 종료 코드 0 · A 158 / B 147 / ProcessGcMode 158 / Timing 166 s) → A/B 2 메서드(ContentSecurity · GenerativeVfx) A→B 재균형 후 최종 **7 m 35 s(455 s · 1426/1426 · 첫 실행 종료 코드 0)** · A 136 / B 144 s(꼬리 148 s) · ProcessGcMode 138 s · Timing 168 s · Pluto 451/451(24 s).
+- 병렬 꼬리 하한: 사슬 작업 합 ≈ 280 s ÷ 2 사슬 ≈ 140 s — 동시 중량 사슬 ≤ 2 규칙 아래 95–105 s 는 사슬 작업 자체를 줄이지 않는 한 불가(다음 후보: `CinematicDirector` 56 s · `BroadcastMcr` 48 s · `GarmentDynamics` 48 s 내부 반복 축소).
