@@ -2324,6 +2324,8 @@
     // ── 🎬 몽타주 3막 자막(클립 경계 정렬 · 프리뷰 + 렌더 공용) ──
     private PromptFlowStudio.Services.Pluto.PlutoMontagePlan? _activeMontagePlan;
     private IReadOnlyList<PromptFlowStudio.Services.Export.SubtitleCue>? _montageCues;
+    private string? _renderedMasterVideoId;
+    private ulong? _renderedMasterFingerprint;
     private bool _montageStoryBusy, _montageStoryLlm;
     private int _montageStorySeq;
 
@@ -3777,6 +3779,9 @@
         _perfStyleTags = string.Join(", ", ActiveViralTagsSafe(3));
         _perfContextSource = source;
         _perfOutcome = null;
+        // 🔍 마스터 ↔ 작업 공간 지문(전 언어 일괄 렌더 시 불일치 경고용)
+        _renderedMasterVideoId = _perfVideoId;
+        _renderedMasterFingerprint = PromptFlowStudio.Services.Pluto.PlutoMultiLocaleBatchRenderService.ComputeWorkspaceFingerprint(_montagePhotos, _montageCues);
 
         // 🎞️ 카탈로그 영속 — 시리즈 편은 편 제목 · 편 번호 모드로 기록(덮어쓰기 없이 편별 선택 가능)
         var title = _perfVideoId;
@@ -5374,7 +5379,7 @@
             _localeBatchToast = result.SummaryKorean + (req.VideoPath is null ? " · 렌더 영상 경로 없음(사이드카 생략)" : "");
         }
         catch (OperationCanceledException) { }
-        catch (Exception ex) { Program.Log("Workspace.LocaleBatch", ex); _localeBatchToast = "⚠ 전 언어 일괄 실패: " + ex.Message; }
+        catch (Exception ex) { Program.Log("Workspace.LocaleBatch", ex); _localeBatchToast = "⚠ 전 언어 일괄 실패: " + PromptFlowStudio.Services.Pluto.PlutoAutonomousActivityFeedService.Redact(ex.Message); }
         finally { _localeBatchBusy = false; _publishPackBusy = false; }
         if (_disposed) return;
         await InvokeAsync(StateHasChanged);
@@ -5391,7 +5396,10 @@
         foreach (var c in _catalogClips) if (vid.Length > 0 && string.Equals(c.VideoId, vid, StringComparison.OrdinalIgnoreCase)) { clip = c; break; }
         if (clip is null && _catalogClips.Count > 0 && vid.Length == 0) clip = _catalogClips[0];
         if (clip is null || string.IsNullOrWhiteSpace(clip.OutputPath)) { _localeBatchToast = "⚠ 일괄 렌더할 마스터 렌더(영상 경로)가 카탈로그에 없습니다"; await InvokeAsync(StateHasChanged); return; }
+        var mismatch = PromptFlowStudio.Services.Pluto.PlutoMultiLocaleBatchRenderService.DescribeWorkspaceMismatch(clip.VideoId, _renderedMasterVideoId, _renderedMasterFingerprint,
+            PromptFlowStudio.Services.Pluto.PlutoMultiLocaleBatchRenderService.ComputeWorkspaceFingerprint(_montagePhotos, _montageCues));
         _localeBatchBusy = true;
+        if (mismatch is not null) _localeBatchToast = mismatch + " · ⏳ 렌더 진행 중…";
         _publishPackBusy = true;
         _montageBusy = true;
         _stockBusy = true;
@@ -5435,10 +5443,10 @@
             _localeFitCache = null;
             _publishPack = null;
             _publishPackClip = null;
-            _localeBatchToast = result.SummaryKorean;
+            _localeBatchToast = mismatch is null ? result.SummaryKorean : mismatch + " · " + result.SummaryKorean;
         }
         catch (OperationCanceledException) { }
-        catch (Exception ex) { Program.Log("Workspace.LocaleRenderBatch", ex); _localeBatchToast = "⚠ 전 언어 일괄 렌더 실패: " + ex.Message; }
+        catch (Exception ex) { Program.Log("Workspace.LocaleRenderBatch", ex); _localeBatchToast = "⚠ 전 언어 일괄 렌더 실패: " + PromptFlowStudio.Services.Pluto.PlutoAutonomousActivityFeedService.Redact(ex.Message); }
         finally { _localeBatchBusy = false; _publishPackBusy = false; _montageBusy = false; _stockBusy = false; }
         if (_disposed) return;
         await InvokeAsync(StateHasChanged);

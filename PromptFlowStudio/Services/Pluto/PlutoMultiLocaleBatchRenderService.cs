@@ -164,6 +164,52 @@ public sealed class PlutoMultiLocaleBatchRenderService : IPlutoMultiLocaleBatchR
     /// <summary>여유 공간 최소 여분(바이트).</summary>
     public const long MinFreeHeadroomBytes = 32L * 1024 * 1024;
 
+    /// <summary>⚠ 마스터 ↔ 현재 작업 공간 불일치 경고 접두(토스트 · 테스트 공용).</summary>
+    public const string WorkspaceMismatchPrefix = "⚠ 마스터 불일치";
+
+    /// <summary>
+    /// 🔍 작업 공간 지문(사진 경로 순서 + 자막 시각 · 원문) — FNV-1a 64 · 순서 민감 · 문자열 보간 없음.
+    /// 마스터를 렌더한 시점의 지문과 일괄 렌더 시점의 지문을 비교해 자막/미디어가 바뀐 채 게시하는 실수를 드러낸다.
+    /// </summary>
+    public static ulong ComputeWorkspaceFingerprint(IReadOnlyList<string>? photos, IReadOnlyList<SubtitleCue>? cues)
+    {
+        const ulong prime = 1099511628211UL;
+        var h = 14695981039346656037UL;
+        static ulong Mix(ulong h, string? text)
+        {
+            if (text is not null) foreach (var ch in text) { h ^= ch; h *= prime; }
+            h ^= 0x1F; h *= prime;   // 필드 경계(이어 붙임 충돌 방지)
+            return h;
+        }
+        h = Mix(h, photos is null ? "0" : photos.Count.ToString(CultureInfo.InvariantCulture));
+        if (photos is not null) for (var i = 0; i < photos.Count; i++) h = Mix(h, photos[i]);
+        h = Mix(h, cues is null ? "0" : cues.Count.ToString(CultureInfo.InvariantCulture));
+        if (cues is not null)
+            for (var i = 0; i < cues.Count; i++)
+            {
+                var c = cues[i];
+                h = Mix(h, c.StartSec.ToString(CultureInfo.InvariantCulture));
+                h = Mix(h, c.EndSec.ToString(CultureInfo.InvariantCulture));
+                h = Mix(h, c.Text);
+                h = Mix(h, c.SecondaryText);
+            }
+        return h;
+    }
+
+    /// <summary>
+    /// ⚠ 카탈로그에서 고른 마스터가 현재 작업 공간과 다르면 경고 1줄(일치 → null).
+    /// <paramref name="renderedVideoId"/>/<paramref name="renderedFingerprint"/> = 이 작업 공간에서 마지막으로 렌더한 마스터와 그때의 지문(없음 → null).
+    /// </summary>
+    public static string? DescribeWorkspaceMismatch(string masterVideoId, string? renderedVideoId, ulong? renderedFingerprint, ulong currentFingerprint)
+    {
+        if (string.IsNullOrWhiteSpace(renderedVideoId) || renderedFingerprint is null
+            || !string.Equals(masterVideoId, renderedVideoId, StringComparison.OrdinalIgnoreCase))
+            return WorkspaceMismatchPrefix + " — 선택한 카탈로그 마스터(" + masterVideoId + ")는 현재 작업 공간에서 렌더한 영상이 아닙니다 · 자막/미디어가 다를 수 있으니 게시 전 확인하세요";
+        if (renderedFingerprint.Value != currentFingerprint)
+            return WorkspaceMismatchPrefix + " — 마스터(" + masterVideoId + ") 렌더 이후 현재 작업 공간의 자막/미디어가 바뀌었습니다 · 게시 전 확인하세요";
+        return null;
+    }
+
     private readonly IPlutoMultiLanguageChannelService _channels;
     private readonly PlutoLocaleRenderDelegate? _defaultRender;
     private readonly IPlutoAutonomousActivityFeedService? _feed;

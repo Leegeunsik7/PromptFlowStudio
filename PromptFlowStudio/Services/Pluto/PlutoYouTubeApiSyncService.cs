@@ -98,6 +98,8 @@ public enum PlutoYouTubeAnalyticsPrecisionMode
     AwaitingScope,
     /// <summary>OAuth + 범위 확인 — CTR · 유지율 정밀 학습 활성.</summary>
     Active,
+    /// <summary>🔎 24시간 403 범위 래치가 만료됐지만 새 승인 · 성공 동기화가 아직 없음 — 다음 동기화에서 재확인(관찰) · '활성' 으로 바로 올리지 않음.</summary>
+    RecheckingScope,
 }
 
 /// <summary>📊 Step 45 — 설정 카드 배지용 정밀 지표 상태(비밀값 없음).</summary>
@@ -110,10 +112,17 @@ public sealed record PlutoYouTubeAnalyticsPrecisionStatus(PlutoYouTubeAnalyticsP
             ? "📊 CTR · 유지율 정밀 동기화 활성(채널 " + (ChannelCount - ScopeMissingChannels).ToString(CultureInfo.InvariantCulture) + "/" + ChannelCount.ToString(CultureInfo.InvariantCulture) + " · 나머지 범위 대기)"
             : "📊 CTR · 유지율 정밀 동기화 활성",
         PlutoYouTubeAnalyticsPrecisionMode.AwaitingScope => "🔐 yt-analytics.readonly 범위 대기 — 관측 전용(재승인 후 저장)",
+        PlutoYouTubeAnalyticsPrecisionMode.RecheckingScope => "🔎 범위 재확인 대기 — 24시간 경과 · 다음 동기화에서 403 해제 여부 관찰(관측 전용)",
         PlutoYouTubeAnalyticsPrecisionMode.ApiKeyObserveOnly => "👁 API 키 관측 전용(CTR · 유지율은 OAuth 또는 Studio 내보내기)",
-        PlutoYouTubeAnalyticsPrecisionMode.Disabled => "⏸ 정밀 지표 동기화 꺼짐",
+        PlutoYouTubeAnalyticsPrecisionMode.Disabled => Enabled ? "⏸ 정밀 지표 동기화 꺼짐(킬 스위치 · 격리 환경)" : "⏸ 정밀 지표 동기화 꺼짐",
         _ => "⚙ 정밀 지표 미설정",
     };
+
+    /// <summary>🔀 런타임 실효 상태 — 사용자 토글이 켜져 있어도 킬 스위치 · 격리 · 미설정이면 false(토글 'ON' 옆 '꺼짐' 배지 모순 방지).</summary>
+    public bool EffectiveOn => Enabled && Mode is not (PlutoYouTubeAnalyticsPrecisionMode.Disabled or PlutoYouTubeAnalyticsPrecisionMode.NotConfigured);
+
+    /// <summary>토글 라벨 상태(<c>ON</c> · <c>OFF</c> · 켜 두었으나 환경 차단 → <c>중지됨</c>).</summary>
+    public string ToggleStateKorean => !Enabled ? "OFF" : EffectiveOn ? "ON" : "ON(중지됨 · 사용 불가)";
 
     /// <summary>배지 색 등급(0 정상 · 3 대기/관측 · 2 꺼짐).</summary>
     public int Severity => Mode switch
@@ -156,6 +165,12 @@ public enum PlutoYouTubeApiAutoSyncPhase
 public sealed record PlutoYouTubeApiAutoSyncStatus(bool Enabled, bool Armed, PlutoYouTubeApiAutoSyncPhase Phase, DateTimeOffset? NextDueUtc, int ConsecutiveFailures,
     DateTimeOffset? LastAutoRunUtc, string? LastAutoSummaryKorean, long TickCount, int QuotaRemaining, int ReserveUnits, TimeSpan Interval)
 {
+    /// <summary>🔀 런타임 실효 상태 — 켜져 있어도 킬 스위치 · 격리 · 자격 증명/채널 미설정(<see cref="PlutoYouTubeApiAutoSyncPhase.Unavailable"/>)이면 false.</summary>
+    public bool EffectiveOn => Enabled && Phase != PlutoYouTubeApiAutoSyncPhase.Unavailable;
+
+    /// <summary>토글 라벨 상태(<c>ON</c> · <c>OFF</c> · 켜 두었으나 사용 불가 → <c>중지됨</c>).</summary>
+    public string ToggleStateKorean => !Enabled ? "OFF" : EffectiveOn ? "ON" : "ON(중지됨 · 사용 불가)";
+
     public string StatusKorean
     {
         get
@@ -1114,7 +1129,7 @@ public sealed class PlutoYouTubeApiSyncService : IPlutoYouTubeApiSyncService, ID
 
             // 📊 Step 45 — Analytics v2 정밀 지표: 관측 · 연결 · 대기열(Studio 실측) 회수가 끝난 '뒤'에만 실행 → 같은 영상의 Studio 행이 항상 먼저 기준선을 잡는다
             var precision = new AnalyticsOutcome(AnalyticsModeFor(creds));
-            if (stop is null && precision.Mode == PlutoYouTubeAnalyticsPrecisionMode.Active && rows.Count > 0)
+            if (stop is null && (precision.Mode is PlutoYouTubeAnalyticsPrecisionMode.Active or PlutoYouTubeAnalyticsPrecisionMode.RecheckingScope) && rows.Count > 0)
             {
                 try { precision = await RunAnalyticsPrecisionAsync(creds, rows, idChannel, run, ct).ConfigureAwait(false); }
                 catch (OperationCanceledException) { throw; }
@@ -1184,8 +1199,33 @@ public sealed class PlutoYouTubeApiSyncService : IPlutoYouTubeApiSyncService, ID
         {
             EnsureStateLoadedLocked();
             if (_state.AnalyticsEnabled == false) return PlutoYouTubeAnalyticsPrecisionMode.Disabled;
-            return ScopeMissingCountLocked(c, Now()) >= c.Channels.Count ? PlutoYouTubeAnalyticsPrecisionMode.AwaitingScope : PlutoYouTubeAnalyticsPrecisionMode.Active;
+            var now = Now();
+            var missing = ScopeMissingCountLocked(c, now);
+            if (missing >= c.Channels.Count) return PlutoYouTubeAnalyticsPrecisionMode.AwaitingScope;
+            return ScopeModeAfterLatch(missing, ScopeStaleCountLocked(c, now), c.Channels.Count);
         }
+    }
+
+    /// <summary>
+    /// 🔎 래치 판정(순수) — 살아 있는 403 래치가 전 채널이면 대기 · 나머지 채널이 전부 '만료됐지만 재확인 전' 이면 재확인(관찰) · 그 외 활성.
+    /// 24시간이 지났다는 사실만으로 새 승인이 생기지 않으므로 다음 성공 조회 전까지 '활성' 으로 올리지 않는다.
+    /// </summary>
+    public static PlutoYouTubeAnalyticsPrecisionMode ScopeModeAfterLatch(int liveMissing, int staleMissing, int channelCount)
+    {
+        if (channelCount <= 0) return PlutoYouTubeAnalyticsPrecisionMode.Active;
+        if (liveMissing >= channelCount) return PlutoYouTubeAnalyticsPrecisionMode.AwaitingScope;
+        if (staleMissing > 0 && liveMissing + staleMissing >= channelCount) return PlutoYouTubeAnalyticsPrecisionMode.RecheckingScope;
+        return PlutoYouTubeAnalyticsPrecisionMode.Active;
+    }
+
+    /// <summary>403 래치가 만료됐으나 아직 성공 조회로 해제되지 않은 채널 수.</summary>
+    private int ScopeStaleCountLocked(PlutoYouTubeApiCredentials c, DateTimeOffset now)
+    {
+        var n = 0;
+        if (_state.AnalyticsScopeMissing is { Count: > 0 } m)
+            foreach (var ch in c.Channels)
+                if (m.TryGetValue(ch.ChannelId, out var until) && until <= now) n++;
+        return n;
     }
 
     private int ScopeMissingCountLocked(PlutoYouTubeApiCredentials c, DateTimeOffset now)
@@ -1334,6 +1374,11 @@ public sealed class PlutoYouTubeApiSyncService : IPlutoYouTubeApiSyncService, ID
                     break;   // 이 채널의 남은 묶음도 같은 403 → 쿼터 낭비 차단
                 }
                 queried++;
+                lock (_sync)
+                {
+                    EnsureStateLoadedLocked();
+                    if (_state.AnalyticsScopeMissing is { } sm && sm.Remove(ch.ChannelId)) PersistStateLocked();   // 🔎 성공 조회 = 재확인 완료 → 래치 해제
+                }
                 foreach (var id in batch)
                     if (metrics.TryGetValue(id, out var mv) && TryBuildPrecisionRow(byId[id], mv, out var pr)) promoted.Add(pr);
                     else deferred++;

@@ -35,14 +35,14 @@ public interface IPlutoFlywheelSelfTestService
     bool IsRunning { get; }
     /// <summary>마지막 리포트(없음 → null).</summary>
     PlutoFlywheelSelfTestReport? LastReport { get; }
-    /// <summary>격리 임시 폴더에서 7단계 실행 → <c>finally</c> 에서 샌드박스 삭제. 단계 예외는 FAIL 로 격리 · 취소만 전파.</summary>
+    /// <summary>격리 임시 폴더에서 10단계 실행 → <c>finally</c> 에서 샌드박스 삭제. 단계 예외는 FAIL 로 격리 · 취소만 전파.</summary>
     Task<PlutoFlywheelSelfTestReport> RunAsync(CancellationToken ct = default);
 }
 
 /// <summary>
 /// 🧪 <see cref="IPlutoFlywheelSelfTestService"/> — 결정론 · 네트워크 0 · 격리 임시 폴더 드라이런.
-/// 7단계: 🧭 토픽 플래너 → 🏷️ 기획 출처 → 📦 업로드 패키지 · 연결성 → 📊 Studio 내보내기 정규화 · 연결 → 🎯 기획 채점 · 사후 분석 →
-/// 🌱 유기적 복권 · 멀티 PC 장부 재생 → 🩺 진단 Markdown 스냅샷.
+/// 10단계: 🧭 토픽 플래너 → 🏷️ 기획 출처 → 📦 업로드 패키지 · 연결성 → 📊 Studio 내보내기 정규화 · 연결 → 🎯 기획 채점 · 사후 분석 →
+/// 🌱 유기적 복권 · 멀티 PC 장부 재생 → 🩺 진단 Markdown 스냅샷 → 🌐 다국어 채널 분기 → ☁️ 기동 선조정 · 블랙박스 진단 → 🎬 전 언어 일괄 렌더.
 ///   ▸ 🔒 모든 허브를 <b>명시 경로</b>로 생성(기본 경로 생성자 · <see cref="PlutoDriveStorageManager"/> 기본값 · <c>AppDataPaths</c> · Drive 미사용).
 ///   ▸ 🧹 샌드박스는 고유 접두 + 무작위 토큰 표식 파일로 소유를 증명할 때만 재귀 삭제(링크/정션 · 부모 밖 · 표식 불일치 → 삭제 거부).
 ///   ▸ 🔍 실행 전후 라이브 로컬 데이터 폴더의 메타데이터 지문(열기 없음)을 비교해 무접촉을 보고.

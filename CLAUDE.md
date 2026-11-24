@@ -14,7 +14,7 @@
 
 ## 명령어 (레포 루트)
 - 빌드: `dotnet build PromptFlowStudio/PromptFlowStudio.csproj -c Release -warnaserror`
-- 테스트: `dotnet test PromptFlowStudio.Tests`
+- 테스트: `dotnet test PromptFlowStudio.Tests/PromptFlowStudio.Tests.csproj -c Release -- RunConfiguration.MaxCpuCount=1 RunConfiguration.DisableParallelization=true`
 - 실행: `dotnet run` (루트 `Launcher.csproj`가 위임 — 루트엔 이 파일 하나만 유지)
 - 앱 실행 중이면 Debug 잠김. `.sln` 없음.
 

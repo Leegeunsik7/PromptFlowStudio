@@ -130,3 +130,10 @@
   4. **헤더 이름 매핑 스키마 검증** — 열 위치가 아닌 `columnHeaders` 이름으로 매핑(필수 열 누락 시 거부) · 형식 위반 행 · 잘못된 영상 ID 제외 · `rows` 없음 = 정상(데이터 없음).
 - 재분류: `EngineRoutingAndProjectExportTests.RenderEngine_UnprobedOfflineComfyUIWithDashScopeKey_FastProbesAndRoutesToCloudOnFirstClick` 는 `Stopwatch` 벽시계 상한(`FastProbeTimeout − 50` ~ 5000 ms) 단언 → 분류 기준 3 에 해당. 새 클래스 `EngineRoutingFastProbeTimingTests`(`[Collection("TimingSensitivePerformance")]`)로 이동(임계 5000 ms 불변). 나머지 메서드는 병렬 풀 유지, 공유 `CloudFake` 만 `internal` 로 노출.
 - 측정: Pluto 루프 458/458(34 s) · 전체 **1433/1433(10 m 32 s · 첫 실행 종료 코드 0)**.
+
+## 일관성 · 가림 처리 패치 (Step 45.1)
+- 정식 테스트 명령(CI 동일): `dotnet test PromptFlowStudio.Tests/PromptFlowStudio.Tests.csproj -c Release -- RunConfiguration.MaxCpuCount=1 RunConfiguration.DisableParallelization=true` — `CLAUDE.md` 반영.
+- `PlutoConsistencyAndRedactionTests`(병렬 풀 · 환경 변수 무변경): 소스 문자열 단언으로 10단계 문구 · 진단서 §1~§6 툴팁 · 예외 토스트 `Redact(ex.Message)` · 토글의 `EffectiveOn`/`ToggleStateKorean` 바인딩을 고정 + 순수 헬퍼(`ScopeModeAfterLatch` · `ComputeWorkspaceFingerprint` · `DescribeWorkspaceMismatch`) 단위 검증.
+- `PlutoYouTubeAnalyticsApiTests.ScopeLatchExpiry_StaysRechecking_…`(`ProcessEnvironment` · 킬 스위치 설정): 24h 래치 만료 → `RecheckingScope` → 재403 시 `AwaitingScope` 복귀 → 성공 조회로만 `Active` · 킬 스위치 시 두 토글 실효 OFF.
+- 규칙: UI 문구에 단계 수 · 섹션 목록을 하드코딩하면 상수(`StageCount` 등) 변경 시 문자열 단언을 함께 추가. UI 토스트의 예외 메시지는 항상 가림 헬퍼 경유.
+- 측정: Pluto 루프 465/465(28 s) · 전체 **1440/1440(Release 직렬 · 17 m 23 s · 첫 실행 종료 코드 0)**.

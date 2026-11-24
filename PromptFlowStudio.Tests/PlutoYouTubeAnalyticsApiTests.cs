@@ -437,6 +437,63 @@ public sealed class PlutoYouTubeAnalyticsApiTests : IDisposable
         Assert.Equal(PlutoYouTubeAnalyticsPrecisionMode.Active, restarted.GetAnalyticsPrecisionStatus().Mode);
     }
 
+    // ── 3b. 🔎 24시간 403 래치 만료 → 새 승인 · 성공 조회 전까지 '재확인'(활성 승격 금지) · 킬 스위치 시 토글 실효 OFF ──
+
+    [Fact]
+    public async Task ScopeLatchExpiry_StaysRechecking_UntilSuccessfulQuery_AndKillSwitchMakesTogglesEffectivelyOff()
+    {
+        var catalog = new PlutoRenderCatalogService(Path.Combine(_dir, "recheck_catalog.json"));
+        var importer = new PlutoTelemetryBatchImporter(catalog, new CountingLoop());
+        await catalog.RecordRenderedClipAsync(Clip("recheck_clip", "재확인 영상", "pov-walk", PlutoColorGradingCompiler.NaturalPastelName, Now.AddDays(-12)) with { YouTubeVideoId = Vid('r', 1) });
+        var fake = new FakeGoogle();
+        fake.Uploads[KoChannel] = new List<FakeVideo> { new(Vid('r', 1), KoChannel, "재확인 영상", 1200) };
+        fake.Analytics[Vid('r', 1)] = new FakeMetrics(1100, 50.0, 5.0);
+        fake.ForbiddenChannels.Add(KoChannel);
+        var clock = Now;
+        using var svc = Service(fake, importer, "recheck", () => clock);
+        Assert.True((await svc.SaveCredentialsAsync(OAuthCreds(new PlutoYouTubeApiChannel(KoChannel)))).Ok);
+        Assert.Equal(PlutoYouTubeAnalyticsPrecisionMode.AwaitingScope, (await svc.SyncNowAsync()).AnalyticsMode);
+
+        // 24시간 경과 · 승인 갱신 없음 → '활성' 이 아니라 재확인(관찰)
+        clock = Now + PlutoYouTubeApiSyncService.AnalyticsScopeRetryInterval + TimeSpan.FromMinutes(1);
+        var st = svc.GetAnalyticsPrecisionStatus();
+        Assert.Equal(PlutoYouTubeAnalyticsPrecisionMode.RecheckingScope, st.Mode);
+        Assert.NotEqual(0, st.Severity);
+        Assert.Contains("재확인", st.BadgeKorean, StringComparison.Ordinal);
+        Assert.DoesNotContain("활성", st.BadgeKorean, StringComparison.Ordinal);
+
+        // 재확인 동기화가 다시 403 → 대기로 복귀(다시 24시간 래치)
+        var calls = fake.AnalyticsCallsFor(KoChannel);
+        Assert.Equal(PlutoYouTubeAnalyticsPrecisionMode.AwaitingScope, (await svc.SyncNowAsync()).AnalyticsMode);
+        Assert.Equal(calls + 1, fake.AnalyticsCallsFor(KoChannel));
+
+        // 다음 만료 후 범위 확보 → 성공 조회로만 활성 승격 · 래치 해제
+        fake.ForbiddenChannels.Clear();
+        clock += PlutoYouTubeApiSyncService.AnalyticsScopeRetryInterval + TimeSpan.FromMinutes(1);
+        Assert.Equal(PlutoYouTubeAnalyticsPrecisionMode.RecheckingScope, svc.GetAnalyticsPrecisionStatus().Mode);
+        Assert.Equal(PlutoYouTubeAnalyticsPrecisionMode.Active, (await svc.SyncNowAsync()).AnalyticsMode);
+        Assert.Equal(PlutoYouTubeAnalyticsPrecisionMode.Active, svc.GetAnalyticsPrecisionStatus().Mode);
+
+        // 킬 스위치 → 사용자 토글은 켜져 있어도 실효 OFF('ON' 옆 '꺼짐' 배지 모순 없음)
+        Environment.SetEnvironmentVariable(PlutoYouTubeApiSyncService.DisableEnvVar, "1");
+        try
+        {
+            var p = svc.GetAnalyticsPrecisionStatus();
+            Assert.True(p.Enabled);
+            Assert.Equal(PlutoYouTubeAnalyticsPrecisionMode.Disabled, p.Mode);
+            Assert.False(p.EffectiveOn);
+            Assert.NotEqual("ON", p.ToggleStateKorean);
+            var a = svc.GetAutoSyncStatus();
+            Assert.True(a.Enabled);
+            Assert.Equal(PlutoYouTubeApiAutoSyncPhase.Unavailable, a.Phase);
+            Assert.False(a.EffectiveOn);
+            Assert.NotEqual("ON", a.ToggleStateKorean);
+        }
+        finally { Environment.SetEnvironmentVariable(PlutoYouTubeApiSyncService.DisableEnvVar, null); }
+        Assert.True(svc.GetAnalyticsPrecisionStatus().EffectiveOn);
+        Assert.Equal("ON", svc.GetAnalyticsPrecisionStatus().ToggleStateKorean);
+    }
+
     // ── 4. 🛡️ 자체 추가 A — 🕒 보고 지연 가드(최근 게시 · 0 CTR · 저조회 → 관측 전용 유지) + 스키마 위반 격리 ──
 
     [Fact]

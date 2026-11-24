@@ -94,7 +94,7 @@ else
                     }
                 </div>
                 <button class="dh-btn" disabled="@_driveBusy" @onclick="VerifyDriveAsync">@(_driveBusy ? "⏳ 검증 중…" : "🔄 지금 전체 드라이브 백업 검증")</button>
-                <button class="dh-btn" data-pluto-diagnostic-copy="1" disabled="@_diagBusy" @onclick="CopyPlutoDiagnosticAsync" title="9 허브 Drive 동기화 · 충돌 · 실측 YouTube · 기획 적중률 · 4축 파레토 · 오답 노트 가드(감쇠 잔여 벌점)를 Markdown 으로 복사 — 절대 경로는 파일명만 남김">@(_diagBusy ? "⏳ 진단 수집 중…" : "[🩺 플루토 진단 리포트 복사]")</button>
+                <button class="dh-btn" data-pluto-diagnostic-copy="1" disabled="@_diagBusy" @onclick="CopyPlutoDiagnosticAsync" title="§1 Drive 동기화 · 충돌 · §2 실측 YouTube · 기획 적중률 · §3 4축 파레토 · §4 오답 노트 가드(감쇠 잔여 벌점) · §5 용어집 · §6 최근 활동을 Markdown 으로 복사 — 절대 경로는 파일명만 남김">@(_diagBusy ? "⏳ 진단 수집 중…" : "[🩺 플루토 진단 리포트 복사]")</button>
                 <button class="dh-btn" data-pluto-diagnostic-save="1" disabled="@_diagBusy" @onclick="SavePlutoDiagnosticFileAsync" title="같은 진단 리포트를 로컬 앱 데이터 진단 폴더에 pluto_diagnostic_날짜_시각.md(UTF-8)로 원자 저장 — 기존 파일 · 폴더 · 링크는 덮지 않음 · 절대 경로는 파일명만 남김">@(_diagBusy ? "⏳ 진단 수집 중…" : "[💾 진단서 파일 저장(.md)]")</button>
             </div>
             @if (_drive?.LiveProbe is { } lp)
@@ -156,9 +156,9 @@ else
                     }
                 </div>
             }
-            @* 🧪 Step 30 — 샌드박스 1클릭 7단계 플라이휠 자가진단(임시 폴더 · 네트워크 0 · 라이브 상태/Drive 무접촉) *@
+            @* 🧪 Step 30 — 샌드박스 1클릭 10단계 플라이휠 자가진단(임시 폴더 · 네트워크 0 · 라이브 상태/Drive 무접촉) *@
             <div class="dh-selftest" data-flywheel-selftest="@(_selfTest is { } stx ? (stx.AllPassed ? "pass" : "fail") : "idle")">
-                <button class="dh-btn" data-flywheel-selftest-run="1" disabled="@_selfTestBusy" @onclick="RunFlywheelSelfTestAsync" title="격리 임시 폴더에서 토픽 플래너 → 기획 출처 → 업로드 패키지 · 연결성 → Studio 내보내기 정규화 · 연결 → 기획 채점 · 사후 분석 → 유기적 복권 · 멀티 PC 장부 재생 → 진단 Markdown 7단계를 실행하고 끝나면 임시 폴더를 지웁니다 — 실제 학습 데이터 · Google Drive 는 건드리지 않음">@(_selfTestBusy ? "⏳ 자가진단 실행 중…" : "[🧪 플라이휠 자가진단 실행]")</button>
+                <button class="dh-btn" data-flywheel-selftest-run="1" disabled="@_selfTestBusy" @onclick="RunFlywheelSelfTestAsync" title="격리 임시 폴더에서 토픽 플래너 → 기획 출처 → 업로드 패키지 · 연결성 → Studio 내보내기 정규화 · 연결 → 기획 채점 · 사후 분석 → 유기적 복권 · 멀티 PC 장부 재생 → 진단 Markdown → 다국어 채널 분기 → 기동 선조정 · 블랙박스 진단 → 전 언어 일괄 렌더 10단계를 실행하고 끝나면 임시 폴더를 지웁니다 — 실제 학습 데이터 · Google Drive 는 건드리지 않음">@(_selfTestBusy ? "⏳ 자가진단 실행 중…" : "[🧪 플라이휠 자가진단 실행]")</button>
                 @if (_selfTest is { } st)
                 {
                     <div class="dh-sum @(st.AllPassed ? "ok" : "warn")" role="status">@(st.SummaryKorean)</div>
@@ -195,14 +195,14 @@ else
             </div>
             @* ⏱️ Step 36 — 쿼터 인지형 주기 자동 동기화(영속 토글 · 예정/백오프/쿼터 상태) *@
             <div class="dh-ytauto">
-                <button class="dh-btn" data-yt-api-auto="@(_ytAuto?.Enabled == true ? "on" : "off")" aria-pressed="@(_ytAuto?.Enabled == true ? "true" : "false")" disabled="@_ytApiBusy" @onclick="ToggleYouTubeApiAutoAsync" title="백그라운드에서 주기적으로 채널 통계를 동기화 — 수동 동기화와 겹치지 않음 · 수동 성공 시 다음 예정이 한 주기 뒤로 · quotaExceeded/예비 쿼터 미만이면 태평양 자정까지 정지 · 일시 오류는 지수 백오프">@(_ytAuto?.Enabled == true ? "[⏱️ API 주기 자동 동기화 ON]" : "[⏱️ API 주기 자동 동기화 OFF]")</button>
+                <button class="dh-btn" data-yt-api-auto="@(_ytAuto?.EffectiveOn == true ? "on" : _ytAuto?.Enabled == true ? "blocked" : "off")" aria-pressed="@(_ytAuto?.EffectiveOn == true ? "true" : "false")" disabled="@_ytApiBusy" @onclick="ToggleYouTubeApiAutoAsync" title="백그라운드에서 주기적으로 채널 통계를 동기화 — 수동 동기화와 겹치지 않음 · 수동 성공 시 다음 예정이 한 주기 뒤로 · quotaExceeded/예비 쿼터 미만이면 태평양 자정까지 정지 · 일시 오류는 지수 백오프">@("[⏱️ API 주기 자동 동기화 " + (_ytAuto?.ToggleStateKorean ?? "OFF") + "]")</button>
                 @if (_ytAuto is { } yau) { <span class="dh-sum" role="status" data-yt-api-auto-status="@(yau.Phase.ToString())">@(yau.StatusKorean)</span> }
             </div>
             @* 📊 Step 45 — YouTube Analytics API v2 정밀 지표(CTR · 유지율) 상태 배지 · 토글 *@
             @if (_ytPrecision is { } ypr)
             {
                 <div class="dh-ytauto">
-                    <button class="dh-btn" data-yt-analytics-toggle="@(ypr.Enabled ? "on" : "off")" aria-pressed="@(ypr.Enabled ? "true" : "false")" disabled="@_ytApiBusy" @onclick="ToggleYouTubeAnalyticsPrecisionAsync" title="OAuth(yt-analytics.readonly)일 때 youtubeanalytics v2 reports.query 로 영상별 CTR · 평균 조회율을 받아 정밀 학습 · 성숙 증분 · 기획 채점에 반영 — API 키만이면 관측 전용 · 보고 지연 2일 창 · 403 채널은 24시간 재확인">@(ypr.Enabled ? "[📊 CTR · 유지율 정밀 동기화 ON]" : "[📊 CTR · 유지율 정밀 동기화 OFF]")</button>
+                    <button class="dh-btn" data-yt-analytics-toggle="@(ypr.EffectiveOn ? "on" : ypr.Enabled ? "blocked" : "off")" aria-pressed="@(ypr.EffectiveOn ? "true" : "false")" disabled="@_ytApiBusy" @onclick="ToggleYouTubeAnalyticsPrecisionAsync" title="OAuth(yt-analytics.readonly)일 때 youtubeanalytics v2 reports.query 로 영상별 CTR · 평균 조회율을 받아 정밀 학습 · 성숙 증분 · 기획 채점에 반영 — API 키만이면 관측 전용 · 보고 지연 2일 창 · 403 채널은 24시간 재확인">@("[📊 CTR · 유지율 정밀 동기화 " + ypr.ToggleStateKorean + "]")</button>
                     <span class="dh-badge s@(ypr.Severity.ToString(CultureInfo.InvariantCulture))" role="status" data-yt-analytics-mode="@(ypr.Mode.ToString())">@(ypr.BadgeKorean)</span>
                     @if (ypr.LastPrecisionUtc is { } yprAt) { <span class="dh-sum" data-yt-analytics-last="1">마지막 정밀 반영 @(yprAt.ToLocalTime().ToString("MM-dd HH:mm", CultureInfo.InvariantCulture)) · @(ypr.LastPromotedCount.ToString(CultureInfo.InvariantCulture))건</span> }
                 </div>
@@ -387,7 +387,7 @@ else
             var md = await PlutoDiagnostics.BuildSnapshotMarkdownAsync();
             _diagToast = Clipboard.SetText(md) ? "🩺 플루토 진단 리포트를 복사했습니다(" + md.Length.ToString(CultureInfo.InvariantCulture) + "자)" : "⚠ 클립보드 복사에 실패했습니다";
         }
-        catch (Exception ex) { Program.Log("Settings.PlutoDiagnostic", ex); _diagToast = "⚠ 진단 수집 실패: " + ex.Message; }
+        catch (Exception ex) { Program.Log("Settings.PlutoDiagnostic", ex); _diagToast = "⚠ 진단 수집 실패: " + PromptFlowStudio.Services.Pluto.PlutoAutonomousActivityFeedService.Redact(ex.Message); }
         finally { _diagBusy = false; }
     }
 
