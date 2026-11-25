@@ -53,6 +53,18 @@ public static class PromptPresets
         new("요정 숲 스튜디오", "숲속 요정 의상을 입고 꽃밭에 앉아 호기심 가득한 표정으로 나비를 바라보는 아기, 몽환적인 동화 속 숲속 배경, 부드러운 입자 효과, 스튜디오 컨셉 촬영", "🧚"),
     };
 
+    /// <summary>👶 아기 시나리오 프리셋(첫걸음·낮잠·목욕·장난감·부모 교감) — 시드 문장을 자동 확장한 완성형 프롬프트.</summary>
+    public static readonly PromptChip[] BabyScenarios = BuildBabyScenarios();
+
+    private static PromptChip[] BuildBabyScenarios()
+    {
+        var src = PromptFlowStudio.Services.Prompt.BabyPromptAutoExpander.Scenarios;
+        var chips = new PromptChip[src.Count];
+        for (var i = 0; i < chips.Length; i++)
+            chips[i] = new PromptChip(src[i].LabelKo, PromptFlowStudio.Services.Prompt.BabyPromptAutoExpander.ExpandScenario(src[i].Key), src[i].Emoji);
+        return chips;
+    }
+
     /// <summary>
     /// 마스터피스 프리셋 원클릭 주입 — 기존 입력을 버리고 정적 리터럴 참조를 그대로 반환(복사·연결 없음 → 0B).
     ///   범위 밖 인덱스는 현재 입력을 유지한다.

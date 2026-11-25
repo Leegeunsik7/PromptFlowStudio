@@ -1,16 +1,19 @@
 # Current Project Status
-- Active Milestone: ✅ 고위험 경로 심층 감사 — 오토파일럿 Disable→Enable 잔류 릴 재게시 결함 수정
+- Active Milestone: ✅ 아기 테마 시나리오 확장 + 짧은 프롬프트 자동 확장
 - Build: ✅ Desktop Release `-warnaserror` 0W/0E · ✅ Tests Release 0W/0E · ⏸ Mobile net8.0-ios — `ios` 워크로드 미설치(미검증)
-- Tests: ✅ 집중 스위트(Autopilot·Quota·Standby·LiveToReels·Publisher·Locale·SelfTest·Redact·Pluto) 605/605 · 전체 1463/1465(2회 실행, 매회 상이한 부하 민감 성능/할당 단언 2건 — 단독 재실행 전량 통과)
-- Updated: 2026-11-25 (KST) · 불변식 `CorePlutoFileCount=9` · `MergeableHubs=6` · `MergeableCompanions=2` 유지
+- Tests: ✅ 전체 1477/1477 (exit 0) · 집중(BabyPromptAutoExpander·PromptSynthesizer·VisionIntelligence·BabyStudio·PromptInspiration) 70/70
+- Updated: 2026-11-25 (KST) · 불변식 `CorePlutoFileCount=9` · `MergeableHubs=6` · `MergeableCompanions=2` 유지(테스트 잠금)
 
 ## Completed
-- 🐞 `ZeroTouchAutopilotMasterEngine.Enable()`: `_reelId`·`_task` 리셋 — Disable(방송·반응·쿨다운 중) 후 재가동 시 옛 릴 재번-인·중복 게시 차단
-- 🧪 `AutopilotCycleCancellationTests.ReEnable_AfterDisable_DiscardsStaleReel_NoReclip` (수정 전 실패 확인)
-- 🔍 감사 무결함: 사이클/재시도 취소·핀/임대·AutoPublish 복원·스탠바이 보류·합성 폴백 차단·쿼터 큐·Workspace 리댁션·셀프테스트 10단계·다국어 배치 렌더
+- 👶 `Services/Prompt/BabyPromptAutoExpander.cs`: 시나리오 5종(첫걸음·낮잠·목욕/비눗방울·햇살 장난감·부모 교감) · KO/EN/JA/ES 라벨/키워드
+- ✨ ≤80자 아기 프롬프트(또는 아기 모드) → 조명·자연 카메라 모션·따뜻한 분위기·안전 가족 문구 자동 결합(멱등 · 중복 조각 생략 · 일반 프롬프트 무변경)
+- 🔌 `PromptSynthesizerService`: `PromptContext.AutoBabyExpansion`(기본 true, opt-out 가능) 결선
+- 🎛️ `PromptPresets.BabyScenarios` 원클릭 완성형 칩 5종(기존 `Baby` 5종 무변경)
+- 🧪 `BabyPromptAutoExpanderTests` (시나리오·다국어·멱등·합성기·프리셋·Pluto 9/6/2)
 
 ## Known (latent, 미수정)
 - `PlutoMultiLocaleBatchRenderService.BlockReason`: `ex.Message` 미리댁션 — 현재 UI 미노출(피드 Record 단계 리댁션)
+- `BabyScenarios` 칩 UI 미결선(Workspace 칩 바 연결은 후속)
 
 ## Fast Loops
 - Pluto(~30 s): `dotnet test PromptFlowStudio.Tests/PromptFlowStudio.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~Pluto" -p:NuGetAudit=false`

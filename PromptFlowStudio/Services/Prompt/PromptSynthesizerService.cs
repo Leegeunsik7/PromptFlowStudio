@@ -12,7 +12,8 @@ public sealed record PromptContext(
     string? SubjectIdentity = null,
     bool IsIdentityLocked = false,
     string? NegativeInput = null,
-    bool AutoBabyModifier = false);
+    bool AutoBabyModifier = false,
+    bool AutoBabyExpansion = true);
 
 /// <summary>합성 결과 — 최종 포지티브/네거티브 · 포지티브 글자 수 · 예산(800자) 초과로 절삭됐는지.</summary>
 public sealed record SynthesizedResult(string FinalPositivePrompt, string FinalNegativePrompt, int CharacterCount, bool IsOverBudget);
@@ -43,6 +44,8 @@ public sealed class PromptSynthesizerService
 
         var sb = new StringBuilder(256);
         var main = ctx.UserInput?.Trim() ?? "";
+        // 👶 짧은 아기 키워드/아기 모드 → 조명·카메라·분위기·안전 문구 자동 확장(일반 프롬프트는 그대로).
+        if (ctx.AutoBabyExpansion) main = BabyPromptAutoExpander.Expand(main, ctx.AutoBabyModifier);
 
         if (ctx.IsIdentityLocked && !string.IsNullOrWhiteSpace(ctx.SubjectIdentity))
             sb.Append("[Subject: ").Append(ctx.SubjectIdentity.Trim()).Append(']');
