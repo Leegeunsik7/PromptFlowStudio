@@ -23,8 +23,10 @@ public sealed class SocialPostMetadata
     public string Privacy { get; set; } = "private";
 }
 
-/// <summary>v17.71.0 업로드 결과(플랫폼 미디어 ID · 소요 · 실패 사유).</summary>
-public readonly record struct SocialUploadResult(SocialPlatform Platform, bool Ok, string? MediaId, int Chunks, long Bytes, double Ms, int Refreshes, string? Error);
+/// <summary>v17.71.0 업로드 결과(플랫폼 미디어 ID · 소요 · 실패 사유) — 이 호출 고유의 HTTP 상태 · Retry-After · 오류 본문(≤512 B 사본)을
+/// 게이트 내부에서 확정해 반환(호출자는 공유 <c>Last*</c> 조회 대신 반환값만 판독 → 동시 업로드 간 교차 오염 차단). Status 0 = HTTP 미도달.</summary>
+public readonly record struct SocialUploadResult(SocialPlatform Platform, bool Ok, string? MediaId, int Chunks, long Bytes, double Ms, int Refreshes, string? Error,
+    int Status = 0, int RetryAfterSec = 0, byte[]? ErrorBody = null);
 
 /// <summary>
 /// v17.71.0 OAuth2 토큰 보안 볼트 — Access/Refresh 토큰은 메모리에서 v17.48 <see cref="GraphSecretSlot"/>(프로세스 임시 키 AES-GCM 암호문)로만 보관,
@@ -463,12 +465,13 @@ public sealed class SocialMediaApiGatewayEngine : IDisposable
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         var t0 = System.Diagnostics.Stopwatch.GetTimestamp();
         var chunks0 = ChunksSent; var ref0 = _refreshes[(int)p];
+        _lastStatus[(int)p] = 0; _lastRetryAfter[(int)p] = 0; _lastBodyLen[(int)p] = 0;   // 이전 호출 잔존값이 이번 결과로 새지 않도록 게이트 안에서 초기화
         try
         {
-            if (!Vault.HasAccess(p)) return Fail(p, t0, chunks0, ref0, "계정 미연동");
+            if (!Vault.HasAccess(p)) return Fail(p, t0, chunks0, ref0, "계정 미연동", 401);
             if (p == SocialPlatform.Instagram && InstagramUserId.Length == 0) return Fail(p, t0, chunks0, ref0, "IG 사용자 ID 미설정(PROMPTFLOW_SECRET_IG_USER_ID)");
             if (Vault.SecondsLeft(p, UnixNow()) < RefreshSkewSec && !await RefreshAsync(p, ct).ConfigureAwait(false) && Vault.SecondsLeft(p, UnixNow()) <= 0)
-                return Fail(p, t0, chunks0, ref0, "토큰 갱신 실패 — 재인증 필요");
+                return Fail(p, t0, chunks0, ref0, "토큰 갱신 실패 — 재인증 필요", 401);
             _progress[(int)p] = 0;
             string? id = null; string? err = null;
             for (var attempt = 0; attempt <= MaxRetries && id is null; attempt++)
@@ -483,16 +486,21 @@ public sealed class SocialMediaApiGatewayEngine : IDisposable
             if (id is null) return Fail(p, t0, chunks0, ref0, err ?? "업로드 실패");
             _phase[(int)p] = SocialUploadPhase.Done; _progress[(int)p] = 1f;
             _uploads[(int)p]++; _lastId[(int)p] = id; _lastError[(int)p] = null;
-            return new SocialUploadResult(p, true, id, (int)(ChunksSent - chunks0), media.Length, Ms(t0), (int)(_refreshes[(int)p] - ref0), null);
+            return new SocialUploadResult(p, true, id, (int)(ChunksSent - chunks0), media.Length, Ms(t0), (int)(_refreshes[(int)p] - ref0), null,
+                _lastStatus[(int)p] is >= 200 and < 300 ? _lastStatus[(int)p] : 200);
         }
         catch (OperationCanceledException) { return Fail(p, t0, chunks0, ref0, "취소"); }
         finally { _gate.Release(); }
     }
 
-    private SocialUploadResult Fail(SocialPlatform p, long t0, long chunks0, long ref0, string why)
+    /// <summary>실패 결과 — 게이트 보유 중 호출: 이 호출의 상태 · Retry-After · 본문 사본을 결과에 봉입. <paramref name="statusIfNone"/> = HTTP 미도달 시 분류 상태.</summary>
+    private SocialUploadResult Fail(SocialPlatform p, long t0, long chunks0, long ref0, string why, int statusIfNone = 0)
     {
         _phase[(int)p] = SocialUploadPhase.Failed; _failures[(int)p]++; _lastError[(int)p] = why;
-        return new SocialUploadResult(p, false, null, (int)(ChunksSent - chunks0), 0, Ms(t0), (int)(_refreshes[(int)p] - ref0), why);
+        var st = _lastStatus[(int)p]; var n = _lastBodyLen[(int)p];
+        if (st == 0) { st = statusIfNone; _lastStatus[(int)p] = st; }
+        var body = n == 0 ? null : _lastBody[(int)p].AsSpan(0, n).ToArray();   // 실패 경로 전용 사본(핫패스 아님)
+        return new SocialUploadResult(p, false, null, (int)(ChunksSent - chunks0), 0, Ms(t0), (int)(_refreshes[(int)p] - ref0), why, st, _lastRetryAfter[(int)p], body);
     }
 
     private static double Ms(long t0) => (System.Diagnostics.Stopwatch.GetTimestamp() - t0) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;

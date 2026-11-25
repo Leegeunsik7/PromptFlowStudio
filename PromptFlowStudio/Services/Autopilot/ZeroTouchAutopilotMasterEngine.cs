@@ -381,9 +381,9 @@ public sealed class ZeroTouchAutopilotMasterEngine : IDisposable
                 if (!_pub.Connected(p)) { status = 401; err = "계정 미연동"; }
                 else
                 {
+                    // 반환값만 판독 — 게이트 해제 후 공유 Last* 조회 시 동시 업로드(재시도 태스크 등)의 상태가 섞여 오분류
                     var r = await _pub.Gateway.UploadAsync(p, b.Media, b.Meta).ConfigureAwait(false);
-                    status = r.Ok ? 200 : _pub.Gateway.LastStatus(p); mediaId = r.MediaId; err = r.Error;
-                    retryAfter = _pub.Gateway.LastRetryAfterSec(p); body = _pub.Gateway.LastErrorBody(p).ToArray();
+                    status = UploadOutcome(in r, out retryAfter, out body); mediaId = r.MediaId; err = r.Error;
                 }
             }
             else { status = 503; err = "퍼블리셔 미결선"; }
@@ -395,11 +395,20 @@ public sealed class ZeroTouchAutopilotMasterEngine : IDisposable
             }
             else
             {
-                if (h != TargetHealth.AuthError && !inFlight) Quota.Enqueue(b.ReelId, target, Clock());
+                if (h != TargetHealth.AuthError && !inFlight) Quota.Enqueue(b.ReelId, target);   // 가드 시계 축(엔진 TickCount64 혼용 금지)
                 Telemetry.Publish(h == TargetHealth.QuotaExhausted ? CreatorAlertKind.QuotaExhausted : CreatorAlertKind.UploadFailed, h == TargetHealth.QuotaExhausted ? AlertSeverity.Critical : AlertSeverity.Warning,
                     SmartPlatformQuotaResilienceGuard.TargetName(target) + " " + SmartPlatformQuotaResilienceGuard.HealthName(h) + " · " + (err ?? "HTTP " + status.ToString(CultureInfo.InvariantCulture)) + " → 로컬 재시도 큐", status, b.ReelId);
             }
         }
+    }
+
+    /// <summary>업로드 결과 → 쿼터 관측 입력(상태 · Retry-After · 오류 본문)을 반환값에서만 도출. 성공 = 2xx 보장 · 실패 = 결과 고유 상태(0 = HTTP 미도달 → 일시 백오프).</summary>
+    public static int UploadOutcome(in SocialUploadResult r, out int retryAfterSec, out byte[]? body)
+    {
+        retryAfterSec = r.RetryAfterSec;
+        body = r.ErrorBody;
+        if (r.Ok) return r.Status is >= 200 and < 300 ? r.Status : 200;
+        return r.Status is >= 200 and < 300 ? 0 : r.Status;   // 실패인데 2xx 기록(분할 업로드 중간 단계) → 성공 오인 금지
     }
 
     /// <summary>가드 레그 종결 대기(백그라운드 · 실시간 한도). 반환 = 종결 단계 또는 미종결 시 현재 단계.</summary>

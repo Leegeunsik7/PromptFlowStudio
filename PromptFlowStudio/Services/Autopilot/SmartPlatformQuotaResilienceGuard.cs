@@ -33,27 +33,31 @@ public sealed class SmartPlatformQuotaResilienceGuard
     private readonly int[] _fails = new int[Targets];
     private readonly long[] _ok = new long[Targets], _quotaHits = new long[Targets], _rateHits = new long[Targets], _transient = new long[Targets], _rerouted = new long[Targets];
     private readonly QuotaRetryItem[] _q = new QuotaRetryItem[QueueCap];
+    // 제어 틱(Route/PumpDue/Requeue) · 업로드/재시도 태스크(Observe/Enqueue) 동시 변경 직렬화 — Monitor(재진입 · 무경합 시 힙 할당 0)
+    private readonly object _sync = new();
     private uint _rng = 0x7A11u;
     private int _qN;
+    private long _overflows, _retried, _gaveUp;
 
     public Func<long> Clock { get; set; } = static () => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-    public long Overflows { get; private set; }
-    public long Retried { get; private set; }
-    public long GaveUp { get; private set; }
-    public int QueueDepth => _qN;
-    public TargetHealth Health(PublishTarget t) => _health[(int)t];
-    public long BlockedUntil(PublishTarget t) => _blockedUntil[(int)t];
-    public int Failures(PublishTarget t) => _fails[(int)t];
-    public long Successes(PublishTarget t) => _ok[(int)t];
-    public long QuotaHits(PublishTarget t) => _quotaHits[(int)t];
-    public long RateHits(PublishTarget t) => _rateHits[(int)t];
-    public long Rerouted(PublishTarget t) => _rerouted[(int)t];
-    public long Used(PublishTarget t) => _used[(int)t];
+    public long Overflows => Interlocked.Read(ref _overflows);
+    public long Retried => Interlocked.Read(ref _retried);
+    public long GaveUp => Interlocked.Read(ref _gaveUp);
+    public int QueueDepth => Volatile.Read(ref _qN);
+    public TargetHealth Health(PublishTarget t) { lock (_sync) return _health[(int)t]; }
+    public long BlockedUntil(PublishTarget t) { lock (_sync) return _blockedUntil[(int)t]; }
+    public int Failures(PublishTarget t) { lock (_sync) return _fails[(int)t]; }
+    public long Successes(PublishTarget t) { lock (_sync) return _ok[(int)t]; }
+    public long QuotaHits(PublishTarget t) { lock (_sync) return _quotaHits[(int)t]; }
+    public long RateHits(PublishTarget t) { lock (_sync) return _rateHits[(int)t]; }
+    public long Rerouted(PublishTarget t) { lock (_sync) return _rerouted[(int)t]; }
+    public long Used(PublishTarget t) { lock (_sync) return _used[(int)t]; }
     public static int Capacity(PublishTarget t) => t switch { PublishTarget.YouTube => YouTubeDailyUnits, PublishTarget.Instagram => InstagramDailyPosts, _ => TikTokDailyPosts };
     public static int CostPerUpload(PublishTarget t) => t == PublishTarget.YouTube ? YouTubeUploadCost : 1;
-    public long Remaining(PublishTarget t) { Roll((int)t, Clock()); return Math.Max(0, Capacity(t) - _used[(int)t]); }
+    public long Remaining(PublishTarget t) { lock (_sync) { Roll((int)t, Clock()); return Math.Max(0, Capacity(t) - _used[(int)t]); } }
     public float RemainingRatio(PublishTarget t) => Remaining(t) / (float)Capacity(t);
-    public ref readonly QuotaRetryItem Queued(int i) => ref _q[i];
+    /// <summary>큐 슬롯 스냅숏(값 복사 — 잠금 해제 후 공유 슬롯 참조 노출 금지).</summary>
+    public QuotaRetryItem Queued(int i) { lock (_sync) return _q[i]; }
 
     public static string TargetName(PublishTarget t) => t switch { PublishTarget.YouTube => "YouTube Shorts", PublishTarget.Instagram => "Instagram Reels", _ => "TikTok" };
     public static string HealthName(TargetHealth h) => h switch
@@ -76,7 +80,9 @@ public sealed class SmartPlatformQuotaResilienceGuard
     }
 
     /// <summary>즉시 업로드 가능 여부(차단 · 쿼터 · IG 시간당 호출).</summary>
-    public bool Available(PublishTarget target)
+    public bool Available(PublishTarget target) { lock (_sync) return AvailableCore(target); }
+
+    private bool AvailableCore(PublishTarget target)
     {
         var t = (int)target; var now = Clock();
         Roll(t, now);
@@ -91,6 +97,16 @@ public sealed class SmartPlatformQuotaResilienceGuard
     // ══════════════════════ 응답 관측(무할당) ══════════════════════
     public TargetHealth Observe(PublishTarget target, int status, ReadOnlySpan<byte> body = default, int retryAfterSec = 0, int apiCalls = 1)
     {
+        // 본문 분류(순수 함수)는 잠금 밖 — 상태 변경만 임계 구역
+        var quota = status == 403 && (Has(body, "quotaExceeded"u8) || Has(body, "dailyLimitExceeded"u8));
+        var code = GraphCode(body);
+        var rate = status == 429 || (status == 403 && (Has(body, "rateLimitExceeded"u8) || Has(body, "userRateLimitExceeded"u8)))
+            || (status is 400 or 403 && code is 4 or 17 or 32 or 613);
+        lock (_sync) return ObserveCore(target, status, quota, rate, status is 401 || code == 190, retryAfterSec, apiCalls);
+    }
+
+    private TargetHealth ObserveCore(PublishTarget target, int status, bool quota, bool rate, bool auth, int retryAfterSec, int apiCalls)
+    {
         var t = (int)target; var now = Clock();
         Roll(t, now);
         _calls[t] += Math.Max(0, apiCalls);
@@ -100,16 +116,13 @@ public sealed class SmartPlatformQuotaResilienceGuard
             _health[t] = TargetHealth.Healthy; _blockedUntil[t] = 0;
             return TargetHealth.Healthy;
         }
-        var quota = status == 403 && (Has(body, "quotaExceeded"u8) || Has(body, "dailyLimitExceeded"u8));
-        var rate = status == 429 || (status == 403 && (Has(body, "rateLimitExceeded"u8) || Has(body, "userRateLimitExceeded"u8)))
-            || (status is 400 or 403 && GraphCode(body) is 4 or 17 or 32 or 613);
         if (quota)
         {
             _quotaHits[t]++; _health[t] = TargetHealth.QuotaExhausted; _used[t] = Capacity(target);
             _blockedUntil[t] = Math.Max(_resetAt[t], now + 60_000);
             return _health[t];
         }
-        if (status is 401 || GraphCode(body) == 190) { _health[t] = TargetHealth.AuthError; _blockedUntil[t] = long.MaxValue; return _health[t]; }
+        if (auth) { _health[t] = TargetHealth.AuthError; _blockedUntil[t] = long.MaxValue; return _health[t]; }
         _fails[t]++;
         var delay = Backoff(_fails[t]);
         if (retryAfterSec > 0) delay = Math.Max(delay, retryAfterSec * 1000L);
@@ -119,14 +132,17 @@ public sealed class SmartPlatformQuotaResilienceGuard
         return _health[t];
     }
 
-    public void ClearAuthError(PublishTarget t) { if (_health[(int)t] == TargetHealth.AuthError) { _health[(int)t] = TargetHealth.Healthy; _blockedUntil[(int)t] = 0; } }
+    public void ClearAuthError(PublishTarget t) { lock (_sync) { if (_health[(int)t] == TargetHealth.AuthError) { _health[(int)t] = TargetHealth.Healthy; _blockedUntil[(int)t] = 0; } } }
 
     /// <summary>지수 백오프 + 지터(무할당) — min(base·2ⁿ⁻¹, cap) × U(0.5, 1.0).</summary>
     public long Backoff(int attempt)
     {
-        _rng ^= _rng << 13; _rng ^= _rng >> 17; _rng ^= _rng << 5;
-        var exp = Math.Min(MaxBackoffMs, BaseBackoffMs << Math.Clamp(attempt - 1, 0, 20));
-        return (long)(exp * (0.5 + 0.5 * ((_rng & 0xFFFF) / 65535.0)));
+        lock (_sync)
+        {
+            _rng ^= _rng << 13; _rng ^= _rng >> 17; _rng ^= _rng << 5;
+            var exp = Math.Min(MaxBackoffMs, BaseBackoffMs << Math.Clamp(attempt - 1, 0, 20));
+            return (long)(exp * (0.5 + 0.5 * ((_rng & 0xFFFF) / 65535.0)));
+        }
     }
 
     private static bool Has(ReadOnlySpan<byte> s, ReadOnlySpan<byte> v) => !s.IsEmpty && s.IndexOf(v) >= 0;
@@ -145,23 +161,31 @@ public sealed class SmartPlatformQuotaResilienceGuard
     /// <summary>요청 마스크 → 즉시 송출 마스크(반환) · 불가 플랫폼 = 재시도 큐 격리 · <paramref name="rerouteMask"/> 의 정상 플랫폼으로 우회(우회 마스크 out).</summary>
     public int Route(int reelId, int requestMask, int rerouteMask, out int rerouted)
     {
-        var now = Clock(); var go = 0; rerouted = 0; var blocked = 0;
-        for (var t = 0; t < Targets; t++)
+        lock (_sync)
         {
-            if ((requestMask & (1 << t)) == 0) continue;
-            if (Available((PublishTarget)t)) go |= 1 << t;
-            else { blocked++; Enqueue(reelId, (PublishTarget)t, now); }
-        }
-        if (blocked > 0)
+            var now = Clock(); var go = 0; rerouted = 0; var blocked = 0;
             for (var t = 0; t < Targets; t++)
             {
-                if ((rerouteMask & (1 << t)) == 0 || (go & (1 << t)) != 0 || (requestMask & (1 << t)) != 0) continue;
-                if (Available((PublishTarget)t)) { go |= 1 << t; rerouted |= 1 << t; _rerouted[t]++; }
+                if ((requestMask & (1 << t)) == 0) continue;
+                if (AvailableCore((PublishTarget)t)) go |= 1 << t;
+                else { blocked++; EnqueueCore(reelId, (PublishTarget)t, now); }
             }
-        return go;
+            if (blocked > 0)
+                for (var t = 0; t < Targets; t++)
+                {
+                    if ((rerouteMask & (1 << t)) == 0 || (go & (1 << t)) != 0 || (requestMask & (1 << t)) != 0) continue;
+                    if (AvailableCore((PublishTarget)t)) { go |= 1 << t; rerouted |= 1 << t; _rerouted[t]++; }
+                }
+            return go;
+        }
     }
 
-    public bool Enqueue(int reelId, PublishTarget t, long now)
+    /// <summary>가드 자체 시계(<see cref="Clock"/>)로 격리 — 호출자 시계 축(TickCount64 등) 혼용 방지.</summary>
+    public bool Enqueue(int reelId, PublishTarget t) { lock (_sync) return EnqueueCore(reelId, t, Clock()); }
+
+    public bool Enqueue(int reelId, PublishTarget t, long now) { lock (_sync) return EnqueueCore(reelId, t, now); }
+
+    private bool EnqueueCore(int reelId, PublishTarget t, long now)
     {
         var free = -1;
         for (var i = 0; i < QueueCap; i++)
@@ -170,32 +194,38 @@ public sealed class SmartPlatformQuotaResilienceGuard
             if (q.Used && q.ReelId == reelId && q.Target == t) { q.NextAtMs = Math.Max(q.NextAtMs, _blockedUntil[(int)t]); return true; }
             if (!q.Used && free < 0) free = i;
         }
-        if (free < 0) { Overflows++; return false; }
+        if (free < 0) { Interlocked.Increment(ref _overflows); return false; }
         _q[free] = new QuotaRetryItem { Used = true, ReelId = reelId, Target = t, Attempt = 0, EnqueuedMs = now, NextAtMs = Math.Max(now, _blockedUntil[(int)t]) };
-        _qN++;
+        Volatile.Write(ref _qN, _qN + 1);
         return true;
     }
 
     /// <summary>시각 도래 + 플랫폼 가용 항목 → dst(최대 길이) · 큐에서 제거 · 반환 수. 재실패 시 호출자가 <see cref="Requeue"/>.</summary>
     public int PumpDue(Span<QuotaRetryItem> dst)
     {
-        var now = Clock(); var n = 0;
-        for (var i = 0; i < QueueCap && n < dst.Length; i++)
+        lock (_sync)
         {
-            ref var q = ref _q[i];
-            if (!q.Used || now < q.NextAtMs || !Available(q.Target)) continue;
-            dst[n++] = q; q.Used = false; _qN--; Retried++;
+            var now = Clock(); var n = 0;
+            for (var i = 0; i < QueueCap && n < dst.Length; i++)
+            {
+                ref var q = ref _q[i];
+                if (!q.Used || now < q.NextAtMs || !AvailableCore(q.Target)) continue;
+                dst[n++] = q; q.Used = false; Volatile.Write(ref _qN, _qN - 1); Interlocked.Increment(ref _retried);
+            }
+            return n;
         }
-        return n;
     }
 
-    /// <summary>재시도 실패 → 시도 +1 · 백오프 후 재격리(최대 시도 초과 = 포기).</summary>
+    /// <summary>재시도 실패 → 시도 +1 · 백오프 후 재격리(최대 시도 초과 = 포기). 격리 · 시도 갱신은 단일 임계 구역(중간 PumpDue 끼어들기 차단).</summary>
     public bool Requeue(in QuotaRetryItem item)
     {
-        if (item.Attempt + 1 >= MaxAttempts) { GaveUp++; return false; }
-        var now = Clock();
-        if (!Enqueue(item.ReelId, item.Target, now)) return false;
-        for (var i = 0; i < QueueCap; i++) if (_q[i].Used && _q[i].ReelId == item.ReelId && _q[i].Target == item.Target) { _q[i].Attempt = item.Attempt + 1; _q[i].NextAtMs = Math.Max(_blockedUntil[(int)item.Target], now + Backoff(item.Attempt + 1)); break; }
-        return true;
+        lock (_sync)
+        {
+            if (item.Attempt + 1 >= MaxAttempts) { Interlocked.Increment(ref _gaveUp); return false; }
+            var now = Clock();
+            if (!EnqueueCore(item.ReelId, item.Target, now)) return false;
+            for (var i = 0; i < QueueCap; i++) if (_q[i].Used && _q[i].ReelId == item.ReelId && _q[i].Target == item.Target) { _q[i].Attempt = item.Attempt + 1; _q[i].NextAtMs = Math.Max(_blockedUntil[(int)item.Target], now + Backoff(item.Attempt + 1)); break; }
+            return true;
+        }
     }
 }
