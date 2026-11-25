@@ -5313,7 +5313,7 @@
             _publishPackToast = !copied ? "⚠ 복사 실패" : "📋 제목 " + cand.Variant + " 복사됨" + (recorded ? " · 🅰️🅱️ 게시 변형 기록(" + cand.Framing + ")" : "");
         }
         catch (OperationCanceledException) { return; }
-        catch (Exception ex) { Program.Log("Workspace.PublishTitleCopy", ex); _publishPackToast = "⚠ 제목 복사 실패: " + ex.Message; }
+        catch (Exception ex) { Program.Log("Workspace.PublishTitleCopy", ex); _publishPackToast = "⚠ 제목 복사 실패: " + PromptFlowStudio.Services.Pluto.PlutoAutonomousActivityFeedService.Redact(ex.Message); }
         finally { _publishPackBusy = false; }
         if (_disposed) return;
         await InvokeAsync(StateHasChanged);
@@ -5331,7 +5331,7 @@
             _publishPackToast = r.MessageKorean;
         }
         catch (OperationCanceledException) { return; }
-        catch (Exception ex) { Program.Log("Workspace.PublishPackSidecar", ex); _publishPackToast = "⚠ 패키지 저장 실패: " + ex.Message; }
+        catch (Exception ex) { Program.Log("Workspace.PublishPackSidecar", ex); _publishPackToast = "⚠ 패키지 저장 실패: " + PromptFlowStudio.Services.Pluto.PlutoAutonomousActivityFeedService.Redact(ex.Message); }
         finally { _publishPackBusy = false; }
         if (_disposed) return;
         await InvokeAsync(StateHasChanged);
@@ -5504,7 +5504,7 @@
                 catch (Exception ex) { Program.Log("Workspace.PublishPackRecord", ex); }
         }
         catch (OperationCanceledException) { return; }
-        catch (Exception ex) { Program.Log("Workspace.PublishPack", ex); _publishPackToast = "⚠ 업로드 패키지 생성 실패: " + ex.Message; }
+        catch (Exception ex) { Program.Log("Workspace.PublishPack", ex); _publishPackToast = "⚠ 업로드 패키지 생성 실패: " + PromptFlowStudio.Services.Pluto.PlutoAutonomousActivityFeedService.Redact(ex.Message); }
         finally { _publishPackBusy = false; }
         if (_disposed) return;
         await InvokeAsync(StateHasChanged);

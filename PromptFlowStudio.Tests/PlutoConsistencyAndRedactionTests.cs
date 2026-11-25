@@ -66,6 +66,26 @@ public class PlutoConsistencyAndRedactionTests
     }
 
     [Fact]
+    public void PublishPackToasts_RedactRawExceptionMessages_AndHubInvariantsHold()
+    {
+        var ws = Src("Blazor", "Pages", "Workspace.razor");
+        foreach (var label in new[] { "⚠ 제목 복사 실패: ", "⚠ 패키지 저장 실패: ", "⚠ 업로드 패키지 생성 실패: " })
+        {
+            Assert.DoesNotContain("\"" + label + "\" + ex.Message", ws, StringComparison.Ordinal);
+            Assert.Contains("\"" + label + "\" + PromptFlowStudio.Services.Pluto.PlutoAutonomousActivityFeedService.Redact(ex.Message)", ws, StringComparison.Ordinal);
+        }
+
+        var red = PlutoAutonomousActivityFeedService.Redact("IOException: D:\\Users\\someone\\Videos\\pack\\upload.json Bearer abc.def-ghi");
+        Assert.DoesNotContain("someone", red, StringComparison.Ordinal);
+        Assert.Contains("upload.json", red, StringComparison.Ordinal);
+        Assert.DoesNotContain("abc.def-ghi", red, StringComparison.Ordinal);
+
+        Assert.Equal(9, PlutoDriveHealthService.CorePlutoFileCount);
+        Assert.Equal(6, PlutoConflictMergeService.MergeableHubs.Count);
+        Assert.Equal(2, PlutoConflictMergeService.MergeableCompanions.Count);
+    }
+
+    [Fact]
     public void Toggles_BindToEffectiveRuntimeState_NotRawPreference()
     {
         var settings = Src("Blazor", "Pages", "Settings.razor");
