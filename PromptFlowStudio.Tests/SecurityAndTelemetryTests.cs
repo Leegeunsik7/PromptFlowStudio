@@ -534,11 +534,11 @@ public class MobileRootDiRegistrationTests
 
     [Fact]
     [Trait("Category", "Integration")]
-    public void McpConfig_RestoresBothServers_AsValidJson()
+    public void McpConfig_HasChromeDevtoolsOnly_AsValidJson()
     {
         using var doc = JsonDocument.Parse(File.ReadAllText(Path.Combine(RepoRoot(), ".mcp.json")));
         var servers = doc.RootElement.GetProperty("mcpServers");
-        Assert.True(servers.TryGetProperty("playwright", out _));
+        Assert.False(servers.TryGetProperty("playwright", out _));   // 16d692b: playwright MCP 제거 - chrome-devtools 단독
         Assert.True(servers.TryGetProperty("chrome-devtools", out _));
     }
 }
@@ -584,7 +584,7 @@ public class McpSupplyChainTests
     {
         using var doc = JsonDocument.Parse(File.ReadAllText(McpPath()));
         var servers = doc.RootElement.GetProperty("mcpServers");
-        Assert.True(servers.TryGetProperty("playwright", out _));
+        Assert.False(servers.TryGetProperty("playwright", out _));   // 16d692b: playwright MCP 제거 - chrome-devtools 단독
         Assert.True(servers.TryGetProperty("chrome-devtools", out _));
         var problems = Diagnose(servers);
         Assert.True(problems.Count == 0, "MCP 공급망 고정 위반:" + Environment.NewLine + string.Join(Environment.NewLine, problems));
@@ -625,7 +625,6 @@ public class McpLockfileIsolationTests
 {
     private static readonly Dictionary<string, string> Pins = new(StringComparer.Ordinal)
     {
-        ["@playwright/mcp"] = "0.0.83",
         ["chrome-devtools-mcp"] = "1.10.1",
     };
 
@@ -702,7 +701,7 @@ public class McpLockfileIsolationTests
         using var lk = Read("tools", "mcp", "package-lock.json");
         var packages = lk.RootElement.GetProperty("packages");
         var servers = mcp.RootElement.GetProperty("mcpServers");
-        Assert.True(servers.TryGetProperty("playwright", out _));
+        Assert.False(servers.TryGetProperty("playwright", out _));   // 16d692b: playwright MCP 제거 - chrome-devtools 단독
         Assert.True(servers.TryGetProperty("chrome-devtools", out _));
 
         foreach (var s in servers.EnumerateObject())
