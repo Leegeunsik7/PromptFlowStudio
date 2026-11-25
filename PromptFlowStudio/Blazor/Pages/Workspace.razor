@@ -2039,7 +2039,7 @@
             _motionToast = r.Ok ? "✅ " + r.Message : "⚠ " + r.Message;
         }
         catch (OperationCanceledException) { }   // 페이지 이탈
-        catch (Exception ex) { Program.Log("Workspace.MotionVideo", ex); _motionToast = "⚠ 모션 비디오 렌더 실패: " + ex.Message; }
+        catch (Exception ex) { Program.Log("Workspace.MotionVideo", ex); _motionToast = "⚠ 모션 비디오 렌더 실패: " + PromptFlowStudio.Services.Pluto.PlutoAutonomousActivityFeedService.Redact(ex.Message); }
         finally { _motionBusy = false; _stockBusy = false; }
         if (_disposed) return;
         await InvokeAsync(StateHasChanged);
@@ -2084,8 +2084,8 @@
             await ApplyCustomBgmAsync(hl);
         }
         catch (OperationCanceledException) { }   // 페이지 이탈
-        catch (InvalidOperationException ex) { _customBgmError = ex.Message; }
-        catch (Exception ex) { Program.Log("Workspace.CustomBgm", ex); _customBgmError = "BGM 업로드 실패: " + ex.Message; }
+        catch (InvalidOperationException ex) { _customBgmError = PromptFlowStudio.Services.Pluto.PlutoAutonomousActivityFeedService.Redact(ex.Message); }
+        catch (Exception ex) { Program.Log("Workspace.CustomBgm", ex); _customBgmError = "BGM 업로드 실패: " + PromptFlowStudio.Services.Pluto.PlutoAutonomousActivityFeedService.Redact(ex.Message); }
         finally { _customBgmBusy = false; }
         if (_disposed) return;
         await InvokeAsync(StateHasChanged);
@@ -2103,8 +2103,8 @@
             await ApplyCustomBgmAsync(hl);
         }
         catch (OperationCanceledException) { }
-        catch (InvalidOperationException ex) { _customBgmError = ex.Message; }
-        catch (Exception ex) { Program.Log("Workspace.CustomBgmNudge", ex); _customBgmError = "하이라이트 이동 실패: " + ex.Message; }
+        catch (InvalidOperationException ex) { _customBgmError = PromptFlowStudio.Services.Pluto.PlutoAutonomousActivityFeedService.Redact(ex.Message); }
+        catch (Exception ex) { Program.Log("Workspace.CustomBgmNudge", ex); _customBgmError = "하이라이트 이동 실패: " + PromptFlowStudio.Services.Pluto.PlutoAutonomousActivityFeedService.Redact(ex.Message); }
         finally { _customBgmBusy = false; }
         if (_disposed) return;
         await InvokeAsync(StateHasChanged);
@@ -2226,7 +2226,7 @@
             else _montageToast = "⚠ 선별 가능한 사진이 부족합니다(판독 가능 2장 이상 필요).";
         }
         catch (OperationCanceledException) { return; }   // 페이지 이탈
-        catch (Exception ex) { Program.Log("Workspace.PhotoCuration", ex); _montageToast = "⚠ AI 베스트 컷 선별 실패: " + ex.Message; }
+        catch (Exception ex) { Program.Log("Workspace.PhotoCuration", ex); _montageToast = "⚠ AI 베스트 컷 선별 실패: " + PromptFlowStudio.Services.Pluto.PlutoAutonomousActivityFeedService.Redact(ex.Message); }
         finally { _curationBusy = false; }
         RefreshMontageLook();
         await InvokeAsync(StateHasChanged);
@@ -2254,7 +2254,7 @@
         if (_curationEditBusy || _curationBusy || _montageBusy) return;
         PromptFlowStudio.Services.Pluto.PlutoBatchCurationResult updated;
         try { updated = edit(); }
-        catch (ArgumentException ex) { Program.Log("Workspace.CurationEdit", ex); _montageToast = "⚠ 컷 편집 실패: " + ex.Message; return; }
+        catch (ArgumentException ex) { Program.Log("Workspace.CurationEdit", ex); _montageToast = "⚠ 컷 편집 실패: " + PromptFlowStudio.Services.Pluto.PlutoAutonomousActivityFeedService.Redact(ex.Message); return; }
         if (ReferenceEquals(updated, _curationResult)) return;
         _curationEditBusy = true;
         try { await ApplyUpdatedCurationAsync(updated); }
@@ -2537,7 +2537,7 @@
             if (localeRender.WarningKorean.Length > 0) _montageToast += " · " + localeRender.WarningKorean;
         }
         catch (OperationCanceledException) { }   // 페이지 이탈
-        catch (Exception ex) { Program.Log("Workspace.MontageVideo", ex); _montageToast = "⚠ 몽타주 렌더 실패: " + ex.Message; }
+        catch (Exception ex) { Program.Log("Workspace.MontageVideo", ex); _montageToast = "⚠ 몽타주 렌더 실패: " + PromptFlowStudio.Services.Pluto.PlutoAutonomousActivityFeedService.Redact(ex.Message); }
         finally { _montageBusy = false; _stockBusy = false; }
         if (_disposed) return;
         await InvokeAsync(StateHasChanged);
@@ -2576,7 +2576,7 @@
             _montageToast = (r.Ok ? "✅ 🎬 듀얼 마스터 · " : r.AnyOk ? "⚠ 🎬 듀얼 마스터 [부분 구제] · " : "⚠ 🎬 듀얼 마스터 실패 · ") + r.Message;
         }
         catch (OperationCanceledException) { }   // 페이지 이탈
-        catch (Exception ex) { Program.Log("Workspace.DualMaster", ex); _montageToast = "⚠ 듀얼 마스터 렌더 실패: " + ex.Message; }
+        catch (Exception ex) { Program.Log("Workspace.DualMaster", ex); _montageToast = "⚠ 듀얼 마스터 렌더 실패: " + PromptFlowStudio.Services.Pluto.PlutoAutonomousActivityFeedService.Redact(ex.Message); }
         finally { _montageBusy = false; _stockBusy = false; }
         if (_disposed) return;
         await InvokeAsync(StateHasChanged);
@@ -2600,7 +2600,7 @@
             _montageToast = (r.Ok ? "✅ " : "⚠ ") + r.Message;
         }
         catch (OperationCanceledException) { return; }   // 페이지 이탈
-        catch (Exception ex) { Program.Log("Workspace.DualBundle", ex); _montageToast = "⚠ 듀얼 마스터 번들 내보내기 실패: " + ex.Message; }
+        catch (Exception ex) { Program.Log("Workspace.DualBundle", ex); _montageToast = "⚠ 듀얼 마스터 번들 내보내기 실패: " + PromptFlowStudio.Services.Pluto.PlutoAutonomousActivityFeedService.Redact(ex.Message); }
         finally { _dualExportBusy = false; }
         if (_disposed) return;
         await InvokeAsync(StateHasChanged);
@@ -2635,7 +2635,7 @@
             await ApplyAbVariantAsync(false);
         }
         catch (OperationCanceledException) { return; }   // 페이지 이탈
-        catch (Exception ex) { Program.Log("Workspace.AbBuild", ex); _abToast = "⚠ A/B 변형 생성 실패: " + ex.Message; }
+        catch (Exception ex) { Program.Log("Workspace.AbBuild", ex); _abToast = "⚠ A/B 변형 생성 실패: " + PromptFlowStudio.Services.Pluto.PlutoAutonomousActivityFeedService.Redact(ex.Message); }
         finally { _abBusy = false; }
         if (_disposed) return;
         await InvokeAsync(StateHasChanged);
@@ -2646,7 +2646,7 @@
         if (_abPlan is null || _montageBusy) return;
         try { await ApplyAbVariantAsync(challenger); }
         catch (OperationCanceledException) { return; }
-        catch (Exception ex) { Program.Log("Workspace.AbSwitch", ex); _abToast = "⚠ 변형 전환 실패: " + ex.Message; }
+        catch (Exception ex) { Program.Log("Workspace.AbSwitch", ex); _abToast = "⚠ 변형 전환 실패: " + PromptFlowStudio.Services.Pluto.PlutoAutonomousActivityFeedService.Redact(ex.Message); }
         if (_disposed) return;
         await InvokeAsync(StateHasChanged);
     }
@@ -2773,7 +2773,7 @@
                 : "⚠ [부분 구제] " + (outA is null ? "챔피언 A" : "챌린저 B") + " 렌더 실패 · 성공한 변형만 장부에 결선";
         }
         catch (OperationCanceledException) { return; }   // 페이지 이탈
-        catch (Exception ex) { Program.Log("Workspace.AbDualRender", ex); _abToast = "⚠ A/B 연속 렌더링 실패: " + ex.Message; }
+        catch (Exception ex) { Program.Log("Workspace.AbDualRender", ex); _abToast = "⚠ A/B 연속 렌더링 실패: " + PromptFlowStudio.Services.Pluto.PlutoAutonomousActivityFeedService.Redact(ex.Message); }
         finally { _abDualBusy = false; _abRenderProgress = null; }
         if (_disposed) return;
         await InvokeAsync(StateHasChanged);
@@ -2789,7 +2789,7 @@
             _canvasQueuePath = path;
             _abEvalToast = "▶ " + (challenger ? "🧪 B안" : "🏆 A안") + " 미리보기 · " + Path.GetFileName(path);
         }
-        catch (Exception ex) { Program.Log("Workspace.AbPreview", ex); _abEvalToast = "⚠ 미리보기 로드 실패: " + ex.Message; }
+        catch (Exception ex) { Program.Log("Workspace.AbPreview", ex); _abEvalToast = "⚠ 미리보기 로드 실패: " + PromptFlowStudio.Services.Pluto.PlutoAutonomousActivityFeedService.Redact(ex.Message); }
     }
 
     /// <summary>📦 [A/B 실험 폴더 동시 내보내기] — 결선된 A/B 영상 → <c>{테마}_AB_{yyyyMMdd}\VariantA|VariantB</c> + 실험 매니페스트(예외 전파 금지).</summary>
@@ -2809,7 +2809,7 @@
             _abToast = (r.Ok ? "✅ " : "⚠ ") + r.Message;
         }
         catch (OperationCanceledException) { return; }   // 페이지 이탈
-        catch (Exception ex) { Program.Log("Workspace.AbExport", ex); _abToast = "⚠ A/B 실험 내보내기 실패: " + ex.Message; }
+        catch (Exception ex) { Program.Log("Workspace.AbExport", ex); _abToast = "⚠ A/B 실험 내보내기 실패: " + PromptFlowStudio.Services.Pluto.PlutoAutonomousActivityFeedService.Redact(ex.Message); }
         finally { _abExportBusy = false; }
         if (_disposed) return;
         await InvokeAsync(StateHasChanged);
@@ -2846,7 +2846,7 @@
             await RefreshBrainSummaryAsync();   // 🧠 두뇌 리포트 갱신
         }
         catch (OperationCanceledException) { return; }   // 페이지 이탈
-        catch (Exception ex) { Program.Log("Workspace.AbEvaluate", ex); _abEvalToast = "⚠ 승자 판정 실패: " + ex.Message; }
+        catch (Exception ex) { Program.Log("Workspace.AbEvaluate", ex); _abEvalToast = "⚠ 승자 판정 실패: " + PromptFlowStudio.Services.Pluto.PlutoAutonomousActivityFeedService.Redact(ex.Message); }
         finally { _abEvalBusy = false; }
         if (_disposed) return;
         await InvokeAsync(StateHasChanged);
@@ -3018,7 +3018,7 @@
         PromptFlowStudio.Services.Pluto.PlutoSeriesSeasonInfo info;
         try { info = await arc.StartNewSeasonAsync(s.SeriesTheme, s.Episodes.Count, _mediaCts.Token); }
         catch (OperationCanceledException) { return; }   // 페이지 이탈
-        catch (Exception ex) { Program.Log("Workspace.SeriesNewSeason", ex); _seriesToast = "⚠ 새 시즌 분리 실패: " + ex.Message; await InvokeAsync(StateHasChanged); return; }
+        catch (Exception ex) { Program.Log("Workspace.SeriesNewSeason", ex); _seriesToast = "⚠ 새 시즌 분리 실패: " + PromptFlowStudio.Services.Pluto.PlutoAutonomousActivityFeedService.Redact(ex.Message); await InvokeAsync(StateHasChanged); return; }
         if (_disposed || !ReferenceEquals(_series, s)) return;
         _seriesSeason = info;
         if (info.Season <= before)
@@ -3102,8 +3102,8 @@
             _seriesSeason = null;
         }
         catch (OperationCanceledException) { return; }   // 페이지 이탈
-        catch (InvalidOperationException ex) { _series = null; _seriesToast = "⚠ " + ex.Message; }
-        catch (Exception ex) { Program.Log("Workspace.SeriesBuild", ex); _series = null; _seriesToast = "⚠ 시리즈 분할 실패: " + ex.Message; }
+        catch (InvalidOperationException ex) { _series = null; _seriesToast = "⚠ " + PromptFlowStudio.Services.Pluto.PlutoAutonomousActivityFeedService.Redact(ex.Message); }
+        catch (Exception ex) { Program.Log("Workspace.SeriesBuild", ex); _series = null; _seriesToast = "⚠ 시리즈 분할 실패: " + PromptFlowStudio.Services.Pluto.PlutoAutonomousActivityFeedService.Redact(ex.Message); }
         finally { _seriesBusy = false; }
         if (_disposed) return;
         if (_series is { Episodes.Count: > 0 } s) await LoadSeriesEpisodeAsync(s.Episodes[0]);
@@ -3240,7 +3240,7 @@
             }
         }
         catch (OperationCanceledException) { return; }   // 페이지 이탈
-        catch (Exception ex) { Program.Log("Workspace.SeriesRenderAll", ex); _seriesToast = "⚠ 시리즈 연속 렌더링 실패: " + ex.Message; }
+        catch (Exception ex) { Program.Log("Workspace.SeriesRenderAll", ex); _seriesToast = "⚠ 시리즈 연속 렌더링 실패: " + PromptFlowStudio.Services.Pluto.PlutoAutonomousActivityFeedService.Redact(ex.Message); }
         finally { _seriesRenderAllBusy = false; }
         if (_disposed) return;
         if (_seriesEpisodeOutputs.Count == 0)
@@ -3281,7 +3281,7 @@
             _seriesToast = (r.Ok ? "✅ " : "⚠ ") + r.Message;
         }
         catch (OperationCanceledException) { return; }   // 페이지 이탈
-        catch (Exception ex) { Program.Log("Workspace.SeriesBatchExport", ex); _seriesToast = "⚠ 시리즈 일괄 내보내기 실패: " + ex.Message; }
+        catch (Exception ex) { Program.Log("Workspace.SeriesBatchExport", ex); _seriesToast = "⚠ 시리즈 일괄 내보내기 실패: " + PromptFlowStudio.Services.Pluto.PlutoAutonomousActivityFeedService.Redact(ex.Message); }
         finally { _seriesExportBusy = false; }
         if (_disposed) return;
         await InvokeAsync(StateHasChanged);
@@ -3306,7 +3306,7 @@
             if (_briefs.Count == 0) _briefsToast = "⚠ 오늘은 오답 노트를 피한 기획안을 찾지 못했습니다.";
         }
         catch (OperationCanceledException) { return; }   // 페이지 이탈
-        catch (Exception ex) { Program.Log("Workspace.Briefs", ex); _briefsToast = "⚠ 기획안 생성 실패: " + ex.Message; }
+        catch (Exception ex) { Program.Log("Workspace.Briefs", ex); _briefsToast = "⚠ 기획안 생성 실패: " + PromptFlowStudio.Services.Pluto.PlutoAutonomousActivityFeedService.Redact(ex.Message); }
         finally { _briefsBusy = false; }
         if (_disposed) return;
         await InvokeAsync(StateHasChanged);
@@ -3338,7 +3338,7 @@
             _briefsToast = "🚀 '" + brief.Title + "' 세팅 · 룩 " + _montageLook + bgmNote + " · 훅 '" + brief.RecommendedHook + "'";
         }
         catch (OperationCanceledException) { return; }   // 페이지 이탈
-        catch (Exception ex) { Program.Log("Workspace.BriefApply", ex); _briefsToast = "⚠ 기획안 적용 실패: " + ex.Message; }
+        catch (Exception ex) { Program.Log("Workspace.BriefApply", ex); _briefsToast = "⚠ 기획안 적용 실패: " + PromptFlowStudio.Services.Pluto.PlutoAutonomousActivityFeedService.Redact(ex.Message); }
         if (_disposed) return;
         await InvokeAsync(StateHasChanged);
     }
@@ -3395,7 +3395,7 @@
             else _snsKit = await packager.GeneratePublishingKitAsync(MontageThemeHint(), tags, _montageCues, _mediaCts.Token);
         }
         catch (OperationCanceledException) { return; }   // 페이지 이탈
-        catch (Exception ex) { Program.Log("Workspace.SnsKit", ex); _snsToast = "⚠ SNS 키트 생성 실패: " + ex.Message; }
+        catch (Exception ex) { Program.Log("Workspace.SnsKit", ex); _snsToast = "⚠ SNS 키트 생성 실패: " + PromptFlowStudio.Services.Pluto.PlutoAutonomousActivityFeedService.Redact(ex.Message); }
         finally { _snsBusy = false; }
         if (_disposed) return;
         await InvokeAsync(StateHasChanged);
@@ -3602,7 +3602,7 @@
             _forecastToast = "🔁 안전 룩 " + _montageLook + "(으)로 교체" + (_appliedBriefArm is not null ? " · 기획 룩과 달라져 이 클립은 기획 채점에서 제외돼요" : "");
         }
         catch (OperationCanceledException) { return; }
-        catch (Exception ex) { Program.Log("Workspace.SetupForecastSwap", ex); _forecastToast = "⚠ 룩 교체 실패: " + ex.Message; }
+        catch (Exception ex) { Program.Log("Workspace.SetupForecastSwap", ex); _forecastToast = "⚠ 룩 교체 실패: " + PromptFlowStudio.Services.Pluto.PlutoAutonomousActivityFeedService.Redact(ex.Message); }
         finally { _forecastSwapBusy = false; }
         if (_disposed) return;
         await InvokeAsync(StateHasChanged);
@@ -3633,7 +3633,7 @@
             if (briefs.Count == 0) _topicPlanToast = "⚠ 오답 노트를 피한 기획안을 찾지 못했어요.";
         }
         catch (OperationCanceledException) { return; }   // 페이지 이탈
-        catch (Exception ex) { Program.Log("Workspace.TopicPlan", ex); _topicPlanToast = "⚠ 기획 제안 실패: " + ex.Message; }
+        catch (Exception ex) { Program.Log("Workspace.TopicPlan", ex); _topicPlanToast = "⚠ 기획 제안 실패: " + PromptFlowStudio.Services.Pluto.PlutoAutonomousActivityFeedService.Redact(ex.Message); }
         finally { if (seq == _topicPlanSeq) _topicPlanBusy = false; }
     }
 
@@ -3681,7 +3681,7 @@
             _topicPlanToast = "🎯 '" + brief.Theme + "' " + brief.Format + " 세팅 · 룩 " + _montageLook + bgmNote + " · 훅 '" + brief.HookStyle + "' · 제목 " + brief.TitleFraming + cueNote;
         }
         catch (OperationCanceledException) { return; }   // 페이지 이탈
-        catch (Exception ex) { Program.Log("Workspace.TopicPlanApply", ex); _topicPlanToast = "⚠ 기획 적용 실패: " + ex.Message; }
+        catch (Exception ex) { Program.Log("Workspace.TopicPlanApply", ex); _topicPlanToast = "⚠ 기획 적용 실패: " + PromptFlowStudio.Services.Pluto.PlutoAutonomousActivityFeedService.Redact(ex.Message); }
         finally { _topicPlanBusy = false; }
         if (_disposed) return;
         await InvokeAsync(StateHasChanged);
@@ -3716,7 +3716,7 @@
             _mistakeStatus = removed ? "오답 가드 해제 완료: " + patternKey : "⚠ 이미 해제된 가드입니다: " + patternKey;
         }
         catch (OperationCanceledException) { return; }
-        catch (Exception ex) { Program.Log("Workspace.MistakeForgive", ex); _mistakeStatus = "⚠ 오답 가드 해제 실패: " + ex.Message; }
+        catch (Exception ex) { Program.Log("Workspace.MistakeForgive", ex); _mistakeStatus = "⚠ 오답 가드 해제 실패: " + PromptFlowStudio.Services.Pluto.PlutoAutonomousActivityFeedService.Redact(ex.Message); }
         finally { _mistakeForgiveBusy = false; }
         if (_disposed) return;
         await RefreshBrainSummaryAsync();
@@ -3876,7 +3876,7 @@
             _batchToast = n == 0 ? "📋 미학습 영상이 없습니다 — 모든 렌더 영상의 성과가 반영되었습니다." : "📋 미학습 영상 " + n.ToString(CultureInfo.InvariantCulture) + "편을 불러왔습니다 — 수치를 실제 값으로 고친 뒤 [일괄 학습 실행]";
         }
         catch (OperationCanceledException) { return; }
-        catch (Exception ex) { Program.Log("Workspace.BatchTemplate", ex); _batchToast = "⚠ 템플릿 생성 실패: " + ex.Message; }
+        catch (Exception ex) { Program.Log("Workspace.BatchTemplate", ex); _batchToast = "⚠ 템플릿 생성 실패: " + PromptFlowStudio.Services.Pluto.PlutoAutonomousActivityFeedService.Redact(ex.Message); }
         if (_disposed) return;
         await InvokeAsync(StateHasChanged);
     }
@@ -3909,7 +3909,7 @@
             await RefreshBrainSummaryAsync();   // 🧠 두뇌 리포트 갱신
         }
         catch (OperationCanceledException) { return; }   // 페이지 이탈
-        catch (Exception ex) { Program.Log("Workspace.BatchTelemetry", ex); _batchToast = "⚠ 일괄 반영 실패: " + ex.Message; }
+        catch (Exception ex) { Program.Log("Workspace.BatchTelemetry", ex); _batchToast = "⚠ 일괄 반영 실패: " + PromptFlowStudio.Services.Pluto.PlutoAutonomousActivityFeedService.Redact(ex.Message); }
         finally { _batchBusy = false; }
         if (_disposed) return;
         await InvokeAsync(StateHasChanged);
@@ -3930,7 +3930,7 @@
             bytes = ms.ToArray();
         }
         catch (OperationCanceledException) { return; }
-        catch (Exception ex) { Program.Log("Workspace.YouTubeStudioRead", ex); _batchToast = "⚠ 파일 읽기 실패: " + ex.Message; return; }
+        catch (Exception ex) { Program.Log("Workspace.YouTubeStudioRead", ex); _batchToast = "⚠ 파일 읽기 실패: " + PromptFlowStudio.Services.Pluto.PlutoAutonomousActivityFeedService.Redact(ex.Message); return; }
         await RunYouTubeStudioImportAsync(bytes, file.Name);
     }
 
@@ -3948,7 +3948,7 @@
             bytes = await File.ReadAllBytesAsync(path, _mediaCts.Token);
         }
         catch (OperationCanceledException) { return; }
-        catch (Exception ex) { Program.Log("Workspace.YouTubeStudioDownloads", ex); _batchToast = "⚠ 다운로드 폴더 읽기 실패: " + ex.Message; return; }
+        catch (Exception ex) { Program.Log("Workspace.YouTubeStudioDownloads", ex); _batchToast = "⚠ 다운로드 폴더 읽기 실패: " + PromptFlowStudio.Services.Pluto.PlutoAutonomousActivityFeedService.Redact(ex.Message); return; }
         await RunYouTubeStudioImportAsync(bytes, Path.GetFileName(path));
     }
 
@@ -4009,8 +4009,8 @@
             await RefreshBrainSummaryAsync();   // 🧠 두뇌 리포트 갱신
         }
         catch (OperationCanceledException) { return; }   // 페이지 이탈
-        catch (InvalidDataException ex) { _batchToast = "⚠ " + ex.Message; }
-        catch (Exception ex) { Program.Log("Workspace.YouTubeStudioImport", ex); _batchToast = "⚠ YouTube Studio 반영 실패: " + ex.Message; }
+        catch (InvalidDataException ex) { _batchToast = "⚠ " + PromptFlowStudio.Services.Pluto.PlutoAutonomousActivityFeedService.Redact(ex.Message); }
+        catch (Exception ex) { Program.Log("Workspace.YouTubeStudioImport", ex); _batchToast = "⚠ YouTube Studio 반영 실패: " + PromptFlowStudio.Services.Pluto.PlutoAutonomousActivityFeedService.Redact(ex.Message); }
         finally { _batchBusy = false; }
         if (_disposed) return;
         await InvokeAsync(StateHasChanged);
@@ -4057,7 +4057,7 @@
             await RefreshBrainSummaryAsync();   // 🧠 두뇌 리포트 갱신
         }
         catch (OperationCanceledException) { return; }   // 페이지 이탈
-        catch (Exception ex) { Program.Log("Workspace.PerfFeedback", ex); _snsToast = "⚠ 성과 학습 반영 실패: " + ex.Message; }
+        catch (Exception ex) { Program.Log("Workspace.PerfFeedback", ex); _snsToast = "⚠ 성과 학습 반영 실패: " + PromptFlowStudio.Services.Pluto.PlutoAutonomousActivityFeedService.Redact(ex.Message); }
         finally { _perfBusy = false; }
         if (_disposed) return;
         await InvokeAsync(StateHasChanged);
@@ -4119,7 +4119,7 @@
             else _adaptiveToast = "🧠 룩 " + _montageLook + " 고정" + bgmNote;
         }
         catch (OperationCanceledException) { return; }   // 페이지 이탈
-        catch (Exception ex) { Program.Log("Workspace.AdaptiveApply", ex); _adaptiveToast = "⚠ 학습 최적 적용 실패: " + ex.Message; }
+        catch (Exception ex) { Program.Log("Workspace.AdaptiveApply", ex); _adaptiveToast = "⚠ 학습 최적 적용 실패: " + PromptFlowStudio.Services.Pluto.PlutoAutonomousActivityFeedService.Redact(ex.Message); }
         finally { _adaptiveBusy = false; }
         if (_disposed) return;
         await InvokeAsync(StateHasChanged);
@@ -4659,7 +4659,7 @@
             else _lipMsg = "⚠ " + r.Message;
         }
         catch (OperationCanceledException) { _lipMsg = "취소됨"; }
-        catch (Exception ex) { Program.Log("Workspace.LipSync", ex); _lipMsg = "⚠ 립싱크 실패: " + ex.Message; }
+        catch (Exception ex) { Program.Log("Workspace.LipSync", ex); _lipMsg = "⚠ 립싱크 실패: " + PromptFlowStudio.Services.Pluto.PlutoAutonomousActivityFeedService.Redact(ex.Message); }
         finally { _lipBusy = false; }
     }
     private bool IsShowingReversed => _showReversed && _reversedUrl is not null && string.Equals(_reversedFor, State.LocalPath, StringComparison.Ordinal);
@@ -5106,7 +5106,7 @@
             await RefreshYouTubeUnmatchedAsync();
         }
         catch (OperationCanceledException) { return; }
-        catch (Exception ex) { Program.Log("Workspace.YouTubePair", ex); _ytPairToast = "⚠ 연결 실패: " + ex.Message; }
+        catch (Exception ex) { Program.Log("Workspace.YouTubePair", ex); _ytPairToast = "⚠ 연결 실패: " + PromptFlowStudio.Services.Pluto.PlutoAutonomousActivityFeedService.Redact(ex.Message); }
         finally { _ytPairBusy = false; }
         if (_disposed) return;
         await InvokeAsync(StateHasChanged);
@@ -5201,7 +5201,7 @@
             await ReloadGlossaryAsync();
         }
         catch (OperationCanceledException) { }
-        catch (Exception ex) { Program.Log("Workspace.GlossaryAdd", ex); _localeTranslateToast = "⚠ 용어 등록 실패: " + ex.Message; }
+        catch (Exception ex) { Program.Log("Workspace.GlossaryAdd", ex); _localeTranslateToast = "⚠ 용어 등록 실패: " + PromptFlowStudio.Services.Pluto.PlutoAutonomousActivityFeedService.Redact(ex.Message); }
         finally { _glossaryBusy = false; }
     }
 
@@ -5236,7 +5236,7 @@
             _localeTranslateToast = result.MessageKorean + (fit is { } f && f.UsedTranslationTrack ? " · 🎙️ " + f.SpeakingRate.ToString("0.00", CultureInfo.InvariantCulture) + "x" : "");
         }
         catch (OperationCanceledException) { }
-        catch (Exception ex) { Program.Log("Workspace.LocaleTranslate", ex); _localeTranslateToast = "⚠ 번역 실패: " + ex.Message; }
+        catch (Exception ex) { Program.Log("Workspace.LocaleTranslate", ex); _localeTranslateToast = "⚠ 번역 실패: " + PromptFlowStudio.Services.Pluto.PlutoAutonomousActivityFeedService.Redact(ex.Message); }
         finally { _localeTranslateBusy = false; }
         await InvokeAsync(StateHasChanged);
     }
@@ -6105,7 +6105,7 @@
                 : "⏳ 원격 작업 진행 중 — 잠시 후 다시 시도하세요";
         }
         catch (OperationCanceledException) { }
-        catch (Exception ex) { Program.Log("Workspace.Journal.Recover", ex); _jMsg = "⚠ 회수 실패: " + ex.Message; }
+        catch (Exception ex) { Program.Log("Workspace.Journal.Recover", ex); _jMsg = "⚠ 회수 실패: " + PromptFlowStudio.Services.Pluto.PlutoAutonomousActivityFeedService.Redact(ex.Message); }
         finally { _jBusy = false; ReloadJournal(); }
     }
 
@@ -6122,7 +6122,7 @@
             if (r.Recovered > 0) _jMsg = "✅ 재시도 회수 " + r.Recovered.ToString(CultureInfo.InvariantCulture) + "건 완료";
         }
         catch (OperationCanceledException) { }
-        catch (Exception ex) { Program.Log("Workspace.Journal.Retry", ex); _jMsg = "⚠ 재시도 실패: " + ex.Message; }
+        catch (Exception ex) { Program.Log("Workspace.Journal.Retry", ex); _jMsg = "⚠ 재시도 실패: " + PromptFlowStudio.Services.Pluto.PlutoAutonomousActivityFeedService.Redact(ex.Message); }
         finally { _jBusy = false; ReloadJournal(); }
     }
 
@@ -6249,14 +6249,14 @@
             _upName = null;
             _upFormOpen = false;
         }
-        catch (ArgumentException ex) { _upMsg = "⚠ " + ex.Message; }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { Program.Log("Workspace.SavePreset", ex); _upMsg = "⚠ 프리셋 저장 실패: " + ex.Message; }
+        catch (ArgumentException ex) { _upMsg = "⚠ " + PromptFlowStudio.Services.Pluto.PlutoAutonomousActivityFeedService.Redact(ex.Message); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { Program.Log("Workspace.SavePreset", ex); _upMsg = "⚠ 프리셋 저장 실패: " + PromptFlowStudio.Services.Pluto.PlutoAutonomousActivityFeedService.Redact(ex.Message); }
     }
 
     private void DeleteUserPreset(Guid id)
     {
         try { _upMsg = Presets.Delete(id) ? "🗑 프리셋 삭제됨" : "⚠ 이미 삭제된 프리셋"; }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { Program.Log("Workspace.DeletePreset", ex); _upMsg = "⚠ 삭제 실패: " + ex.Message; }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { Program.Log("Workspace.DeletePreset", ex); _upMsg = "⚠ 삭제 실패: " + PromptFlowStudio.Services.Pluto.PlutoAutonomousActivityFeedService.Redact(ex.Message); }
     }
 
     /// <summary>원클릭 복원 — 프롬프트·네거티브·듀레이션 주입, 카메라/스타일 라벨이 프롬프트에 없으면 그룹 배타 결합으로 재적용.</summary>
@@ -6412,7 +6412,7 @@
                 await src.CopyToAsync(dst);
             return savePath;
         }
-        catch (Exception ex) { _imgError = "이미지 로드 실패: " + ex.Message; return null; }
+        catch (Exception ex) { _imgError = "이미지 로드 실패: " + PromptFlowStudio.Services.Pluto.PlutoAutonomousActivityFeedService.Redact(ex.Message); return null; }
     }
 
     /// <summary>파일명 줄기 → 파일시스템 안전 문자열(최대 40자 · 불가 문자 '_').</summary>

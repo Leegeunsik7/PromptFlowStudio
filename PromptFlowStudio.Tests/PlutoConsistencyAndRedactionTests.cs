@@ -86,6 +86,33 @@ public class PlutoConsistencyAndRedactionTests
     }
 
     [Fact]
+    public void WorkspaceExceptionToasts_AllRouteThroughRedact_AndMaskPathsAndSecrets()
+    {
+        var ws = Src("Blazor", "Pages", "Workspace.razor");
+        Assert.False(
+            System.Text.RegularExpressions.Regex.IsMatch(ws, @"(?<!Redact\()\bex\.Message\b"),
+            "Workspace.razor에 Redact를 거치지 않은 ex.Message가 남아 있음");
+        foreach (var label in new[]
+        {
+            "⚠ 몽타주 렌더 실패: ", "⚠ A/B 변형 생성 실패: ", "⚠ 승자 판정 실패: ",
+            "⚠ 시리즈 분할 실패: ", "⚠ 시리즈 일괄 내보내기 실패: ", "⚠ 회수 실패: ", "⚠ 재시도 실패: ",
+        })
+        {
+            Assert.DoesNotContain("\"" + label + "\" + ex.Message", ws, StringComparison.Ordinal);
+            Assert.Contains("\"" + label + "\" + PromptFlowStudio.Services.Pluto.PlutoAutonomousActivityFeedService.Redact(ex.Message)", ws, StringComparison.Ordinal);
+        }
+
+        var red = PlutoAutonomousActivityFeedService.Redact("Render failed: C:\\Users\\someone\\Videos\\montage\\out.mp4 token=ya29.A0abcdefghijklmnopqrstuvwxyz0123456789");
+        Assert.DoesNotContain("someone", red, StringComparison.Ordinal);
+        Assert.Contains("out.mp4", red, StringComparison.Ordinal);
+        Assert.DoesNotContain("abcdefghijklmnopqrstuvwxyz0123456789", red, StringComparison.Ordinal);
+
+        Assert.Equal(9, PlutoDriveHealthService.CorePlutoFileCount);
+        Assert.Equal(6, PlutoConflictMergeService.MergeableHubs.Count);
+        Assert.Equal(2, PlutoConflictMergeService.MergeableCompanions.Count);
+    }
+
+    [Fact]
     public void Toggles_BindToEffectiveRuntimeState_NotRawPreference()
     {
         var settings = Src("Blazor", "Pages", "Settings.razor");
