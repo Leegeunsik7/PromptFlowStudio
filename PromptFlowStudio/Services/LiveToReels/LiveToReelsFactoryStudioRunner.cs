@@ -33,7 +33,41 @@ public sealed class FactoryReel : IDisposable
     public string? Failure { get; internal set; }
     public ReelsUploadJob? Job { get; internal set; }
     public bool HandedOff { get; internal set; }
-    public void Dispose() { Media?.Dispose(); Media = null; }
+
+    // 사용 핀(오토파일럿 번-인 등 외부 소비자) — 핀 보유 중 축출/Dispose = 지연 해제(마지막 Unpin 시 실제 해제)
+    private readonly object _life = new();
+    private int _pins;
+    private bool _disposeRequested;
+    public int Pins { get { lock (_life) return _pins; } }
+    public bool InUse { get { lock (_life) return _pins > 0; } }
+    public bool DisposePending { get { lock (_life) return _disposeRequested && _pins > 0; } }
+
+    /// <summary>미디어 사용 핀 획득 — 해제 요청됨/미디어 없음이면 false.</summary>
+    public bool TryPin() { lock (_life) { if (_disposeRequested || Media is null) return false; _pins++; return true; } }
+
+    /// <summary>핀 반납 — 마지막 핀 + 해제 요청 대기 시 미디어 실제 해제.</summary>
+    public void Unpin()
+    {
+        SegmentedChunkStream? m = null;
+        lock (_life)
+        {
+            if (_pins == 0) return;
+            if (--_pins == 0 && _disposeRequested) { m = Media; Media = null; }
+        }
+        m?.Dispose();
+    }
+
+    public void Dispose()
+    {
+        SegmentedChunkStream? m;
+        lock (_life)
+        {
+            _disposeRequested = true;
+            if (_pins > 0) return;   // 번-인/전송 중 — 마지막 Unpin 이 해제
+            m = Media; Media = null;
+        }
+        m?.Dispose();
+    }
 }
 
 /// <summary>
@@ -240,7 +274,7 @@ public sealed class LiveToReelsFactoryStudioRunner : IClimaxClipDispatcher, IDub
     {
         lock (_reels)
             for (var i = 0; i < _reels.Count; i++)
-                if (_reels[i].Id == id && _reels[i].Phase != FactoryReelPhase.Publishing) { _reels[i].Dispose(); _reels.RemoveAt(i); break; }
+                if (_reels[i].Id == id && _reels[i].Phase != FactoryReelPhase.Publishing && !_reels[i].InUse) { _reels[i].Dispose(); _reels.RemoveAt(i); break; }
         Raise();
     }
 
@@ -351,7 +385,7 @@ public sealed class LiveToReelsFactoryStudioRunner : IClimaxClipDispatcher, IDub
         {
             if (_reels.Count >= MaxReels)
                 for (var i = _reels.Count - 1; i >= 0; i--)
-                    if (_reels[i].Phase != FactoryReelPhase.Publishing) { _reels[i].Dispose(); _reels.RemoveAt(i); break; }
+                    if (_reels[i].Phase != FactoryReelPhase.Publishing && !_reels[i].InUse) { _reels[i].Dispose(); _reels.RemoveAt(i); break; }
             _reels.Insert(0, reel);
         }
         Raise();

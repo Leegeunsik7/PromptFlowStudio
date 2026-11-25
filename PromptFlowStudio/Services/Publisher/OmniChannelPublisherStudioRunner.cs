@@ -169,11 +169,13 @@ public sealed class OmniChannelPublisherStudioRunner : ICreatorPresetTarget, IDi
     };
 
     /// <summary>문맥 → AI 메타데이터 초안(LLM → 1 s 폴백).</summary>
-    public async Task<PublishDraft> GenerateDraftAsync(int reelId, ShortformContext ctx)
+    public async Task<PublishDraft> GenerateDraftAsync(int reelId, ShortformContext ctx, CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
         var d = FindDraft(reelId) ?? AddDraft(new PublishDraft { ReelId = reelId, Context = ctx });
         var fb0 = Recommender.Fallbacks;
-        await Recommender.GenerateAsync(ctx).ConfigureAwait(false);
+        await Recommender.GenerateAsync(ctx, ct).ConfigureAwait(false);
+        ct.ThrowIfCancellationRequested();   // 취소된 사이클의 초안을 공유 메타에 반영 금지
         lock (Recommender) Recommender.ExportTo(d.Meta);
         d.Meta.Privacy = Privacy;
         d.Generated = true; d.LlmFallback = Recommender.Fallbacks > fb0;
