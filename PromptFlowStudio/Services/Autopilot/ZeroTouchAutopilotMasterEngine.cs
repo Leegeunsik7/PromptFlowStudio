@@ -189,11 +189,16 @@ public sealed class ZeroTouchAutopilotMasterEngine : IDisposable
                 Enter(AutopilotStage.Broadcasting, "편성 확정");
                 break;
             case AutopilotStage.Broadcasting:
-                if (age >= BroadcastMinMs || NewReel() > 0) Enter(AutopilotStage.Reacting, "클라이맥스 감시");
+            {
+                // 방송 중 감지된 릴 ID 보존 — NewReel()이 _lastSeenReel을 전진시키므로 버리면 Reacting이 릴을 잃고 타임아웃 → ManualClip 폴백
+                var seen = age >= BroadcastMinMs ? 0 : NewReel();
+                if (seen > 0) _reelId = seen;
+                if (age >= BroadcastMinMs || seen > 0) Enter(AutopilotStage.Reacting, "클라이맥스 감시");
                 break;
+            }
             case AutopilotStage.Reacting:
             {
-                var id = NewReel();
+                var id = _reelId > 0 ? _reelId : NewReel();
                 if (id > 0) { _reelId = id; Enter(AutopilotStage.Clipping, "릴 #" + id.ToString(CultureInfo.InvariantCulture) + " 감지"); }
                 else if (age >= ReactTimeoutMs)
                 {

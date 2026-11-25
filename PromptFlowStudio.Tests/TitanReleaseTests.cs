@@ -32005,6 +32005,38 @@ public sealed class ZeroTouchAutopilotIsolatedTests
     }
 
     [Fact]
+    public void Broadcasting_DetectedReel_IsPreservedInto_Reacting()
+    {
+        // 회귀: Broadcasting이 감지한 신규 릴 ID를 버리면 Reacting이 ReactTimeout까지 대기 후 ManualClip(20) 폴백
+        var factory = new L2R.LiveToReelsFactoryStudioRunner();
+        factory.UseSyntheticSource(4);
+        var ap = new Ap.ZeroTouchAutopilotStudioRunner(null, factory, null, null, null, new Ap.SimulatedWebhookServer());
+        try
+        {
+            var e = ap.Engine;
+            long clock = 1_000;
+            e.Clock = () => clock;
+            e.BroadcastMinMs = 60_000; e.ReactTimeoutMs = 600_000; e.ClipTimeoutMs = 600_000;
+            e.Enable();
+            clock += 100; e.Tick();
+            Assert.Equal(Ap.AutopilotStage.Broadcasting, e.Stage);
+            var req = new L2R.ClimaxClipRequest { Id = 1, StartMs = 0, EndMs = 4_000, Peak = 95, Cause = L2R.ClimaxCause.Physics };
+            factory.ProcessRequest(in req);
+            Assert.True(factory.ReelCount > 0, "릴 생성 실패");
+            var expected = factory.Reel(factory.ReelCount - 1)!.Id;
+            clock += 100; e.Tick();
+            Assert.Equal(Ap.AutopilotStage.Reacting, e.Stage);
+            Assert.Equal(expected, e.CurrentReel);
+            clock += 100; e.Tick();
+            Assert.Equal(Ap.AutopilotStage.Clipping, e.Stage);
+            Assert.Equal(expected, e.CurrentReel);
+            Assert.Equal(0, e.ForcedClips);
+            e.Disable();
+        }
+        finally { ap.Dispose(); factory.Dispose(); }
+    }
+
+    [Fact]
     public async Task ZeroTouchAutopilot_And_BurnInGuard_Check()
     {
         // ── AUTO-1a: 하드서브 번-인 — 큐 구간에만 세이프 존 안 휘도 변화 · 큐 밖 원본 보존 · 1080×1920 무할당 · 60 fps 예산 ──
