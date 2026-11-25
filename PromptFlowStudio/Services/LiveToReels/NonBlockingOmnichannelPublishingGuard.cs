@@ -3,7 +3,7 @@ using PromptFlowStudio.Services.VerticalTranscode;
 namespace PromptFlowStudio.Services.LiveToReels;
 
 public enum ReelsPlatform : byte { Instagram, YouTube, TikTok }
-public enum ReelsUploadPhase : byte { Queued, Uploading, Backoff, Done, Failed }
+public enum ReelsUploadPhase : byte { Queued, Uploading, Backoff, Done, Failed, Skipped }
 
 /// <summary>v17.69.0 플랫폼 업로드 레그(값 형식 · 워커 스레드 소유).</summary>
 public struct ReelsUploadLeg
@@ -36,7 +36,7 @@ public sealed class ReelsUploadJob
     public int ReelId { get; }
     public SegmentedChunkStream Media { get; }
     public ReelsUploadLeg[] Legs { get; } = new ReelsUploadLeg[NonBlockingOmnichannelPublishingGuard.Platforms];
-    public bool Finished { get { foreach (ref readonly var l in Legs.AsSpan()) if (l.Phase is not (ReelsUploadPhase.Done or ReelsUploadPhase.Failed)) return false; return true; } }
+    public bool Finished { get { foreach (ref readonly var l in Legs.AsSpan()) if (l.Phase is not (ReelsUploadPhase.Done or ReelsUploadPhase.Failed or ReelsUploadPhase.Skipped)) return false; return true; } }
 }
 
 /// <summary>
@@ -102,6 +102,7 @@ public sealed class NonBlockingOmnichannelPublishingGuard : IDisposable
 {
     public const int Platforms = 3, MaxJobs = 8, Hist = 240, SliceBytes = 64 * 1024, TickMs = 10, MaxRetries = 5;
     public const uint FnvSeed = 2166136261;
+    public const int AllLegs = (1 << Platforms) - 1;
     public const double TargetDelayMs = 40, Headroom = 1.25, MinKbps = 256, AdditiveKbpsPerSec = 2_000, YieldMs = 13;
 
     private readonly object _gate = new();
@@ -155,17 +156,27 @@ public sealed class NonBlockingOmnichannelPublishingGuard : IDisposable
 
     public static int ChunkSizeOf(ReelsPlatform p) => p switch { ReelsPlatform.Instagram => 4 * 1024 * 1024, ReelsPlatform.YouTube => 32 * 256 * 1024, _ => 10 * 1024 * 1024 };
     public static string PlatformName(ReelsPlatform p) => p switch { ReelsPlatform.Instagram => "Instagram Reels", ReelsPlatform.YouTube => "YouTube Shorts", _ => "TikTok" };
-    public static string PhaseName(ReelsUploadPhase p) => p switch { ReelsUploadPhase.Uploading => "업로드", ReelsUploadPhase.Backoff => "백오프", ReelsUploadPhase.Done => "완료", ReelsUploadPhase.Failed => "실패", _ => "대기" };
+    public static string PhaseName(ReelsUploadPhase p) => p switch { ReelsUploadPhase.Uploading => "업로드", ReelsUploadPhase.Backoff => "백오프", ReelsUploadPhase.Done => "완료", ReelsUploadPhase.Failed => "실패", ReelsUploadPhase.Skipped => "제외", _ => "대기" };
 
     public static uint Fnv(uint h, ReadOnlySpan<byte> s) { for (var i = 0; i < s.Length; i++) { h ^= s[i]; h *= 16777619; } return h; }
 
     // ══════════════════════ 제어(비핫패스) ══════════════════════
-    public ReelsUploadJob? Enqueue(int reelId, SegmentedChunkStream media)
+    public ReelsUploadJob? Enqueue(int reelId, SegmentedChunkStream media) => Enqueue(reelId, media, AllLegs);
+
+    /// <summary>레그 마스크(비트 = <see cref="ReelsPlatform"/>) 업로드 — 제외 레그는 <see cref="ReelsUploadPhase.Skipped"/>(전송 0 · 완료 판정 포함). 마스크 0 = null.</summary>
+    public ReelsUploadJob? Enqueue(int reelId, SegmentedChunkStream media, int legMask)
     {
+        legMask &= AllLegs;
+        if (legMask == 0) return null;
         lock (_gate)
         {
             for (var i = 0; i < MaxJobs; i++)
-                if (_jobs[i] is null || _jobs[i]!.Finished) { var j = new ReelsUploadJob(reelId, media); for (var k = 0; k < Platforms; k++) j.Legs[k].Hash = FnvSeed; _jobs[i] = j; _wake.Set(); return j; }
+                if (_jobs[i] is null || _jobs[i]!.Finished)
+                {
+                    var j = new ReelsUploadJob(reelId, media);
+                    for (var k = 0; k < Platforms; k++) { j.Legs[k].Hash = FnvSeed; if ((legMask & (1 << k)) == 0) j.Legs[k].Phase = ReelsUploadPhase.Skipped; }
+                    _jobs[i] = j; _wake.Set(); return j;
+                }
         }
         return null;
     }

@@ -50,6 +50,9 @@ public sealed class ZeroTouchAutopilotMasterEngine : IDisposable
     private int _burnHead, _logHead, _logN, _reelId, _lastSeenReel;
     private long _enteredAt, _lastAdlibs = -1;
     private bool _standbySeen;
+    // 오토파일럿 가동 중 릴스 AutoPublish · 퍼블리셔 AutoUpload 억제(원본/번-인 중복 업로드 방지) — 진입 전 상태 스냅숏 → Disable 시 복원
+    private readonly object _autoGate = new();
+    private bool _autoSuppressed, _prevReelsAutoPublish, _prevPubAutoUpload;
     private Task? _task;
     private Task? _retryTask;
 
@@ -88,6 +91,10 @@ public sealed class ZeroTouchAutopilotMasterEngine : IDisposable
     public long BurnTimeoutMs { get; set; } = 120_000;
     public long PublishTimeoutMs { get; set; } = 300_000;
     public long CooldownMs { get; set; } = 30_000;
+    /// <summary>TikTok 레그(v17.69 가드) 실제 완료 확인 대기 한도(실시간 ms) — 초과 시 미확인(재시도 큐 미등록: 가드가 레그를 계속 소유 → 중복 방지).</summary>
+    public int TikTokConfirmTimeoutMs { get; set; } = 120_000;
+    /// <summary>억제 중(진입 전 상태 스냅숏 보유) 여부.</summary>
+    public bool AutoPublishSuppressed { get { lock (_autoGate) return _autoSuppressed; } }
     public double MaxBurnSec { get; set; } = 15;
     public int BurnFps { get; set; } = 30;
     public bool AllowMediaFoundation { get; set; } = true;
@@ -127,6 +134,7 @@ public sealed class ZeroTouchAutopilotMasterEngine : IDisposable
     {
         if (!Enabled) return;
         Enabled = false;
+        RestoreAutoPublish();
         Enter(AutopilotStage.Idle, "오토파일럿 정지");
         Telemetry.Publish(CreatorAlertKind.AutopilotStage, AlertSeverity.Warning, "제로-터치 오토파일럿 정지");
     }
@@ -268,8 +276,42 @@ public sealed class ZeroTouchAutopilotMasterEngine : IDisposable
             if (n > 0) _station.CueProgram(_pub.Recommender.Recommendation(0).Kind);
         }
         if (_station is { IsRunning: false } st) st.Start();
-        if (_reels is { IsRunning: false } rs) { rs.SetAutoPublish(false); rs.Start(); }
+        SuppressAutoPublish();
+        if (_reels is { IsRunning: false } rs) rs.Start();
         if (_chat is { Attached: false } ch) ch.Attach();
+    }
+
+    /// <summary>릴스 이미 가동 중이어도 원본 즉시 배포 · 퍼블리셔 원본 자동 업로드 차단(번-인 릴만 오토파일럿이 게시). 최초 1 회 스냅숏 · 매 사이클 재확인.</summary>
+    private void SuppressAutoPublish()
+    {
+        lock (_autoGate)
+        {
+            if (!Enabled) return;   // Disable 경합 — 복원 이후 재억제 금지
+            if (!_autoSuppressed)
+            {
+                _prevReelsAutoPublish = _reels?.AutoPublish ?? false;
+                _prevPubAutoUpload = _pub?.AutoUpload ?? false;
+                _autoSuppressed = true;
+            }
+            if (_reels is { AutoPublish: true } r) r.SetAutoPublish(false);
+            if (_pub is { AutoUpload: true } p) p.SetAutoUpload(false, startWorker: false);
+        }
+    }
+
+    /// <summary>진입 전 AutoPublish · AutoUpload 복원(멱등). 워커 기동 상태는 건드리지 않음.</summary>
+    private void RestoreAutoPublish()
+    {
+        lock (_autoGate)
+        {
+            if (!_autoSuppressed) return;
+            _autoSuppressed = false;
+            try
+            {
+                if (_reels is { } r && r.AutoPublish != _prevReelsAutoPublish) r.SetAutoPublish(_prevReelsAutoPublish);
+                if (_pub is { } p && p.AutoUpload != _prevPubAutoUpload) p.SetAutoUpload(_prevPubAutoUpload, startWorker: false);
+            }
+            catch (ObjectDisposedException ex) { PromptFlowStudio.Program.Log("Autopilot.Restore", ex); }
+        }
     }
 
     // ══════════════════════ 백그라운드 단계 ══════════════════════
@@ -319,11 +361,19 @@ public sealed class ZeroTouchAutopilotMasterEngine : IDisposable
         {
             if ((mask & (1 << t)) == 0 || (b.PublishedMask & (1 << t)) != 0) continue;
             var target = (PublishTarget)t;
-            int status; string? mediaId = null; string? err = null; int retryAfter = 0; byte[]? body = null;
+            int status; string? mediaId = null; string? err = null; int retryAfter = 0; byte[]? body = null; var inFlight = false;
             if (target == PublishTarget.TikTok)
             {
-                var job = _reels?.Guard.Enqueue(b.ReelId, b.Media);
-                status = job is not null ? 200 : 503; mediaId = job is not null ? "tiktok-q-" + b.ReelId.ToString(CultureInfo.InvariantCulture) : null;
+                // TikTok 레그만 큐잉(IG/YT 레그 = Skipped → 게이트웨이 업로드와 교차 중복 방지) · 큐잉 ≠ 성공: 레그 완료 확인 후 200
+                var job = _reels?.Guard.Enqueue(b.ReelId, b.Media, 1 << (int)ReelsPlatform.TikTok);
+                if (job is null) { status = 503; err = _reels is null ? "릴스 팩토리 미결선" : "업로드 슬롯 포화"; }
+                else
+                {
+                    var phase = await AwaitLegAsync(job, (int)ReelsPlatform.TikTok).ConfigureAwait(false);
+                    if (phase == ReelsUploadPhase.Done) { status = 200; mediaId = "tiktok-" + b.ReelId.ToString(CultureInfo.InvariantCulture); }
+                    else if (phase == ReelsUploadPhase.Failed) { status = 503; err = "TikTok 레그 실패"; }
+                    else { status = 504; err = "TikTok 레그 완료 미확인(가드 처리 중)"; inFlight = true; }
+                }
             }
             else if (_pub is not null)
             {
@@ -345,10 +395,22 @@ public sealed class ZeroTouchAutopilotMasterEngine : IDisposable
             }
             else
             {
-                if (h != TargetHealth.AuthError) Quota.Enqueue(b.ReelId, target, Clock());
+                if (h != TargetHealth.AuthError && !inFlight) Quota.Enqueue(b.ReelId, target, Clock());
                 Telemetry.Publish(h == TargetHealth.QuotaExhausted ? CreatorAlertKind.QuotaExhausted : CreatorAlertKind.UploadFailed, h == TargetHealth.QuotaExhausted ? AlertSeverity.Critical : AlertSeverity.Warning,
                     SmartPlatformQuotaResilienceGuard.TargetName(target) + " " + SmartPlatformQuotaResilienceGuard.HealthName(h) + " · " + (err ?? "HTTP " + status.ToString(CultureInfo.InvariantCulture)) + " → 로컬 재시도 큐", status, b.ReelId);
             }
+        }
+    }
+
+    /// <summary>가드 레그 종결 대기(백그라운드 · 실시간 한도). 반환 = 종결 단계 또는 미종결 시 현재 단계.</summary>
+    private async Task<ReelsUploadPhase> AwaitLegAsync(ReelsUploadJob job, int leg)
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (true)
+        {
+            var ph = job.Legs[leg].Phase;
+            if (ph is ReelsUploadPhase.Done or ReelsUploadPhase.Failed or ReelsUploadPhase.Skipped || sw.ElapsedMilliseconds >= TikTokConfirmTimeoutMs) return ph;
+            await Task.Delay(20).ConfigureAwait(false);
         }
     }
 
@@ -377,6 +439,7 @@ public sealed class ZeroTouchAutopilotMasterEngine : IDisposable
     public void Dispose()
     {
         Enabled = false;
+        RestoreAutoPublish();
         lock (_burned) for (var i = 0; i < BurnRing; i++) { _burned[i]?.Dispose(); _burned[i] = null; }
     }
 }
@@ -435,6 +498,7 @@ public sealed class ZeroTouchAutopilotStudioRunner : IDisposable
     public void Stop()
     {
         _running = false;
+        Engine.Disable();   // 제어 스레드 정지 = 오토파일럿 정지 → AutoPublish · AutoUpload 진입 전 상태 복원(멱등)
         var t = _loop; _loop = null;
         if (t is not null && t != Thread.CurrentThread) t.Join(2000);
     }

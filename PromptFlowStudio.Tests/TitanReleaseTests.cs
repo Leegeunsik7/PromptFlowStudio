@@ -32037,6 +32037,77 @@ public sealed class ZeroTouchAutopilotIsolatedTests
     }
 
     [Fact]
+    public void Autopilot_SuppressesAutoPublishAndAutoUpload_AndRestoresOnDisableAndStop()
+    {
+        // 회귀: 릴스가 이미 가동 중이면 Plan()이 AutoPublish 를 끄지 않아 원본 릴(즉시 배포) + 번-인 릴(오토파일럿) 이중 업로드
+        var tmp = Path.Combine(Path.GetTempPath(), "pf_apsup_" + Guid.NewGuid().ToString("N"));
+        var factory = new L2R.LiveToReelsFactoryStudioRunner();
+        factory.UseSyntheticSource(4);
+        var pub = new Pub.OmniChannelPublisherStudioRunner(factory, null, root: tmp, simulate: true);
+        var ap = new Ap.ZeroTouchAutopilotStudioRunner(null, factory, pub, null, null, new Ap.SimulatedWebhookServer());
+        try
+        {
+            factory.Start();   // 이미 가동 중(사용자 1-Click 후 오토파일럿 진입) 경로
+            Assert.True(factory.IsRunning && factory.AutoPublish);
+            pub.SetAutoUpload(true, startWorker: false);
+            var e = ap.Engine;
+            long clock = 1_000;
+            e.Clock = () => clock;
+            e.BroadcastMinMs = 600_000; e.ReactTimeoutMs = 600_000; e.ClipTimeoutMs = 600_000;
+            e.Enable();
+            clock += 100; e.Tick();
+            Assert.Equal(Ap.AutopilotStage.Broadcasting, e.Stage);
+            Assert.True(e.AutoPublishSuppressed && !factory.AutoPublish && !pub.AutoUpload, "억제 " + factory.AutoPublish + "/" + pub.AutoUpload);
+            // 억제 중 클라이맥스 릴 → 원본 즉시 배포(가드 큐잉) 0
+            var req = new L2R.ClimaxClipRequest { Id = 1, StartMs = 0, EndMs = 4_000, Peak = 95, Cause = L2R.ClimaxCause.Physics };
+            factory.ProcessRequest(in req);
+            var reel = factory.Reel(factory.ReelCount - 1)!;
+            Assert.True(reel.Phase is not (L2R.FactoryReelPhase.Publishing or L2R.FactoryReelPhase.Published) && factory.Guard.Find(reel.Id) is null, "원본 배포 " + reel.Phase);
+            // 억제 중 사용자 재토글 → 다음 Plan 에서 재차단(스냅숏은 진입 전 값 유지)
+            factory.SetAutoPublish(true);
+            e.Disable(); Assert.True(factory.AutoPublish && pub.AutoUpload && !e.AutoPublishSuppressed, "Disable 복원");
+            e.Disable(); Assert.True(factory.AutoPublish && pub.AutoUpload, "멱등");
+            // 진입 전 OFF 상태도 OFF 로 복원
+            factory.SetAutoPublish(false); pub.SetAutoUpload(false, startWorker: false);
+            e.Enable(); clock += 100; e.Tick();
+            Assert.True(!factory.AutoPublish && !pub.AutoUpload && e.AutoPublishSuppressed);
+            e.Disable(); Assert.True(!factory.AutoPublish && !pub.AutoUpload);
+            // 러너 Stop() 경로 복원
+            factory.SetAutoPublish(true); pub.SetAutoUpload(true, startWorker: false);
+            e.Enable(); clock += 100; e.Tick();
+            Assert.True(!factory.AutoPublish && !pub.AutoUpload);
+            ap.Stop();
+            Assert.True(!e.Enabled && factory.AutoPublish && pub.AutoUpload, "Stop 복원");
+        }
+        finally
+        {
+            ap.Dispose(); pub.Dispose(); factory.Dispose();
+            try { Directory.Delete(tmp, true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+        }
+    }
+
+    [Fact]
+    public void PublishingGuard_LegMask_UploadsOnlyRequestedLeg()
+    {
+        // 회귀: 오토파일럿 TikTok 경로가 Guard.Enqueue(전 레그) 사용 → 게이트웨이 IG/YT 업로드와 교차 중복
+        using var g = new L2R.NonBlockingOmnichannelPublishingGuard();
+        using var media = new PromptFlowStudio.Services.VerticalTranscode.SegmentedChunkStream();
+        media.Write(new byte[200_000]); media.Position = 0;
+        Assert.Null(g.Enqueue(1, media, 0));
+        var job = g.Enqueue(7, media, 1 << (int)L2R.ReelsPlatform.TikTok)!;
+        Assert.NotNull(job);
+        Assert.True(job.Legs[(int)L2R.ReelsPlatform.Instagram].Phase == L2R.ReelsUploadPhase.Skipped && job.Legs[(int)L2R.ReelsPlatform.YouTube].Phase == L2R.ReelsUploadPhase.Skipped && !job.Finished);
+        var finished = 0; g.OnJobFinished += _ => finished++;
+        for (var i = 0; i < 20_000 && !job.Finished; i++) g.Step(0.01);
+        Assert.True(job.Finished && job.Legs[(int)L2R.ReelsPlatform.TikTok].Phase == L2R.ReelsUploadPhase.Done && finished == 1, "TikTok " + job.Legs[2].Phase);
+        Assert.True(g.SentBy(L2R.ReelsPlatform.Instagram) == 0 && g.SentBy(L2R.ReelsPlatform.YouTube) == 0 && g.SentBy(L2R.ReelsPlatform.TikTok) == media.Length);
+        Assert.Equal(1, g.Completed);
+        // 기본 오버로드 = 전 레그(기존 PublishReel 경로 불변)
+        var all = g.Enqueue(8, media)!;
+        Assert.True(all.Legs[0].Phase == L2R.ReelsUploadPhase.Queued && all.Legs[1].Phase == L2R.ReelsUploadPhase.Queued && all.Legs[2].Phase == L2R.ReelsUploadPhase.Queued);
+    }
+
+    [Fact]
     public async Task ZeroTouchAutopilot_And_BurnInGuard_Check()
     {
         // ── AUTO-1a: 하드서브 번-인 — 큐 구간에만 세이프 존 안 휘도 변화 · 큐 밖 원본 보존 · 1080×1920 무할당 · 60 fps 예산 ──
