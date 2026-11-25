@@ -33,6 +33,8 @@ public sealed class FactoryReel : IDisposable
     public string? Failure { get; internal set; }
     public ReelsUploadJob? Job { get; internal set; }
     public bool HandedOff { get; internal set; }
+    /// <summary>실 게이트웨이 클립 부재 → 합성 fMP4 폴백 소스로 생성(실 게시 차단 판단용).</summary>
+    public bool SyntheticSource { get; internal set; }
 
     // 사용 핀(오토파일럿 번-인 등 외부 소비자) — 핀 보유 중 축출/Dispose = 지연 해제(마지막 Unpin 시 실제 해제)
     private readonly object _life = new();
@@ -393,8 +395,8 @@ public sealed class LiveToReelsFactoryStudioRunner : IClimaxClipDispatcher, IDub
         SegmentedChunkStream? src = null;
         if (_gateway is not null && _gateway.Ring.HasConfig && _gateway.Ring.BufferedSec >= 3)
             src = _gateway.ClipNow(req.Seconds, auto: true)?.Media;
-        if (src is null && _synthetic is { } syn) { src = syn; ClipFallbacks++; }
-        if (src is null) { UseSyntheticSource(Math.Clamp(req.Seconds, 15, 30)); src = _synthetic; ClipFallbacks++; }
+        if (src is null && _synthetic is { } syn) { src = syn; ClipFallbacks++; reel.SyntheticSource = true; }
+        if (src is null) { UseSyntheticSource(Math.Clamp(req.Seconds, 15, 30)); src = _synthetic; ClipFallbacks++; reel.SyntheticSource = true; }
         reel.ClipMs = Ms(t0);
         reel.Phase = FactoryReelPhase.Packaging; Raise();
 

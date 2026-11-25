@@ -183,8 +183,6 @@ public sealed class SmartPlatformQuotaResilienceGuard
     /// <summary>가드 자체 시계(<see cref="Clock"/>)로 격리 — 호출자 시계 축(TickCount64 등) 혼용 방지.</summary>
     public bool Enqueue(int reelId, PublishTarget t) { lock (_sync) return EnqueueCore(reelId, t, Clock()); }
 
-    public bool Enqueue(int reelId, PublishTarget t, long now) { lock (_sync) return EnqueueCore(reelId, t, now); }
-
     private bool EnqueueCore(int reelId, PublishTarget t, long now)
     {
         var free = -1;
@@ -216,7 +214,30 @@ public sealed class SmartPlatformQuotaResilienceGuard
         }
     }
 
-    /// <summary>재시도 실패 → 시도 +1 · 백오프 후 재격리(최대 시도 초과 = 포기). 격리 · 시도 갱신은 단일 임계 구역(중간 PumpDue 끼어들기 차단).</summary>
+    /// <summary>첫 도래 릴의 항목만 반환(다른 릴 = 큐 잔류 · 시도 불변 — 무관 릴 페널티 차단). 재실패 시 호출자가 <see cref="Requeue"/>.</summary>
+    public int PumpDueReel(Span<QuotaRetryItem> dst)
+    {
+        lock (_sync)
+        {
+            var now = Clock(); var n = 0; var reel = 0; var picked = false;
+            for (var i = 0; i < QueueCap && n < dst.Length; i++)
+            {
+                ref var q = ref _q[i];
+                if (!q.Used || (picked && q.ReelId != reel) || now < q.NextAtMs || !AvailableCore(q.Target)) continue;
+                if (!picked) { picked = true; reel = q.ReelId; }
+                dst[n++] = q; q.Used = false; Volatile.Write(ref _qN, _qN - 1); Interlocked.Increment(ref _retried);
+            }
+            return n;
+        }
+    }
+
+    private int Slot(int reelId, PublishTarget t)
+    {
+        for (var i = 0; i < QueueCap; i++) if (_q[i].Used && _q[i].ReelId == reelId && _q[i].Target == t) return i;
+        return -1;
+    }
+
+    /// <summary>재시도 실패 → 시도 +1 · 백오프 후 재격리(최대 시도 초과 = 포기). 격리 · 시도 갱신은 단일 임계 구역(중간 PumpDue 끼어들기 차단). 시각 = 가드 <see cref="Clock"/> 축.</summary>
     public bool Requeue(in QuotaRetryItem item)
     {
         lock (_sync)
@@ -224,7 +245,20 @@ public sealed class SmartPlatformQuotaResilienceGuard
             if (item.Attempt + 1 >= MaxAttempts) { Interlocked.Increment(ref _gaveUp); return false; }
             var now = Clock();
             if (!EnqueueCore(item.ReelId, item.Target, now)) return false;
-            for (var i = 0; i < QueueCap; i++) if (_q[i].Used && _q[i].ReelId == item.ReelId && _q[i].Target == item.Target) { _q[i].Attempt = item.Attempt + 1; _q[i].NextAtMs = Math.Max(_blockedUntil[(int)item.Target], now + Backoff(item.Attempt + 1)); break; }
+            var i = Slot(item.ReelId, item.Target);
+            if (i >= 0) { _q[i].Attempt = Math.Max(_q[i].Attempt, item.Attempt + 1); _q[i].NextAtMs = Math.Max(_blockedUntil[(int)item.Target], now + Backoff(item.Attempt + 1)); }
+            return true;
+        }
+    }
+
+    /// <summary>시도 미소비 복귀(취소 · 스탠바이 보류 · 임대 실패) — 시도 수 보존 · 백오프 페널티 없음 · 가드 시계 축.</summary>
+    public bool Reinstate(in QuotaRetryItem item)
+    {
+        lock (_sync)
+        {
+            if (!EnqueueCore(item.ReelId, item.Target, Clock())) return false;
+            var i = Slot(item.ReelId, item.Target);
+            if (i >= 0) _q[i].Attempt = Math.Max(_q[i].Attempt, item.Attempt);
             return true;
         }
     }

@@ -20,6 +20,8 @@ public sealed class BurnedReel : IDisposable
     public double BurnMs { get; init; }
     public string Backend { get; init; } = "";
     public int PublishedMask { get; internal set; }
+    /// <summary>원본 릴이 합성 fMP4 폴백 소스에서 생성됨(실 게시 = 시뮬레이션 모드에서만).</summary>
+    public bool Synthetic { get; init; }
 
     // 업로드 임대(in-flight) — 임대 중 링 덮어쓰기/엔진 Dispose = 지연 해제(마지막 Release 시 실제 해제)
     private readonly object _life = new();
@@ -143,6 +145,7 @@ public sealed class ZeroTouchAutopilotMasterEngine : IDisposable
     public (long At, AutopilotStage Stage, string Text) Log(int i) => _log[(_logHead - 1 - i + 2 * LogCap) % LogCap];
     public BurnedReel? Burned(int reelId) { foreach (var b in _burned) if (b?.ReelId == reelId) return b; return null; }
     public bool TaskRunning => _task is { IsCompleted: false };
+    public bool RetryTaskRunning => _retryTask is { IsCompleted: false };
     /// <summary>현재 사이클 토큰(사이클 미시작 = None).</summary>
     public CancellationToken CycleToken => Volatile.Read(ref _cycleCts)?.Token ?? CancellationToken.None;
     public long CycleCancels { get; private set; }
@@ -152,6 +155,16 @@ public sealed class ZeroTouchAutopilotMasterEngine : IDisposable
     public int LegHoldMaxMs { get; set; } = 1_800_000;
     /// <summary>테스트 결선점 — 번-인 단계 초안/트랜스코드 이전 대기(사이클 토큰 관측 회귀용).</summary>
     internal Func<CancellationToken, Task>? BurnHook { get; set; }
+    /// <summary>스탠바이 판독 대체(회귀 주입) — null = MCR 페일오버 가드 <c>StandbyEngaged</c>.</summary>
+    internal Func<bool>? StandbyProbe { get; set; }
+    /// <summary>게시 시뮬레이션 여부 강제 — null = 퍼블리셔 <c>Simulated</c>(미결선 = 실 게시로 간주).</summary>
+    public bool? SimulatePublishing { get; set; }
+    public bool StandbyEngaged => StandbyProbe is { } p ? p() : _station is not null && _station.Failover.StandbyEngaged;
+    public bool PublishingSimulated => SimulatePublishing ?? (_pub is not null && _pub.Simulated);
+    public long StandbyHolds => Interlocked.Read(ref _standbyHolds);
+    public long SyntheticSkips { get; private set; }
+    public long DroppedRetries { get; private set; }
+    private long _standbyHolds;
 
     public static string StageName(AutopilotStage s) => s switch
     {
@@ -298,8 +311,17 @@ public sealed class ZeroTouchAutopilotMasterEngine : IDisposable
             case AutopilotStage.BurningIn:
                 if (_task is { IsCompleted: true } bt)
                 {
-                    if (bt.IsFaulted || Burned(_reelId) is null) { Fault("번-인 실패: " + (bt.Exception?.InnerException?.Message ?? LastError)); break; }
-                    if (!StartPublish(Burned(_reelId)!)) { Fault("번-인 릴 해제됨"); break; }
+                    if (bt.IsFaulted || Burned(_reelId) is not { } br) { Fault("번-인 실패: " + (bt.Exception?.InnerException?.Message ?? LastError)); break; }
+                    if (br.Synthetic && !PublishingSimulated)
+                    {
+                        // 실 게이트웨이 클립 부재 → 합성 폴백 클립: 실 플랫폼 게시 금지(재시도 큐 미등록)
+                        SyntheticSkips++;
+                        Telemetry.Publish(CreatorAlertKind.AutopilotStage, AlertSeverity.Warning, "합성 폴백 클립 → 실 게시 차단", 0, br.ReelId);
+                        Enter(AutopilotStage.Notifying, "합성 폴백 클립 게시 차단");
+                        break;
+                    }
+                    if (StandbyEngaged) { HoldForStandby(br); Enter(AutopilotStage.Notifying, "스탠바이 송출 중 → 게시 보류(재시도 큐)"); break; }
+                    if (!StartPublish(br)) { Fault("번-인 릴 해제됨"); break; }
                     Enter(AutopilotStage.Publishing, "쿼터 라우팅 · 업로드");
                 }
                 else if (age >= BurnTimeoutMs) Fault("번-인 타임아웃");
@@ -395,7 +417,7 @@ public sealed class ZeroTouchAutopilotMasterEngine : IDisposable
         IBurnInFrameSource src = Fallback;
         if (_station is { } s && s.Mcr.Mcr.VideoFrames > 0) { PgmSource.Capture(s.Mcr.Mcr.ProgramOut); src = PgmSource; }
         var dur = Math.Clamp(reel.DurationSec > 0 ? reel.DurationSec : reel.Request.Seconds, 3, MaxBurnSec);
-        var id = reel.Id;
+        var id = reel.Id; var synthetic = reel.SyntheticSource;
         var ct = CycleToken;
         var hook = BurnHook;
         _task = Task.Run(async () =>
@@ -426,7 +448,7 @@ public sealed class ZeroTouchAutopilotMasterEngine : IDisposable
                 if (frames == 0) { output.Dispose(); throw new InvalidOperationException("트랜스코더 열기 실패"); }
                 if (ct.IsCancellationRequested) { output.Dispose(); ct.ThrowIfCancellationRequested(); }   // 취소된 사이클의 결과물은 링에 넣지 않음
                 output.Position = 0;
-                var b = new BurnedReel { ReelId = id, Media = output, Meta = meta, Frames = frames, BurnMs = BurnIn.LastReelMs, Backend = BurnIn.LastBackend ?? "" };
+                var b = new BurnedReel { ReelId = id, Media = output, Meta = meta, Frames = frames, BurnMs = BurnIn.LastReelMs, Backend = BurnIn.LastBackend ?? "", Synthetic = synthetic };
                 lock (_burned) { _burned[_burnHead]?.Dispose(); _burned[_burnHead] = b; _burnHead = (_burnHead + 1) % BurnRing; }   // 임대 중 슬롯 = 지연 해제
             }
             finally { reel.Unpin(); }
@@ -441,16 +463,39 @@ public sealed class ZeroTouchAutopilotMasterEngine : IDisposable
         var mask = Quota.Route(b.ReelId, RequestMask, RerouteMask, out var rerouted);
         if (rerouted != 0) Telemetry.Publish(CreatorAlertKind.QuotaExhausted, AlertSeverity.Warning, "장애 플랫폼 격리 → 대체 플랫폼 우회 송출", rerouted, b.ReelId);
         var ct = CycleToken;
-        _task = Task.Run(() => PublishAsync(b, mask, false, ct));
+        _task = Task.Run(() => PublishAsync(b, mask, false, 0, ct));
         return true;
     }
 
+    /// <summary>스탠바이 중 게시 보류 — 요청 플랫폼 전부 재시도 큐(시도 0 · 쿼터 관측 없음) · 복귀 후 PumpRetries 가 송출.</summary>
+    private void HoldForStandby(BurnedReel b)
+    {
+        for (var t = 0; t < SmartPlatformQuotaResilienceGuard.Targets; t++)
+            if ((RequestMask & (1 << t)) != 0 && (b.PublishedMask & (1 << t)) == 0) Quota.Enqueue(b.ReelId, (PublishTarget)t);
+        Interlocked.Increment(ref _standbyHolds);
+        Telemetry.Publish(CreatorAlertKind.AutopilotStage, AlertSeverity.Warning, "MCR 스탠바이 송출 중 → 게시 보류", 0, b.ReelId);
+    }
+
+    /// <summary>재시도 시도 수 팩(플랫폼당 4 bit).</summary>
+    private static int AttemptOf(int attempts, int t) => (attempts >> (t * 4)) & 0xF;
+
+    /// <summary>시도 미소비 복귀(취소 · 스탠바이) — 재시도 = 시도 보존 Reinstate · 최초 = 시도 0 Enqueue.</summary>
+    private void Park(int reelId, PublishTarget target, bool retry, int attempts)
+    {
+        if (retry) Quota.Reinstate(new QuotaRetryItem { ReelId = reelId, Target = target, Attempt = AttemptOf(attempts, (int)target) });
+        else Quota.Enqueue(reelId, target);
+    }
+
+    /// <summary>업로드 실패 — 재시도 = Requeue(시도 +1 · MaxAttempts 초과 = GaveUp) · 최초 = 시도 0 격리. 반환 false = 포기/포화.</summary>
+    private bool Retry(int reelId, PublishTarget target, bool retry, int attempts) =>
+        retry ? Quota.Requeue(new QuotaRetryItem { ReelId = reelId, Target = target, Attempt = AttemptOf(attempts, (int)target) }) : Quota.Enqueue(reelId, target);
+
     /// <summary>마스크 플랫폼 순차 업로드 → 쿼터 관측 · 실패 = 재시도 큐 · 성공 알림. 호출자가 획득한 임대를 반납(TikTok 미확인 레그 = 가드 종결 후 반납).
     /// 취소 = 미게시 타깃 재시도 큐 보존(쿼터 관측 없음).</summary>
-    private async Task PublishAsync(BurnedReel b, int mask, bool retry, CancellationToken ct)
+    private async Task PublishAsync(BurnedReel b, int mask, bool retry, int attempts, CancellationToken ct)
     {
         ReelsUploadJob? held = null;
-        try { await PublishCoreAsync(b, mask, retry, ct, j => held = j).ConfigureAwait(false); }
+        try { await PublishCoreAsync(b, mask, retry, attempts, ct, j => held = j).ConfigureAwait(false); }
         finally
         {
             if (held is null) b.Release();
@@ -470,13 +515,14 @@ public sealed class ZeroTouchAutopilotMasterEngine : IDisposable
         finally { b.Release(); }
     }
 
-    private async Task PublishCoreAsync(BurnedReel b, int mask, bool retry, CancellationToken ct, Action<ReelsUploadJob> hold)
+    private async Task PublishCoreAsync(BurnedReel b, int mask, bool retry, int attempts, CancellationToken ct, Action<ReelsUploadJob> hold)
     {
         for (var t = 0; t < SmartPlatformQuotaResilienceGuard.Targets; t++)
         {
             if ((mask & (1 << t)) == 0 || (b.PublishedMask & (1 << t)) != 0) continue;
             var target = (PublishTarget)t;
-            if (ct.IsCancellationRequested) { Quota.Enqueue(b.ReelId, target); Interlocked.Increment(ref _canceledUploads); continue; }
+            if (ct.IsCancellationRequested) { Park(b.ReelId, target, retry, attempts); Interlocked.Increment(ref _canceledUploads); continue; }
+            if (StandbyEngaged) { Park(b.ReelId, target, retry, attempts); Interlocked.Increment(ref _standbyHolds); continue; }   // 업로드 도중 페일오버 → 남은 타깃 보류(시도 미소비)
             int status; string? mediaId = null; string? err = null; int retryAfter = 0; byte[]? body = null; var inFlight = false;
             if (target == PublishTarget.TikTok)
             {
@@ -499,7 +545,7 @@ public sealed class ZeroTouchAutopilotMasterEngine : IDisposable
                 {
                     // 반환값만 판독 — 게이트 해제 후 공유 Last* 조회 시 동시 업로드(재시도 태스크 등)의 상태가 섞여 오분류
                     var r = await _pub.Gateway.UploadAsync(p, b.Media, b.Meta, ct).ConfigureAwait(false);
-                    if (!r.Ok && ct.IsCancellationRequested) { Quota.Enqueue(b.ReelId, target); Interlocked.Increment(ref _canceledUploads); continue; }   // 취소 ≠ 플랫폼 장애 — 쿼터 관측 생략
+                    if (!r.Ok && ct.IsCancellationRequested) { Park(b.ReelId, target, retry, attempts); Interlocked.Increment(ref _canceledUploads); continue; }   // 취소 ≠ 플랫폼 장애 — 쿼터 관측 생략
                     status = UploadOutcome(in r, out retryAfter, out body); mediaId = r.MediaId; err = r.Error;
                 }
             }
@@ -512,9 +558,10 @@ public sealed class ZeroTouchAutopilotMasterEngine : IDisposable
             }
             else
             {
-                if (h != TargetHealth.AuthError && !inFlight) Quota.Enqueue(b.ReelId, target);   // 가드 시계 축(엔진 TickCount64 혼용 금지)
+                // 재시도 실패 = Requeue(시도 누적 · MaxAttempts → GaveUp) — 최초 실패만 시도 0 격리 · 모든 시각은 가드 시계 축(엔진 TickCount64 혼용 금지)
+                var gaveUp = h != TargetHealth.AuthError && !inFlight && !Retry(b.ReelId, target, retry, attempts);
                 Telemetry.Publish(h == TargetHealth.QuotaExhausted ? CreatorAlertKind.QuotaExhausted : CreatorAlertKind.UploadFailed, h == TargetHealth.QuotaExhausted ? AlertSeverity.Critical : AlertSeverity.Warning,
-                    SmartPlatformQuotaResilienceGuard.TargetName(target) + " " + SmartPlatformQuotaResilienceGuard.HealthName(h) + " · " + (err ?? "HTTP " + status.ToString(CultureInfo.InvariantCulture)) + " → 로컬 재시도 큐", status, b.ReelId);
+                    SmartPlatformQuotaResilienceGuard.TargetName(target) + " " + SmartPlatformQuotaResilienceGuard.HealthName(h) + " · " + (err ?? "HTTP " + status.ToString(CultureInfo.InvariantCulture)) + (gaveUp ? " → 재시도 포기" : " → 로컬 재시도 큐"), status, b.ReelId);
             }
         }
     }
@@ -544,28 +591,27 @@ public sealed class ZeroTouchAutopilotMasterEngine : IDisposable
     /// <summary>재시도 큐 도래 항목 → 보관 번-인 릴 재업로드(백그라운드 1 개).</summary>
     private void PumpRetries()
     {
-        if (_retryTask is { IsCompleted: false } || Quota.QueueDepth == 0) return;
-        var n = Quota.PumpDue(_due);
+        // 스탠바이 = 보류(큐 잔류) · 단일 릴 펌프 — 무관 릴은 큐에 남아 시도 수 불변(구: Requeue 로 +1 페널티)
+        if (_retryTask is { IsCompleted: false } || Quota.QueueDepth == 0 || StandbyEngaged) return;
+        var n = Quota.PumpDueReel(_due);
         if (n == 0) return;
-        var mask0 = 0; var reel = _due[0].ReelId;
+        var target = Burned(_due[0].ReelId);
+        if (target is null || (target.Synthetic && !PublishingSimulated)) { DroppedRetries += n; return; }   // 번-인 미디어 축출 · 합성 폴백 = 재시도 불가
+        var mask0 = 0; var attempts = 0;
         for (var i = 0; i < n; i++)
         {
-            var b = Burned(_due[i].ReelId);
-            if (b is null) continue;
-            if (_due[i].ReelId == reel) mask0 |= 1 << (int)_due[i].Target;
-            else Quota.Requeue(in _due[i]);
+            var t = (int)_due[i].Target;
+            mask0 |= 1 << t; attempts |= Math.Min(_due[i].Attempt, 0xF) << (t * 4);
         }
-        var target = Burned(reel);
-        if (target is null || mask0 == 0) return;
-        _retryTask = StartRetry(target, mask0);
+        if (!target.TryAcquire()) { for (var i = 0; i < n; i++) Quota.Reinstate(in _due[i]); return; }   // 임대 실패 = 유실 금지(시도 보존)
+        _retryTask = StartRetry(target, mask0, attempts);
     }
 
-    /// <summary>람다 캡처를 별도 메서드로 격리 — PumpRetries 진입 시 클로저 표시 클래스 할당(조기 반환 경로 포함) 방지.</summary>
-    private Task StartRetry(BurnedReel target, int mask)
+    /// <summary>람다 캡처를 별도 메서드로 격리 — PumpRetries 진입 시 클로저 표시 클래스 할당(조기 반환 경로 포함) 방지. 호출자가 임대 획득.</summary>
+    private Task StartRetry(BurnedReel target, int mask, int attempts)
     {
-        if (!target.TryAcquire()) return Task.CompletedTask;
         var ct = Volatile.Read(ref _lifeCts)?.Token ?? CancellationToken.None;
-        return Task.Run(() => PublishAsync(target, mask, true, ct));
+        return Task.Run(() => PublishAsync(target, mask, true, attempts, ct));
     }
 
     public void Dispose()
