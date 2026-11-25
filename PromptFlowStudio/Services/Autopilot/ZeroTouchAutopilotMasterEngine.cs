@@ -184,6 +184,8 @@ public sealed class ZeroTouchAutopilotMasterEngine : IDisposable
         Enabled = true; Telemetry.Start();
         Interlocked.Exchange(ref _lifeCts, new CancellationTokenSource())?.Dispose();
         _lastSeenReel = LatestReelId();
+        // 중단된 이전 사이클 릴/태스크 폐기 — 미리셋 시 Disable(쿨다운·방송 중) → Enable 후 Reacting 이 옛 릴을 재번-인 · 중복 게시
+        _reelId = 0; _task = null;
         Enter(AutopilotStage.Planning, "오토파일럿 가동");
         Telemetry.Publish(CreatorAlertKind.AutopilotStage, AlertSeverity.Info, "제로-터치 오토파일럿 가동");
     }

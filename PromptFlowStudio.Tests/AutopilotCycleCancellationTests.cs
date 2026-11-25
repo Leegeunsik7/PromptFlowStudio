@@ -172,6 +172,40 @@ public class AutopilotCycleCancellationTests
         finally { factory.Dispose(); }
     }
 
+    [Fact]
+    public void ReEnable_AfterDisable_DiscardsStaleReel_NoReclip()
+    {
+        var factory = new L2R.LiveToReelsFactoryStudioRunner();
+        factory.UseSyntheticSource(4);
+        var ap = NewRunner(factory);
+        try
+        {
+            var e = ap.Engine;
+            long clock = 1_000;
+            e.BroadcastMinMs = 1_000; e.ReactTimeoutMs = 600_000; e.ClipTimeoutMs = 600_000;
+            StartCycle(e, () => clock);
+            var req = new L2R.ClimaxClipRequest { Id = 1, StartMs = 0, EndMs = 4_000, Peak = 95, Cause = L2R.ClimaxCause.Physics };
+            factory.ProcessRequest(in req);
+            clock += 100; e.Tick();
+            Assert.Equal(Ap.AutopilotStage.Reacting, e.Stage);
+            var stale = e.CurrentReel;
+            Assert.True(stale > 0);
+
+            e.Disable();   // 사이클 중단(릴 미게시)
+            e.Enable();
+            Assert.Equal(0, e.CurrentReel);
+            clock += 10; e.Tick();
+            Assert.Equal(Ap.AutopilotStage.Broadcasting, e.Stage);
+            clock += 2_000; e.Tick();   // 신규 릴 없이 방송 최소 시간 경과
+            Assert.Equal(Ap.AutopilotStage.Reacting, e.Stage);
+            clock += 100; e.Tick();
+            Assert.Equal(Ap.AutopilotStage.Reacting, e.Stage);   // 옛 릴 재클립 금지
+            Assert.Equal(0, e.CurrentReel);
+            e.Disable();
+        }
+        finally { ap.Dispose(); factory.Dispose(); }
+    }
+
     [Theory]
     [InlineData("disable")]
     [InlineData("dispose")]
