@@ -1,15 +1,13 @@
 # STATUS (2026-11-26)
 
 ## 최근 작업
-- 렌더 중복 산출물 근본 수정: 앰비언트 15초 후처리 성공 시 원본 5초 중간본(`wo_<ts>.mp4`) 삭제 → 갤러리에 `_ambient15s.mp4` 1개만 노출
-  - `VideoEngineRenderExecutionEngine.DiscardIntermediate`(동일 경로·빈 최종본은 무동작, 실패는 격리) · 실패/가상 폴백 시 원본 보존
-  - 체크포인트는 별도 캐시 사본이라 영향 없음
-- Workspace 정리: 좌측 미니 큐 중복 완료 `<video>` 제거 · 빈 `프레임 신호 대기` MMF 모니터 + 16ms 폴링 루프 제거
-- `예상 프레임` 정적 더미 → 실제 `🖼️ 첫 화면 미리보기`(명시 클릭 시 Gemini `gemini-2.5-flash-image` 1장, 16:9/9:16/1:1)
-  - `[🎬 이 첫 화면으로 영상 생성]` → `BindStartFrameAsync`(I2V 시작 프레임) 후 생성
-  - 키 미설정·실패는 `PlutoAutonomousActivityFeedService.Redact` 안내 · 응답 스키마 즉시 검증 · 28초 타임아웃 · 지수 백오프
-- 테스트: `WorkspacePanelCleanupTests`(마크업 정리 · 페이로드/스키마 · 무키 폴백 · 단일 산출물 · Pluto 9/6/2)
+- 첫 화면 미리보기 무실패화(`GeminiPromptService.GenerateFirstFrameImageAsync`)
+  - 1차 `gemini-2.5-flash-image`(17s) → 2차 `imagen-3.0-generate-002` `:predict`(스키마 검증) → 전체 28s 예산
+  - 키 미설정/원격 전멸 → Pure BCL 결정론적 로컬 구도 PNG(16:9 1280×720 · 9:16 720×1280 · 1:1 1024×1024, 테마 팔레트) + Redact 사유 안내
+  - 호출자 취소만 OCE 전파 · 로컬 폴백은 I2V 시작 프레임 바인딩 버튼 숨김(`_ffpLocal`)
+- Workspace 컴팩트 레이아웃: 유휴 캔버스 `flex:0 0 auto`·16:9 `min(26vh,216px)` · 튜너 `margin-top:0` · 카드/프롬프트/드롭존/칩/미리보기 간격 축소
+- 테스트: `FirstFramePreviewFallbackTests`(폴백 체인 · PNG 유효/결정론/CRC · 레이아웃 마커 · Pluto 9/6/2) · 무키 테스트 갱신
 
 ## 검증
-- Release `-warnaserror` 경고 0 / 오류 0 (Desktop · Tests, 실행 중 앱 잠금 회피용 OutDir 빌드)
-- xUnit 전체 통과 · Pluto 불변식 9/6/2 유지 · DI 변경 없음(기존 GeminiPromptService 메서드 추가)
+- Release `-warnaserror` 경고 0 / 오류 0 (Desktop · Tests — 실행 중 앱 PID 잠금으로 OutDir 우회 빌드)
+- xUnit 1520/1520 통과 · Pluto 9/6/2 유지 · DI 변경 없음

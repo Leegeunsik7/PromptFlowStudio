@@ -585,7 +585,7 @@
         <div class="ws-cam-toast" role="status">@(_camToast) @if (ReferenceEquals(_camToast, _stockToast) && StockCanLaunch) { <button class="ws-btn sm" @onclick="() => LaunchStockSuite(_stockRestart)" title="StockSuite 를 실행(실행 중이면 재실행)해 새 에셋을 즉시 반영">@(_stockRestart ? "🔄 StockSuite 재실행" : "🚀 StockSuite 실행")</button> } <button class="ws-cam-toast-x" @onclick="() => _camToast = null" title="닫기">✕</button></div>
     }
 
-    <section class="ws-grid">
+    <section class="ws-grid" data-compact-layout="1">
         @* ── ① 입력 ── *@
         <div class="ws-card">
             <div class="ws-card-h">
@@ -831,7 +831,7 @@
                 <div class="ws-ffp-act">
                     <button class="ws-btn ghost sm" @onclick="GenerateFirstFramePreviewAsync" disabled="@(_ffpBusy || State.IsBusy || string.IsNullOrWhiteSpace(_prompt))"
                             title="현재 프롬프트로 정지 이미지 1장을 생성합니다(Gemini 이미지 · 클릭 시에만 호출)">@(_ffpBusy ? "⏳ 생성 중…" : "🖼️ 첫 화면 미리보기")</button>
-                    @if (_ffpPath is not null)
+                    @if (_ffpPath is not null && !_ffpLocal)
                     {
                         <button class="ws-btn sm" @onclick="UseFirstFramePreviewAsync" disabled="@(_ffpBusy || State.IsBusy)" data-first-frame-use="1"
                                 title="이 이미지를 시작 프레임(I2V 참조)으로 지정하고 영상 생성을 시작합니다">🎬 이 첫 화면으로 영상 생성</button>
@@ -963,7 +963,7 @@
             }
             else if (State.Phase == WanJobPhase.Idle)
             {
-                <div class="ws-empty">
+                <div class="ws-empty" data-canvas-compact="1">
                     @* 뷰파인더 HUD — 선택 해상도 비율 가이드 박스 + 3분할 그리드 + 중앙 크로스헤어 + 해상도 상태 *@
                     <div class="ws-vf @(_vm.I2vModeRequested ? "i2v-hot" : null)" style="aspect-ratio: @_vm.HudAspectCss">
                         <span class="ws-vf-g v1"></span><span class="ws-vf-g v2"></span>
@@ -1457,17 +1457,17 @@
     .ws-warn-link:hover { color: var(--text-primary); }
 
     /* v15.5.0 픽셀 정렬: 3칼럼을 같은 행 높이로 늘려(stretch) 상·하단 수평선 일치, 각 칼럼은 height:100% · min-height:0 */
-    .ws-grid { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1.15fr) 300px; gap: 16px; margin-top: 16px; align-items: stretch; }
+    .ws-grid { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1.15fr) 300px; gap: 12px; margin-top: 12px; align-items: stretch; }   /* 컴팩트: 1920×1080 한 화면에 입력·미리보기·캔버스·튜너 */
     .ws-grid > .ws-card, .ws-grid > .ws-rail { height: 100%; min-height: 0; box-sizing: border-box; }
     @@media (max-width: 1180px) { .ws-grid { grid-template-columns: 1fr 1fr; } .ws-rail { grid-column: 1 / -1; } }
     @@media (max-width: 860px) { .ws-grid { grid-template-columns: 1fr; } }
 
-    .ws-card { border: 1px solid var(--line); border-radius: 18px; background: var(--card); padding: 18px 20px; display: flex; flex-direction: column; gap: 14px; }
+    .ws-card { border: 1px solid var(--line); border-radius: 16px; background: var(--card); padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
     .ws-card-h { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 10px; font-size: 13.5px; font-weight: 800; color: var(--text-primary); }
     .ws-card-h > span:first-child { white-space: nowrap; flex-shrink: 0; }
 
-    .ws-ta { width: 100%; min-height: 160px; resize: vertical; border-radius: 12px; border: 1px solid var(--line); background: var(--card-2);
-        color: var(--text-primary); padding: 12px 14px; font-size: 13.5px; line-height: 1.6; font-family: inherit; }
+    .ws-ta { width: 100%; min-height: 108px; resize: vertical; border-radius: 12px; border: 1px solid var(--line); background: var(--card-2);
+        color: var(--text-primary); padding: 10px 12px; font-size: 13.5px; line-height: 1.55; font-family: inherit; }
     .ws-hist { position: relative; display: flex; justify-content: flex-end; margin-bottom: 4px; }
     .ws-hist-btn { font-size: 12px; padding: 3px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-primary); cursor: pointer; }
     .ws-hist-btn:disabled { opacity: .45; cursor: default; }
@@ -1486,7 +1486,7 @@
 
     /* ── 참조 이미지 드롭존 ── */
     .ws-mode { font: 700 10px var(--mono); color: var(--accent-2); border: 1px solid color-mix(in srgb, var(--flow-cyan) 45%, var(--line)); border-radius: 999px; padding: 3px 9px; }
-    .ws-drop { position: relative; border: 1.5px dashed var(--line); border-radius: 12px; background: var(--card-2); min-height: 92px; display: flex; align-items: center; justify-content: center; overflow: hidden; transition: border-color .15s, background .15s; }
+    .ws-drop { position: relative; border: 1.5px dashed var(--line); border-radius: 12px; background: var(--card-2); min-height: 60px; display: flex; align-items: center; justify-content: center; overflow: hidden; transition: border-color .15s, background .15s; }
     .ws-drop:hover { border-color: var(--accent); background: color-mix(in srgb, var(--flow-violet) 6%, var(--card-2)); }
     .ws-drop.has { border-style: solid; min-height: auto; padding: 10px; }
     .ws-drop-input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
@@ -1499,8 +1499,8 @@
     .ws-motion-spin { display: inline-block; width: 12px; height: 12px; border: 2px solid color-mix(in srgb, #f9a8d4 30%, transparent); border-top-color: #f9a8d4; border-radius: 50%; vertical-align: -2px; animation: ws-motion-spin .8s linear infinite; }
     @@keyframes ws-motion-spin { to { transform: rotate(360deg); } }
     .ws-motion-preview { display: flex; justify-content: center; margin: 8px 0; }
-    .ws-drop-hint { display: flex; flex-direction: column; align-items: center; gap: 3px; text-align: center; padding: 14px; pointer-events: none; color: var(--text-muted); font-size: 12.5px; line-height: 1.5; }
-    .ws-drop-ic { font-size: 26px; opacity: .6; }
+    .ws-drop-hint { display: flex; flex-direction: column; align-items: center; gap: 2px; text-align: center; padding: 8px 12px; pointer-events: none; color: var(--text-muted); font-size: 12.5px; line-height: 1.5; }
+    .ws-drop-ic { font-size: 20px; opacity: .6; }
     .ws-drop-hint b { color: var(--text-secondary); }
     .ws-drop-sub { font-size: 11px; color: var(--text-muted); } .ws-drop-sub b { color: var(--accent-2); }
     .ws-thumb { max-height: 168px; max-width: 100%; border-radius: 8px; display: block; }
@@ -1527,10 +1527,10 @@
     .ws-badge.ok { color: #10b981; border-style: solid; border-color: color-mix(in srgb, #10b981 45%, var(--line)); }
     .ws-badge.bad { color: #ef4444; border-style: solid; border-color: color-mix(in srgb, #ef4444 45%, var(--line)); }
 
-    .ws-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; gap: 8px;
-        min-height: 220px; color: var(--text-muted); font-size: 13px; line-height: 1.7; }
-    .ws-empty-ic { font-size: 44px; opacity: .5; }
-    .ws-vf { position: relative; height: min(40vh, 280px); width: auto; max-width: 100%; margin-bottom: 6px; border: 1px dashed color-mix(in srgb, #22d3ee 55%, var(--line)); border-radius: 6px;
+    .ws-empty { flex: 0 0 auto; display: flex; flex-direction: column; align-items: center; justify-content: flex-start; text-align: center; gap: 6px;   /* 컴팩트: 유휴 캔버스가 칼럼 높이를 채우지 않고 16:9 박스에 밀착 */
+        min-height: 0; color: var(--text-muted); font-size: 12.5px; line-height: 1.5; }
+    .ws-empty-ic { font-size: 32px; opacity: .5; }
+    .ws-vf { position: relative; height: min(26vh, 216px); width: auto; max-width: 100%; margin-bottom: 2px; border: 1px dashed color-mix(in srgb, #22d3ee 55%, var(--line)); border-radius: 6px;
         background: radial-gradient(ellipse at center, color-mix(in srgb, #22d3ee 6%, transparent), transparent 70%); overflow: hidden; }
     .ws-vf-g { position: absolute; background: color-mix(in srgb, #22d3ee 22%, transparent); }
     .ws-vf-g.v1, .ws-vf-g.v2 { top: 0; bottom: 0; width: 1px; }
@@ -1552,11 +1552,11 @@
     .ws-vf-st { position: absolute; right: 26px; bottom: 8px; font: 700 9px/1 var(--mono); letter-spacing: .05em; color: #22d3ee; opacity: .85; }
     .ws-count.over { color: #f87171; }
     .ws-empty b { color: var(--text-secondary); }
-    .ws-empty-card { margin-top: 6px; padding: 9px 16px; border-radius: 999px; cursor: pointer; font-weight: 700; font-size: 12px; font-family: inherit; color: var(--accent-2);
+    .ws-empty-card { margin-top: 2px; padding: 6px 14px; border-radius: 999px; cursor: pointer; font-weight: 700; font-size: 12px; font-family: inherit; color: var(--accent-2);
         background: color-mix(in srgb, var(--flow-cyan) 8%, var(--card-2)); border: 1px solid color-mix(in srgb, var(--flow-cyan) 30%, var(--line)); }
     .ws-empty-card:hover { border-color: var(--accent-2); color: var(--text-primary); }
 
-    .ws-prog { display: flex; flex-direction: column; gap: 10px; min-height: 220px; justify-content: center; }
+    .ws-prog { display: flex; flex-direction: column; gap: 10px; min-height: 160px; justify-content: center; }
     .ws-bar { height: 10px; border-radius: 999px; background: var(--card-2); border: 1px solid var(--line); overflow: hidden; }
     .ws-bar-f { height: 100%; border-radius: 999px; transition: width .5s ease;
         background: linear-gradient(90deg, var(--flow-violet), var(--flow-cyan), var(--flow-magenta)); background-size: 200% 100%; animation: ws-flow 2.4s linear infinite; }
@@ -1680,11 +1680,11 @@
     .ws-neg-sent { margin-top: 4px; font: 600 10px var(--mono); color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .ws-domain-reset { font: 700 9.5px var(--mono); color: #f59e0b; background: transparent; border: 1px solid color-mix(in srgb, #f59e0b 45%, var(--line)); border-radius: 999px; padding: 2px 7px; cursor: pointer; }
     .ws-domain-reset:disabled { opacity: .5; cursor: default; }
-    .ws-ffp { border: 1px solid var(--line); border-radius: 12px; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+    .ws-ffp { border: 1px solid var(--line); border-radius: 12px; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; }
     .ws-ffp-h { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-weight: 700; font-size: 13px; }
-    .ws-ffp-vp { width: 100%; max-height: 360px; border-radius: 8px; overflow: hidden; background: var(--surface-2, rgba(127,127,127,.12)); display: flex; align-items: center; justify-content: center; margin: 0 auto; }
+    .ws-ffp-vp { height: min(20vh, 180px); width: auto; max-width: 100%;   /* 컴팩트: 높이 기준 + aspect-ratio 로 비율 유지 */  border-radius: 8px; overflow: hidden; background: var(--surface-2, rgba(127,127,127,.12)); display: flex; align-items: center; justify-content: center; margin: 0 auto; }
     .ws-ffp-vp img { width: 100%; height: 100%; object-fit: cover; display: block; }
-    .ws-ffp-ph { font-size: 12px; color: var(--text-muted); text-align: center; padding: 12px; }
+    .ws-ffp-ph { font-size: 11.5px; color: var(--text-muted); text-align: center; padding: 8px; }
     .ws-ffp-act { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
     /* v15.6.0 다크 글래스모피즘 + 네온 액센트(테마 변수 기반 — 라이트 테마에서도 카드 대비 유지) */
     .ws-card, .ws-w { background: color-mix(in srgb, var(--card) 82%, transparent); backdrop-filter: blur(14px) saturate(140%); -webkit-backdrop-filter: blur(14px) saturate(140%);
@@ -1694,17 +1694,17 @@
     .ws-accel.ready { color: #22d3ee; border-color: color-mix(in srgb, #22d3ee 55%, var(--line)); box-shadow: 0 0 12px color-mix(in srgb, #22d3ee 35%, transparent); }
     .ws-accel.run { color: #a78bfa; border-color: color-mix(in srgb, #a78bfa 60%, var(--line)); box-shadow: 0 0 14px color-mix(in srgb, #a78bfa 45%, transparent); animation: ws-glow 1.6s ease-in-out infinite; }
     @@keyframes ws-glow { 50% { box-shadow: 0 0 22px color-mix(in srgb, #a78bfa 65%, transparent); } }
-    .ws-zen { display: flex; flex-direction: column; gap: 8px; padding: 12px; border-radius: 12px; border: 1px solid color-mix(in srgb, var(--flow-cyan) 25%, var(--line)); background: color-mix(in srgb, var(--card-2) 70%, transparent); }
+    .ws-zen { display: flex; flex-direction: column; gap: 5px; padding: 8px 10px; border-radius: 12px; border: 1px solid color-mix(in srgb, var(--flow-cyan) 25%, var(--line)); background: color-mix(in srgb, var(--card-2) 70%, transparent); }
     .ws-zen-h { font-size: 12px; font-weight: 800; color: var(--text-primary); }
     .ws-zen-l { font: 700 10px var(--mono); letter-spacing: .05em; color: var(--text-muted); }
-    .ws-zen-g { display: grid; gap: 6px; }
+    .ws-zen-g { display: grid; gap: 5px; }
     .ws-zen-g.cam { grid-template-columns: repeat(3, minmax(0, 1fr)); }
     .ws-zen-g.sty { grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); }
-    .ws-zen-chip { display: flex; align-items: center; justify-content: center; gap: 5px; min-height: 30px; padding: 5px 8px; border-radius: 9px; border: 1px solid var(--line); background: var(--card-2);
+    .ws-zen-chip { display: flex; align-items: center; justify-content: center; gap: 5px; min-height: 26px; padding: 3px 8px; border-radius: 9px; border: 1px solid var(--line); background: var(--card-2);
         color: var(--text-secondary); font: 700 11px inherit; font-family: inherit; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: border-color .15s, box-shadow .15s, color .15s; }
     .ws-zen-chip:hover:not(:disabled) { color: var(--text-primary); border-color: color-mix(in srgb, var(--flow-cyan) 55%, var(--line)); }
-    .ws-dur { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; margin: 8px 0 4px; }
-    .ws-dur-chip { min-height: 30px; padding: 5px 8px; border-radius: 9px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-secondary); cursor: pointer; font-size: 12px; }
+    .ws-dur { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 5px; margin: 4px 0 2px; }
+    .ws-dur-chip { min-height: 26px; padding: 3px 8px; border-radius: 9px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-secondary); cursor: pointer; font-size: 12px; }
     .ws-dur-chip.on { color: var(--text-primary); border-color: var(--flow-cyan); box-shadow: 0 0 10px color-mix(in srgb, var(--flow-cyan) 40%, transparent); }
     .ws-dur-chip:disabled { opacity: .5; cursor: default; }
     .ws-dur-parts { display: flex; flex-direction: column; gap: 6px; margin: 4px 0; }
@@ -1725,7 +1725,7 @@
     .ws-zen-chip.on { color: var(--text-primary); border-color: var(--flow-cyan); box-shadow: 0 0 12px color-mix(in srgb, var(--flow-cyan) 45%, transparent), inset 0 0 8px color-mix(in srgb, var(--flow-cyan) 18%, transparent); }
     .ws-zen-chip:disabled { opacity: .5; cursor: not-allowed; }
     @@media (prefers-reduced-motion: reduce) { .ws-accel.run { animation: none; } }
-    .ws-tune { margin-top: auto; border-top: 1px dashed var(--line); padding-top: 14px; display: flex; flex-direction: column; gap: 12px; }
+    .ws-tune { margin-top: 0; border-top: 1px dashed var(--line); padding-top: 10px; display: flex; flex-direction: column; gap: 8px; }   /* 컴팩트: 캔버스 바로 아래 고정(하단 밀어내기 제거) */
     .ws-tune-h { display: flex; align-items: center; justify-content: space-between; min-height: 20px; font-size: 12px; font-weight: 800; color: var(--text-primary); }
     .ws-tune-r { display: grid; grid-template-columns: minmax(0, 1fr) 44px; align-items: center; gap: 4px 10px; font-size: 11.5px; color: var(--text-secondary); }
     .ws-tune-r b { font: 700 11px var(--mono); color: var(--accent-2); text-align: right; font-variant-numeric: tabular-nums; }
@@ -6445,7 +6445,7 @@
     }
 
     // ── 🖼️ 첫 화면 미리보기(생성 전 스틸 1장) ──
-    private bool _ffpBusy;
+    private bool _ffpBusy, _ffpLocal;   // _ffpLocal: 로컬 구도 폴백(I2V 시작 프레임 바인딩 불가)
     private string? _ffpPath, _ffpUrl, _ffpMsg;
     private CancellationTokenSource? _ffpCts;
 
@@ -6479,7 +6479,8 @@
             DiscardFirstFramePreviewFile();
             _ffpPath = path;
             _ffpUrl = Media.ToPlaybackUrl(path);
-            _ffpMsg = "✅ " + r.Message;
+            _ffpLocal = r.IsLocalFallback;
+            _ffpMsg = r.IsLocalFallback ? PromptFlowStudio.Services.Pluto.PlutoAutonomousActivityFeedService.Redact(r.Message) : "✅ " + r.Message;
         }
         catch (OperationCanceledException) { /* 재요청·페이지 이탈 */ }
         catch (Exception ex)
@@ -6499,6 +6500,7 @@
     private async Task UseFirstFramePreviewAsync()
     {
         if (_ffpPath is not { } path || !File.Exists(path) || State.IsBusy) { _ffpMsg = "⚠ 미리보기 이미지가 없습니다 — 다시 생성하세요."; return; }
+        if (_ffpLocal) { _ffpMsg = "⚠ 로컬 구도 미리보기는 시작 프레임으로 쓸 수 없습니다 — 프롬프트만으로 [생성 시작]을 누르세요."; return; }
         await BindStartFrameAsync(path, _mediaCts.Token);
         _ffpPath = null;   // 참조 이미지로 소유권 이전(ClearImage 가 정리)
         _ffpMsg = "🎬 첫 화면을 시작 프레임으로 지정했습니다.";
@@ -6509,7 +6511,7 @@
     private void DiscardFirstFramePreviewFile()
     {
         var old = _ffpPath;
-        _ffpPath = null; _ffpUrl = null;
+        _ffpPath = null; _ffpUrl = null; _ffpLocal = false;
         if (old is null || string.Equals(old, _imagePath, StringComparison.OrdinalIgnoreCase)) return;
         try { if (File.Exists(old)) File.Delete(old); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
     }

@@ -98,9 +98,11 @@ public sealed class WorkspacePanelCleanupTests : IDisposable
         var svc = new GeminiPromptService(http, () => null);
         Assert.False(svc.IsImageGenerationAvailable);
         var r = await svc.GenerateFirstFrameImageAsync("baby", "1280*720", CancellationToken.None);
-        Assert.False(r.Ok);
-        Assert.Null(r.Image);
-        Assert.Equal(GeminiPromptService.ImageUnavailableMessage, r.Message);
+        Assert.True(r.Ok);                                   // 키 미설정 → 로컬 구도 PNG(빈 박스 0)
+        Assert.True(r.IsLocalFallback);
+        Assert.NotNull(r.Image);
+        Assert.Equal("image/png", r.MimeType);
+        Assert.Contains(GeminiPromptService.ImageUnavailableMessage, r.Message, StringComparison.Ordinal);
         Assert.False((await svc.GenerateFirstFrameImageAsync("  ", "1280*720")).Ok);
     }
 
