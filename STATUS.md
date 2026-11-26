@@ -1,20 +1,14 @@
-# Current Project Status
-- Active Milestone: ✅ 아기 테마 시나리오 확장 + 짧은 프롬프트 자동 확장
-- Build: ✅ Desktop Release `-warnaserror` 0W/0E · ✅ Tests Release 0W/0E · ⏸ Mobile net8.0-ios — `ios` 워크로드 미설치(미검증)
-- Tests: ✅ 전체 1477/1477 (exit 0) · 집중(BabyPromptAutoExpander·PromptSynthesizer·VisionIntelligence·BabyStudio·PromptInspiration) 70/70
-- Updated: 2026-11-25 (KST) · 불변식 `CorePlutoFileCount=9` · `MergeableHubs=6` · `MergeableCompanions=2` 유지(테스트 잠금)
+# STATUS (2026-11-26)
 
-## Completed
-- 👶 `Services/Prompt/BabyPromptAutoExpander.cs`: 시나리오 5종(첫걸음·낮잠·목욕/비눗방울·햇살 장난감·부모 교감) · KO/EN/JA/ES 라벨/키워드
-- ✨ ≤80자 아기 프롬프트(또는 아기 모드) → 조명·자연 카메라 모션·따뜻한 분위기·안전 가족 문구 자동 결합(멱등 · 중복 조각 생략 · 일반 프롬프트 무변경)
-- 🔌 `PromptSynthesizerService`: `PromptContext.AutoBabyExpansion`(기본 true, opt-out 가능) 결선
-- 🎛️ `PromptPresets.BabyScenarios` 원클릭 완성형 칩 5종(기존 `Baby` 5종 무변경)
-- 🧪 `BabyPromptAutoExpanderTests` (시나리오·다국어·멱등·합성기·프리셋·Pluto 9/6/2)
+## 최근 작업
+- Workspace 주 생성 버튼(✨ 생성 시작): 프롬프트 전용(T2V)·이미지 보조(I2V) 생성 복구
+  - 원인: `CanStart`가 `State.Enabled`(Wan API 키)를 요구 → 15s 앰비언트 등 렌더 큐 경로 프롬프트도 무음 잠금
+  - `Services/Render/WorkspaceGenerationReadiness.cs` 추가(순수 함수: ResolvePath · CanPress · Evaluate · BlockMessage)
+  - 버튼 활성 = 입력(프롬프트 또는 참조 이미지) + 비Busy만 판단, 엔진 상태 무관
+  - 5초 단일(Wan 직결) 키 미구성 시 클릭에서 `PlutoAutonomousActivityFeedService.Redact` 처리된 안내 표시
+  - `WanJobState` 예기치 못한 예외 메시지 Redact 적용
+- 테스트: `WorkspaceGenerationReadinessTests`(0장 T2V · I2V · 무입력 · Busy · 엔진 미구성 안내 · Pluto 9/6/2)
 
-## Known (latent, 미수정)
-- `PlutoMultiLocaleBatchRenderService.BlockReason`: `ex.Message` 미리댁션 — 현재 UI 미노출(피드 Record 단계 리댁션)
-- `BabyScenarios` 칩 UI 미결선(Workspace 칩 바 연결은 후속)
-
-## Fast Loops
-- Pluto(~30 s): `dotnet test PromptFlowStudio.Tests/PromptFlowStudio.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~Pluto" -p:NuGetAudit=false`
-- ⚠️ `.git` 은 `D:\Program` — `--git-dir=D:/Program/.git --work-tree=D:/Program/PromptFlowStudio` 필요
+## 검증
+- Release `-warnaserror` 경고 0 / 오류 0 (Desktop · Tests)
+- xUnit 1495/1495 통과 · Pluto 불변식 9/6/2 유지 · DI 변경 없음(정적 헬퍼)

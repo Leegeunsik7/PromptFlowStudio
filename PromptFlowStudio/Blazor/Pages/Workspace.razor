@@ -444,7 +444,7 @@
                     @* 🌍 Step 39 — 원클릭 전 언어 일괄 분기/패키지(번역 → 자막/TTS 적합 → {클립ID}::{로캘} 분기 → 사이드카 묶음 원자 저장) *@
                     <button class="ws-back" data-locale-batch="1" @onclick="BranchAndExportAllLocalesAsync" disabled="@(_localeBatchBusy || _publishPackBusy || _localeTranslateBusy || (_catalogClips.Count == 0 && string.IsNullOrWhiteSpace(_perfVideoId)))" title="KO · EN · JA · ES 한 번에 — 한국어 자막을 용어집 · 고유명사 보존 번역(원문 불변) · 자막/TTS 0.85x~1.30x 적합 경고 수집 · 로캘 변형 멱등 분기(게시된 언어는 동결) · 영상 옆 {영상}_{로캘}_publish_pack.txt 4개를 전부 아니면 전무로 저장">@(_localeBatchBusy ? "⏳ 전 언어 처리 중…" : "[🌍 전 언어 일괄 분기/패키지]")</button>
                     @* 🎬 Step 40 — 원클릭 전 언어 일괄 렌더/패키지(마스터 타임라인 재사용 · 로캘 자막/TTS 투영 → {영상}_{로캘}.mp4 + 사이드카 짝 커밋) *@
-                    <button class="ws-back" data-locale-render-batch="1" @onclick="RenderAllLocalesAsync" disabled="@(_localeBatchBusy || _publishPackBusy || _localeTranslateBusy || _montageBusy || _stockBusy || _montagePhotos.Count < 2 || (_catalogClips.Count == 0 && string.IsNullOrWhiteSpace(_perfVideoId)))" title="KO · EN · JA · ES 로캘 MP4 를 한 번에 — 같은 잠금 타임라인 · 로캘 자막/TTS 적합 · 게시된 언어와 TTS 1.30x 초과 언어는 건너뜀 · 검증 후 {영상}_{로캘}.mp4 + {영상}_{로캘}_publish_pack.txt 짝 저장 · 카탈로그 변형에 출력 경로 기록">@(_localeBatchBusy ? "⏳ 전 언어 처리 중…" : "[🎬 전 언어 일괄 렌더/패키지]")</button>
+                    <button class="ws-back" data-locale-render-batch="1" @onclick="RenderAllLocalesAsync" disabled="@(_localeBatchBusy || _publishPackBusy || _localeTranslateBusy || _montageBusy || _stockBusy)" title="KO · EN · JA · ES 로캘 MP4 를 한 번에 — 같은 잠금 타임라인 · 로캘 자막/TTS 적합 · 게시된 언어와 TTS 1.30x 초과 언어는 건너뜀 · 검증 후 {영상}_{로캘}.mp4 + {영상}_{로캘}_publish_pack.txt 짝 저장 · 카탈로그 변형에 출력 경로 기록">@(_localeBatchBusy ? "⏳ 전 언어 처리 중…" : "[🎬 전 언어 일괄 렌더/패키지]")</button>
                     @if (_localeBatchToast is { } lbt) { <span class="ws-pcore on" role="status" data-locale-batch-result="1" style="white-space:normal">@(lbt)</span> }
                     @* 📖 Step 34 — 선택 언어 자동 번역(비파괴 로캘 트랙) · 시리즈 용어집 *@
                     <button class="ws-back" data-locale-translate="1" @onclick="TranslateActiveLocaleAsync" disabled="@(_localeTranslateBusy || _publishPackBusy || _montageCues is not { Count: > 0 } || IsDefaultPublishLocale())" title="한국어 자막을 @(_publishLocale)(으)로 번역해 별도 트랙에 저장(원문 불변) — 용어집 · 고유명사(@@핸들 · #태그 · 라틴 대문자 단어) 고정 · 컷 길이 기반 낭독 글자 예산 · 오프라인이면 용어집 치환만">@(_localeTranslateBusy ? "⏳ 번역 중…" : "[🌐 선택 언어 자동 번역]")</button>
@@ -4687,8 +4687,8 @@
     }
 
     // t2v 는 프롬프트 필수, i2v 는 이미지가 있으면 프롬프트 없이도 시작 가능.
-    private bool CanStart => State.Enabled && !State.IsBusy
-        && (!string.IsNullOrWhiteSpace(_prompt) || !string.IsNullOrWhiteSpace(_imagePath));
+    // 엔진(Wan 키) 상태로 버튼을 잠그지 않는다 — 10s/15s/앰비언트는 렌더 큐 경로, 5초 직결 미구성은 클릭 시 레드액션 안내.
+    private bool CanStart => PromptFlowStudio.Services.Render.WorkspaceGenerationReadiness.CanPress(State.IsBusy, _prompt, _imagePath);
 
     private static readonly PromptFlowStudio.Services.Render.VideoDurationMode[] DurationModes =
     {
@@ -5388,9 +5388,11 @@
     /// <summary>🎬 Step 40 [전 언어 일괄 렌더/패키지] — 사전 분기/패키지 → 로캘별 몽타주 렌더(스테이징) → 검증 → MP4 + 사이드카 짝 커밋(예외 전파 금지 · 로캘별 요약 토스트 · 활동 피드 기록).</summary>
     private async Task RenderAllLocalesAsync()
     {
-        if (_localeBatchBusy || _publishPackBusy || _montageBusy || _stockBusy || _montagePhotos.Count < 2 || LocaleChannels() is null
-            || EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoYouTubePublishPackService)) is not PromptFlowStudio.Services.Pluto.IPlutoYouTubePublishPackService svc
-            || EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoMultiLocaleBatchRenderService)) is not PromptFlowStudio.Services.Pluto.IPlutoMultiLocaleBatchRenderService renderSvc) return;
+        var svc = EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoYouTubePublishPackService)) as PromptFlowStudio.Services.Pluto.IPlutoYouTubePublishPackService;
+        var renderSvc = EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoMultiLocaleBatchRenderService)) as PromptFlowStudio.Services.Pluto.IPlutoMultiLocaleBatchRenderService;
+        var blocker = PromptFlowStudio.Services.Pluto.PlutoMultiLocaleBatchRenderService.DescribeRenderBlocker(_localeBatchBusy,
+            _publishPackBusy || _localeTranslateBusy || _montageBusy || _stockBusy, _montagePhotos.Count, LocaleChannels() is not null, svc is not null && renderSvc is not null);
+        if (blocker is not null || svc is null || renderSvc is null) { _localeBatchToast = blocker ?? "⚠ 전 언어 일괄 렌더를 시작할 수 없습니다"; await InvokeAsync(StateHasChanged); return; }
         PromptFlowStudio.Services.Pluto.PlutoRenderedClipRecord? clip = null;
         var vid = _perfVideoId?.Trim() ?? "";
         foreach (var c in _catalogClips) if (vid.Length > 0 && string.Equals(c.VideoId, vid, StringComparison.OrdinalIgnoreCase)) { clip = c; break; }
@@ -5445,7 +5447,7 @@
             _publishPackClip = null;
             _localeBatchToast = mismatch is null ? result.SummaryKorean : mismatch + " · " + result.SummaryKorean;
         }
-        catch (OperationCanceledException) { }
+        catch (OperationCanceledException) { if (!_disposed) _localeBatchToast = "⏹ 전 언어 일괄 렌더가 취소되었습니다"; }
         catch (Exception ex) { Program.Log("Workspace.LocaleRenderBatch", ex); _localeBatchToast = "⚠ 전 언어 일괄 렌더 실패: " + PromptFlowStudio.Services.Pluto.PlutoAutonomousActivityFeedService.Redact(ex.Message); }
         finally { _localeBatchBusy = false; _publishPackBusy = false; _montageBusy = false; _stockBusy = false; }
         if (_disposed) return;
@@ -6339,12 +6341,13 @@
 
     private void Start()
     {
-        if (!CanStart)
+        var block = PromptFlowStudio.Services.Render.WorkspaceGenerationReadiness.Evaluate(State.IsBusy, _prompt, _imagePath, _durationMode, State.Enabled);
+        if (block != PromptFlowStudio.Services.Render.WorkspaceStartBlock.None)
         {
-            if (!State.IsBusy && string.IsNullOrWhiteSpace(_prompt) && string.IsNullOrWhiteSpace(_imagePath))
-                _durationMsg = "⚠ 프롬프트(T2V) 또는 참조 사진 1장(I2V)이 필요합니다.";
+            if (PromptFlowStudio.Services.Render.WorkspaceGenerationReadiness.BlockMessage(block) is { } msg) _durationMsg = msg;
             return;
         }
+        _durationMsg = null;
         RefreshRenderMode();
         var anchored = WithIdentityAnchor(_prompt);   // 🍼 캐릭터 일관성 앵커(비영속 · 멱등)
         if (_durationMode != PromptFlowStudio.Services.Render.VideoDurationMode.Sec5_Single) { EnqueueDuration(anchored); return; }

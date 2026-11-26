@@ -117,7 +117,7 @@ public sealed class WanJobState : IProgress<WanProgress>, IProgress<double>
             }
         }
         catch (OperationCanceledException) { SetPhase(WanJobPhase.Canceled, "작업이 취소되었습니다."); }
-        catch (Exception ex) { Fail("예상치 못한 오류: " + ex.Message); }
+        catch (Exception ex) { Fail("예상치 못한 오류: " + PromptFlowStudio.Services.Pluto.PlutoAutonomousActivityFeedService.Redact(ex.Message)); }
     }
 
     /// <summary>진행 중 작업 취소(폴링·다운로드 중단). 원격 서버 태스크 자체는 계속될 수 있다.</summary>
