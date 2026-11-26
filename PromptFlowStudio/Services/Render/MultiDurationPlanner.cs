@@ -12,12 +12,14 @@ namespace PromptFlowStudio.Services.Render;
 public enum VideoDurationMode { Sec5_Single, Sec10_Dual, Sec15_Triple, Sec15_AmbientSlow, Sec15_OneTake, Sec30_Auto }
 
 /// <summary>
-/// 멀티 컷(10s 2컷 · 15s 3컷) 컷 전환 방식.
-///   ▸ <see cref="IndependentCrossfade"/>(기본): 컷마다 자기 프롬프트로 독립 생성(1번 컷만 참조/첫 화면 이미지) → 0.25초 xfade 디졸브 합본.
-///     카메라 앵글 전환(와이드 → 미디엄 → 클로즈업)이 자연스럽고, 프레임 밖으로 나간 피사체를 억지로 이어 붙이는 구도·인체 왜곡이 없다.
+/// 멀티 컷(10s 2컷 · 15s 3컷 · 30초 자동) 컷 전환 방식.
+///   ▸ <see cref="IndependentHardCut"/>(기본): 컷마다 자기 프롬프트로 독립 생성(1번 컷만 참조/첫 화면 이미지) → 0.0초 하드 컷 concat.
+///     카메라 앵글이 다른 컷 사이에 반투명 고스트 오버레이(디졸브 잔상)가 생기지 않는다.
+///   ▸ <see cref="IndependentCrossfade"/>: 독립 생성 → 0.25초 xfade 디졸브 합본(사용자 명시 선택 시에만).
 ///   ▸ <see cref="LastFrameChain"/>: 이전 컷 마지막 프레임 → 다음 컷 I2V 앵커(연속 롱테이크) → 하드 컷 concat.
+/// 메타에는 이름으로 기록되므로 값 추가는 직렬화 호환.
 /// </summary>
-public enum CutTransitionMode : byte { IndependentCrossfade, LastFrameChain }
+public enum CutTransitionMode : byte { IndependentCrossfade, LastFrameChain, IndependentHardCut }
 
 /// <summary>
 /// [PromptFlowStudio] 멀티 듀레이션 파이프라인 계획기(순수 함수).
@@ -44,21 +46,36 @@ public static class MultiDurationPlanner
     public const string DefaultProject = "workspace";
     /// <summary>작업 메타 — 컷 전환 방식(<see cref="CutTransitionMode"/> 이름). 부재 = 독립 컷(기본).</summary>
     public const string MetaTransition = "duration.transition";
-    /// <summary>독립 컷 합본 xfade 디졸브 길이(초).</summary>
+    /// <summary>독립 컷 합본 xfade 디졸브 길이(초) — <see cref="CutTransitionMode.IndependentCrossfade"/> 명시 선택 시에만.</summary>
     public const double CrossfadeSeconds = 0.25;
+    /// <summary>하드 컷 겹침 길이(초) — 0 = 직접 concat.</summary>
+    public const double HardCutSeconds = 0.0;
     /// <summary>독립 컷 일관성 힌트 — 피사체·의상(유니폼)·조명 동일, 전신/머리 잘림 금지(멱등 부착).</summary>
     public const string ContinuityHint = "same subject identity and same outfit/uniform colors as the other cuts, consistent lighting and color palette, head and full body fully in frame, anatomically correct";
 
-    public const CutTransitionMode DefaultTransition = CutTransitionMode.IndependentCrossfade;
+    public const CutTransitionMode DefaultTransition = CutTransitionMode.IndependentHardCut;
 
-    public static string TransitionLabel(CutTransitionMode mode) => mode == CutTransitionMode.LastFrameChain
-        ? "연속 프레임 이어붙이기 (Last-Frame I2V Chain)"
-        : "독립 시네마틱 컷 (Independent T2V + Crossfade)";
+    public static string TransitionLabel(CutTransitionMode mode) => mode switch
+    {
+        CutTransitionMode.LastFrameChain => "연속 프레임 이어붙이기 (Last-Frame I2V Chain)",
+        CutTransitionMode.IndependentCrossfade => "0.25초 디졸브 (Independent T2V + Crossfade)",
+        _ => "독립 시네마틱 컷 (Independent T2V + Hard Cut)",
+    };
 
-    /// <summary>작업 메타 → 전환 방식(부재·미상 = 기본 독립 컷).</summary>
+    /// <summary>독립 생성(앵커 체인 없음) 전환 여부 — 하드 컷 · 디졸브.</summary>
+    public static bool IsIndependent(CutTransitionMode mode) => mode != CutTransitionMode.LastFrameChain;
+
+    /// <summary>합본 겹침 길이(초) — 디졸브 0.25 · 그 외 0(하드 컷).</summary>
+    public static double TransitionSeconds(CutTransitionMode mode) => mode == CutTransitionMode.IndependentCrossfade ? CrossfadeSeconds : HardCutSeconds;
+
+    /// <summary>작업 메타 → 전환 방식(부재·미상 = 기본 독립 하드 컷).</summary>
     public static CutTransitionMode TransitionOf(BatchRenderJob job)
-        => string.Equals(MetaOf(job, MetaTransition), nameof(CutTransitionMode.LastFrameChain), StringComparison.Ordinal)
-            ? CutTransitionMode.LastFrameChain : CutTransitionMode.IndependentCrossfade;
+    {
+        var v = MetaOf(job, MetaTransition);
+        if (string.Equals(v, nameof(CutTransitionMode.LastFrameChain), StringComparison.Ordinal)) return CutTransitionMode.LastFrameChain;
+        if (string.Equals(v, nameof(CutTransitionMode.IndependentCrossfade), StringComparison.Ordinal)) return CutTransitionMode.IndependentCrossfade;
+        return DefaultTransition;
+    }
 
     /// <summary>다음 컷에 마지막 프레임 I2V 앵커를 주입할지 — 체인 모드 멀티 샷만.</summary>
     public static bool ShouldChainLastFrame(BatchRenderJob job) => (IsMultiShot(job.DurationMode) || IsGroupedShot(job)) && TransitionOf(job) == CutTransitionMode.LastFrameChain;
@@ -163,6 +180,215 @@ public static class MultiDurationPlanner
         return WithContinuityHint(p);
     }
 
+    // ══════════════════════ 🎬 30초 자동 — 범용 2막 서사 분할 ══════════════════════
+
+    /// <summary>30초 자동 2막 분할 결과 — 연속성 앵커(피사체 · 의상 · 환경) · 1막 동작 · 2막 동작.</summary>
+    public readonly record struct TwoActPlan(string Anchor, string Act1, string Act2);
+
+    /// <summary>2막 경계(초) — 1막 0~15s · 2막 15~30s.</summary>
+    public const int ActBoundarySeconds = 15;
+
+    /// <summary>1막(셋업 · 빌드업) 지시 — 결정적 동작은 아직 일어나지 않는다.</summary>
+    public const string Act1Directive = "act 1 of 2, setup and build-up: establishing the scene, introduce the subject, preparatory motion and progression only, the decisive action has not happened yet";
+    /// <summary>2막(클라이맥스 · 해결) 지시 — 동일 피사체/의상/환경/카메라 연속성.</summary>
+    public const string Act2Directive = "act 2 of 2, climax and resolution: the decisive action completes, the outcome reaction follows only after completion, natural closing beat, same subject, outfit, environment and camera framing as act 1";
+
+    private static readonly string[][] Act1SubBeats =
+    {
+        new[] { "" },
+        new[] { "establishing wide shot introducing the subject", "preparatory motion builds toward the decisive moment" },
+        new[] { "establishing wide shot introducing the subject", "the subject begins preparatory motion", "tension builds right before the decisive moment" },
+    };
+
+    private static readonly string[][] Act2SubBeats =
+    {
+        new[] { "" },
+        new[] { "the decisive action happens", "outcome reaction and calm natural closing shot" },
+        new[] { "the decisive action happens", "outcome reaction after the completed action", "calm natural closing shot" },
+    };
+
+    // 긴 구분자 먼저(", and then " → " and then " → ", then " → " then ").
+    private static readonly string[] ClauseSeparators = { ". ", "! ", "? ", ";", "\n", ", and then ", " and then ", ", then ", " then ", ", finally ", " finally ", "그리고 나서", " 그 후 ", " 다음에 " };
+
+    // 영문 동작 동사(3인칭 단수) — 앵커(피사체 명사구)와 동작 절 분리 휴리스틱(-ing 는 별도 규칙).
+    private static readonly string[] ActionVerbs =
+    {
+        "walks", "runs", "jumps", "dribbles", "shoots", "kicks", "throws", "catches", "swings", "dances", "spins", "turns", "rides", "drives",
+        "flies", "swims", "climbs", "falls", "lands", "lifts", "pours", "opens", "closes", "picks", "holds", "places", "pushes", "pulls",
+        "looks", "smiles", "laughs", "cheers", "celebrates", "raises", "waves", "sits", "stands", "rises", "moves", "glides", "floats",
+        "explodes", "rotates", "reveals", "approaches", "enters", "leaves", "reaches", "grabs", "hits", "scores", "serves", "sprints",
+        "skates", "surfs", "cooks", "slices", "paints", "writes", "plays", "sings", "pets", "hugs", "kisses", "steps", "crosses",
+        "is", "are", "walk", "run", "dance", "play",
+    };
+
+    // -ing 가 명사로 쓰이는 흔한 단어 · -ing 직전이 관사/전치사면 명사로 간주.
+    private static readonly string[] IngNouns = { "evening", "morning", "ceiling", "building", "clothing", "painting", "lighting", "wedding", "pudding", "setting", "ending", "landing", "stocking", "sibling", "awning", "railing", "spring", "string", "thing", "nothing", "something", "everything" };
+    // 동사 직후에 오는 관사/소사(첫 단어 동사 판정 보조 · "of" 제외 — "lots of light").
+    private static readonly string[] Particles = { "a", "an", "the", "down", "up", "over", "into", "onto", "through", "across", "with", "at", "to", "his", "her", "their", "its", "both", "around", "off", "out", "back", "forward", "past", "along", "toward", "towards", "in", "on" };
+    // 복수 명사 뒤에도 흔한 전치사 — "-s + 이 단어" 는 동사로 보지 않음("flowers in a vase").
+    private static readonly string[] AmbiguousParticles = { "in", "on", "with", "at", "to", "along", "around" };
+    private static readonly string[] NounLeaders = {"a", "an", "the", "of", "in", "at", "on", "with", "for", "from", "by", "under", "during", "into", "her", "his", "their", "its" };
+
+    /// <summary>
+    /// 단일 프롬프트 → 2막 분할(결정적 · 순수 함수 · 도메인 무관). 절(문장 · then · 쉼표) 단위로 나눠 앞 절반은 1막, 뒤 절반은 2막 —
+    /// 전체 프롬프트를 두 번 반복하지 않는다. 앵커는 <paramref name="subjectAnchor"/> 우선, 없으면 첫 절의 첫 동작 동사 앞 명사구
+    /// (첫 절이 동작 없는 순수 묘사면 첫 절 전체).
+    /// </summary>
+    public static TwoActPlan SplitTwoActs(string? prompt, string? subjectAnchor = null)
+    {
+        var clauses = SplitClauses((prompt ?? "").Trim(), true, out _, alwaysComma: true);
+        var shared = new List<string>(clauses.Count + 1);
+        var actions = new List<string>(clauses.Count);
+        if (!string.IsNullOrWhiteSpace(subjectAnchor)) shared.Add(subjectAnchor.Trim().TrimEnd(',', '.', ' '));
+        for (var i = 0; i < clauses.Count; i++)
+        {
+            var c = clauses[i];
+            if (!IsActionClause(c)) { shared.Add(c); continue; }   // 묘사·스타일·조명·카메라 = 양 막 공통 연속성 앵커
+            if (i == 0 && shared.Count == 0)
+            {
+                var cut = SubjectPrefixLength(c);                                                    // "girl in red uniform | dribbles …"
+                if (cut > 0) { shared.Add(c[..cut].TrimEnd(',', ' ')); c = c[cut..].Trim(); }
+            }
+            actions.Add(c);
+        }
+        var anchor = Join(shared, 0, shared.Count);
+        if (actions.Count == 0) return new TwoActPlan(anchor, "", "");
+        if (actions.Count == 1) return new TwoActPlan(anchor, "", actions[0]);   // 동작 1개 = 1막은 준비 동작(지시), 2막이 그 동작을 완수
+        var half = (actions.Count + 1) / 2;
+        return new TwoActPlan(anchor, Join(actions, 0, half), Join(actions, half, actions.Count));
+    }
+
+    /// <summary>세그먼트 i(길이 <paramref name="segSeconds"/>) → 막 인덱스(0/1) — 세그먼트 중앙이 15초 이전이면 1막.</summary>
+    public static int ActOf(int index, int segSeconds) => index * segSeconds * 2 + segSeconds < ActBoundarySeconds * 2 ? 0 : 1;
+
+    /// <summary>30초 자동 세그먼트 프롬프트 — 앵커 + 해당 막 동작 + 막 지시 + 막 내 서브 비트 + 일관성 힌트.</summary>
+    public static string ActSegmentPrompt(TwoActPlan acts, int index, int count, int segSeconds)
+    {
+        var act = ActOf(index, segSeconds);
+        var inAct = 0;
+        var first = -1;
+        for (var k = 0; k < count; k++)
+            if (ActOf(k, segSeconds) == act) { if (first < 0) first = k; inAct++; }
+        var local = first < 0 ? 0 : index - first;
+        var table = act == 0 ? Act1SubBeats : Act2SubBeats;
+        var sub = inAct >= 1 && inAct <= table.Length && (uint)local < (uint)inAct ? table[inAct - 1][local] : "";
+        var sb = new StringBuilder(384);
+        AddPart(sb, acts.Anchor);
+        AddPart(sb, act == 0 ? acts.Act1 : acts.Act2);
+        AddPart(sb, act == 0 ? Act1Directive : Act2Directive);
+        AddPart(sb, sub);
+        return WithContinuityHint(sb.ToString());
+    }
+
+    private static void AddPart(StringBuilder b, string? part)
+    {
+        var p = (part ?? "").Trim().TrimEnd(',', '.', ' ');
+        if (p.Length == 0) return;
+        if (b.Length > 0) b.Append(", ");
+        b.Append(p);
+    }
+
+    /// <summary>절 분할 — 문장 종결 · then 계열 · (문장이 1개면) 쉼표. 빈 절 · 중복 절(대소문자 무시) 제거.</summary>
+    public static List<string> SplitClauses(string? text) => SplitClauses(text, true, out _);
+
+    /// <summary>절 분할 — <paramref name="bySentence"/>=true 면 문장/then 단위로 2개 이상 나뉨(쉼표 분할 미사용).</summary>
+    public static List<string> SplitClauses(string? text, bool dedupe, out bool bySentence, bool alwaysComma = false)
+    {
+        var list = new List<string>();
+        bySentence = false;
+        if (string.IsNullOrWhiteSpace(text)) return list;
+        var work = text.Replace("\r", "", StringComparison.Ordinal);
+        foreach (var sep in ClauseSeparators) work = work.Replace(sep, "\u0001", StringComparison.OrdinalIgnoreCase);
+        var pieces = new List<string>();
+        foreach (var s in work.Split('\u0001'))
+        {
+            var t = s.Trim().TrimEnd('.', '!', '?', ',', ' ');
+            if (t.Length > 0) pieces.Add(t);
+        }
+        bySentence = pieces.Count > 1;
+        if (alwaysComma || pieces.Count == 1)
+        {
+            var sentences = pieces.ToArray();
+            pieces.Clear();
+            foreach (var sentence in sentences)
+                foreach (var c in sentence.Split(','))
+                {
+                    var t = c.Trim();
+                    if (t.Length > 0) pieces.Add(t);
+                }
+        }
+        foreach (var p in pieces)
+        {
+            var dup = false;
+            if (dedupe) foreach (var q in list) if (string.Equals(q, p, StringComparison.OrdinalIgnoreCase)) { dup = true; break; }
+            if (!dup) list.Add(p);
+        }
+        return list;
+    }
+
+    /// <summary>절에 동작 동사(목록 · 동사형 -ing · 한국어 동작 어미)가 있는지 — 스타일/묘사 절과 동작 비트 구분.</summary>
+    public static bool IsActionClause(string? clause)
+    {
+        if (string.IsNullOrWhiteSpace(clause)) return false;
+        var pos = 0;
+        var prev = "";
+        var index = 0;
+        string? first = null;
+        while (pos < clause.Length)
+        {
+            while (pos < clause.Length && clause[pos] == ' ') pos++;
+            var start = pos;
+            while (pos < clause.Length && clause[pos] != ' ') pos++;
+            if (pos == start) break;
+            var w = clause[start..pos].Trim(',', '.').ToLowerInvariant();
+            if (w != "is" && w != "are" && Array.IndexOf(ActionVerbs, w) >= 0) return true;
+            if (index == 1 && first is not null && Array.IndexOf(Particles, w) >= 0)
+            {
+                // 주어 생략 동작 절 — "grinds a rail" · "kickflips down stairs" · "walking along the shore"
+                if (first.Length > 3 && first.EndsWith('s') && !first.EndsWith("ss", StringComparison.Ordinal) && Array.IndexOf(AmbiguousParticles, w) < 0) return true;
+                if (first.Length > 4 && first.EndsWith("ing", StringComparison.Ordinal) && Array.IndexOf(IngNouns, first) < 0) return true;
+            }
+            if (index == 0) first = w;
+            if (index > 0 && w.Length > 4 && w.EndsWith("ing", StringComparison.Ordinal) && Array.IndexOf(IngNouns, w) < 0 && Array.IndexOf(NounLeaders, prev) < 0) return true;
+            index++;
+            if (w.EndsWith("하고", StringComparison.Ordinal) || w.EndsWith("한다", StringComparison.Ordinal) || w.EndsWith("하며", StringComparison.Ordinal)
+                || w.EndsWith("는다", StringComparison.Ordinal)) return true;
+            prev = w;
+        }
+        return false;
+    }
+
+    /// <summary>첫 동작 동사(목록 또는 동사형 -ing · 첫 단어 제외) 직전까지의 문자 길이. 동작 없음 = 0.</summary>
+    private static int SubjectPrefixLength(string clause)
+    {
+        var pos = 0;
+        var wordIndex = 0;
+        var prev = "";
+        while (pos < clause.Length)
+        {
+            while (pos < clause.Length && clause[pos] == ' ') pos++;
+            var start = pos;
+            while (pos < clause.Length && clause[pos] != ' ') pos++;
+            if (pos == start) break;
+            var w = clause[start..pos].Trim(',', '.').ToLowerInvariant();
+            if (wordIndex > 0)
+            {
+                if (Array.IndexOf(ActionVerbs, w) >= 0) return start;
+                if (w.Length > 4 && w.EndsWith("ing", StringComparison.Ordinal) && Array.IndexOf(IngNouns, w) < 0 && Array.IndexOf(NounLeaders, prev) < 0) return start;
+            }
+            prev = w;
+            wordIndex++;
+        }
+        return 0;
+    }
+
+    private static string Join(List<string> parts, int from, int to)
+    {
+        var sb = new StringBuilder(128);
+        for (var i = from; i < to; i++) { if (sb.Length > 0) sb.Append(", "); sb.Append(parts[i]); }
+        return sb.ToString();
+    }
+
     /// <summary>메타의 네이티브 길이(부재/불량 = 5).</summary>
     public static int NativeSecondsOf(BatchRenderJob job)
         => int.TryParse(MetaOf(job, MetaNativeSeconds), System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var s) && s > 0 ? s : (int)ShotSeconds;
@@ -246,7 +472,8 @@ public static class MultiDurationPlanner
 
     /// <summary>
     /// 단일 프롬프트 장편(15초 원테이크 · 30초 자동) 전개 — 메타 <see cref="MetaNativeSeconds"/> 기준 <see cref="SegmentPlan"/>.
-    /// 1세그먼트면 템플릿 1건(DurationSec=15 · 네이티브 원테이크), 다중이면 독립 컷 그룹(서사 비트 + 일관성 힌트 · 1번만 참조 이미지 · 디졸브 합본).
+    /// 1세그먼트면 템플릿 1건(DurationSec=15 · 네이티브 원테이크), 다중이면 독립 컷 그룹(일관성 힌트 · 1번만 참조 이미지 · 기본 하드 컷 합본).
+    /// 30초 자동은 <see cref="SplitTwoActs"/> 2막 분할(1막 셋업 0~15s · 2막 클라이맥스 15~30s), 15초 원테이크 폴백은 서사 비트.
     /// </summary>
     public static BatchRenderJob[] ExpandSinglePrompt(BatchRenderJob template, string? projectName)
     {
@@ -276,15 +503,19 @@ public static class MultiDurationPlanner
 
         var group = string.IsNullOrWhiteSpace(template.StitchGroupId) ? FFmpegVideoStitchService.NewGroupId() : template.StitchGroupId;
         var shots = n.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        // 단일 프롬프트 장편은 항상 독립 생성 — 기본 하드 컷, 사용자가 명시한 경우만 0.25초 디졸브.
+        var transition = TransitionOf(template) == CutTransitionMode.IndependentCrossfade ? CutTransitionMode.IndependentCrossfade : CutTransitionMode.IndependentHardCut;
+        var thirty = mode == VideoDurationMode.Sec30_Auto;
+        var acts = thirty ? SplitTwoActs(template.Prompt, template.SubjectAnchor) : default;
         var jobs = new BatchRenderJob[n];
         for (var i = 0; i < n; i++)
         {
             var meta = WithMeta(FFmpegVideoStitchService.WithGroup(template.Metadata, group), MetaMode, mode.ToString(), MetaProject, project);
             meta[MetaShots] = shots;
-            meta[MetaTransition] = nameof(CutTransitionMode.IndependentCrossfade);
+            meta[MetaTransition] = transition.ToString();
             jobs[i] = new BatchRenderJob
             {
-                Prompt = SegmentPrompt(template.Prompt, i, n),
+                Prompt = thirty ? ActSegmentPrompt(acts, i, n, sec) : SegmentPrompt(template.Prompt, i, n),
                 Seed = template.Seed,
                 Resolution = template.Resolution,
                 DurationSec = sec,

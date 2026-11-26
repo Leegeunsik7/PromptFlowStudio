@@ -269,7 +269,17 @@ public sealed class FFmpegVideoStitchService
     }
 
     /// <summary>
-    /// 독립 시네마틱 컷 합본 — <see cref="BuildCrossfadeArgs"/> 디졸브(기본 0.25초). 컷 1개·ffmpeg 부재·xfade 실패는
+    /// 전환 방식별 그룹 합본 — <see cref="CutTransitionMode.IndependentCrossfade"/> 만 0.25초 xfade 디졸브,
+    /// 기본 <see cref="CutTransitionMode.IndependentHardCut"/> · <see cref="CutTransitionMode.LastFrameChain"/> 는 0.0초 하드 컷 concat
+    /// (다른 카메라 앵글 사이 반투명 고스트 잔상 없음 · 무손실 <c>-c copy</c> 우선).
+    /// </summary>
+    public Task<VideoStitchResult> StitchByTransitionAsync(IReadOnlyList<StitchCut> cuts, string outputPath, CutTransitionMode mode, CancellationToken ct = default)
+        => mode == CutTransitionMode.IndependentCrossfade
+            ? StitchCrossfadeAsync(cuts, outputPath, MultiDurationPlanner.TransitionSeconds(mode), ct)
+            : StitchCutsAsync(cuts, outputPath, null, null, ct);
+
+    /// <summary>
+    /// 독립 컷 디졸브 합본 — <see cref="BuildCrossfadeArgs"/> 디졸브(0.25초 · 명시 선택 시). 컷 1개·ffmpeg 부재·xfade 실패는
     /// <see cref="StitchAsync"/>(하드 컷 concat / 가상 매니페스트)로 폴백 — 합본 자체는 잃지 않는다.
     /// </summary>
     public async Task<VideoStitchResult> StitchCrossfadeAsync(IReadOnlyList<StitchCut> cuts, string outputPath, double crossfadeSec, CancellationToken ct = default)

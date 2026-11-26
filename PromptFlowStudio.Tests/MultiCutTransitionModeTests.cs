@@ -22,9 +22,10 @@ public class MultiCutTransitionModeTests : IDisposable
     [Fact]
     public void Transition_DefaultsToIndependent_AndMetaRoundTrips()
     {
-        Assert.Equal(CutTransitionMode.IndependentCrossfade, MultiDurationPlanner.DefaultTransition);
+        Assert.Equal(CutTransitionMode.IndependentHardCut, MultiDurationPlanner.DefaultTransition);
         var plain = new BatchRenderJob { Prompt = "p", DurationMode = VideoDurationMode.Sec10_Dual };
-        Assert.Equal(CutTransitionMode.IndependentCrossfade, MultiDurationPlanner.TransitionOf(plain));
+        Assert.Equal(CutTransitionMode.IndependentHardCut, MultiDurationPlanner.TransitionOf(plain));
+        Assert.Contains("Hard Cut", MultiDurationPlanner.TransitionLabel(CutTransitionMode.IndependentHardCut));
         Assert.False(MultiDurationPlanner.ShouldChainLastFrame(plain));
 
         var chained = new BatchRenderJob { Prompt = "p", DurationMode = VideoDurationMode.Sec15_Triple, Metadata = MultiDurationPlanner.WithTransition(null, CutTransitionMode.LastFrameChain) };
@@ -62,7 +63,8 @@ public class MultiCutTransitionModeTests : IDisposable
         using var q = new RenderQueueService(TimeSpan.Zero, autoStart: false, engine) { Stitcher = stitcher };
         var cut1 = Path.Combine(_dir, "cut1.png");
         File.WriteAllText(cut1, "png");
-        var jobs = q.EnqueueJob(new BatchRenderJob { Prompt = "hoop", DurationMode = VideoDurationMode.Sec15_Triple, ReferenceImagePath = cut1, OutputPath = Path.Combine(_dir, "ind.mp4") },
+        var jobs = q.EnqueueJob(new BatchRenderJob { Prompt = "hoop", DurationMode = VideoDurationMode.Sec15_Triple, ReferenceImagePath = cut1, OutputPath = Path.Combine(_dir, "ind.mp4"),
+                Metadata = MultiDurationPlanner.WithTransition(null, CutTransitionMode.IndependentCrossfade) },   // 0.25s 디졸브 = 명시 선택
             new string?[] { "wide dribble", "medium jump shot", "hoop swish close-up" }, "ind");
         await q.ProcessQueueAsync(CancellationToken.None);
 

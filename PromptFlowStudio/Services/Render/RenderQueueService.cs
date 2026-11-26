@@ -345,9 +345,8 @@ public sealed partial class RenderQueueService : IRenderQueueService
             lock (_gate) { if (!_stitchedGroups.Add(group)) return; }
             var dir = Path.GetDirectoryName(cuts[0].VideoPath) ?? Path.GetTempPath();
             var target = MultiDurationPlanner.BuildOutputPath(dir, MultiDurationPlanner.MetaOf(job, MultiDurationPlanner.MetaProject), job.DurationMode);
-            var r = MultiDurationPlanner.TransitionOf(job) == CutTransitionMode.LastFrameChain
-                ? await stitcher.StitchCutsAsync(cuts, target, null, null, ct).ConfigureAwait(false)
-                : await stitcher.StitchCrossfadeAsync(cuts, target, MultiDurationPlanner.CrossfadeSeconds, ct).ConfigureAwait(false);   // 독립 컷 0.25s 디졸브(실패 → 하드 컷)
+            // 기본 하드 컷 concat(고스트 잔상 없음) · 0.25s 디졸브는 명시 선택 시에만(실패 → 하드 컷)
+            var r = await stitcher.StitchByTransitionAsync(cuts, target, MultiDurationPlanner.TransitionOf(job), ct).ConfigureAwait(false);
             if (r.Ok && r.OutputPath is not null)
                 lock (_gate) job.Metadata = MultiDurationPlanner.WithMeta(job.Metadata, r.IsVirtual ? MultiDurationPlanner.MetaStitchedVirtual : MultiDurationPlanner.MetaStitched, r.OutputPath);
             else

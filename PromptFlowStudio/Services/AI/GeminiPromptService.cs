@@ -231,6 +231,30 @@ public sealed class GeminiPromptService : PromptFlowStudio.Services.Pluto.IPluto
     public Task<GeminiEnhanceOutcome> EnhancePromptAsync(string? basePrompt, string? durationMode, CancellationToken ct = default)
         => EnhancePromptAsync(basePrompt, ParseDuration(durationMode), null, null, ct);
 
+    /// <summary>
+    /// 🛡️ 도메인 무관 범용 프리플라이트 프롬프트 디렉터 — 동작-길이 보정 · 피사체/의상/카메라 앵커 · 인과/물리 연속성 · 안티 아티팩트 네거티브 병합.
+    /// 키 있음 → Gemini JSON(<c>prompt · negative · summary_ko</c>) 스키마 검증, 키 없음/오프라인/실패/스키마 불일치 → 결정적 로컬 규칙
+    /// (<see cref="PromptPreflightDirector.RefineLocal"/>). 절대 throw 하지 않음(취소 포함 → 로컬).
+    /// </summary>
+    public async Task<PromptPreflightResult> AnalyzeAndRefinePromptAsync(string rawPrompt, int targetDurationSeconds, string aspectRatio, bool isAmbientLoop,
+        string? existingNegative = null, CancellationToken ct = default)
+    {
+        var raw = rawPrompt ?? "";
+        if (string.IsNullOrWhiteSpace(raw) || !HasKey())
+            return PromptPreflightDirector.RefineLocal(raw, targetDurationSeconds, aspectRatio, isAmbientLoop, existingNegative);
+        string? text;
+        try
+        {
+            var user = "Prompt: " + raw.Trim() + (string.IsNullOrWhiteSpace(existingNegative) ? "" : "\nExisting negative: " + existingNegative.Trim());
+            text = await CallAsync(PromptPreflightDirector.BuildInstruction(targetDurationSeconds, aspectRatio, isAmbientLoop), user, null, true, 0.3, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException) { Program.Log("GeminiPromptService.Preflight", ex); text = null; }
+        if (PromptPreflightDirector.ParseAiResponse(text) is { } ai)
+            return PromptPreflightDirector.FromAi(raw, ai.Prompt, ai.Negative, ai.SummaryKo, existingNegative);
+        var local = PromptPreflightDirector.RefineLocal(raw, targetDurationSeconds, aspectRatio, isAmbientLoop, existingNegative);
+        return local with { SummaryKo = local.SummaryKo + " (" + PromptPreflightDirector.LocalNotice + ")" };
+    }
+
     /// <summary>참조 이미지 → Wan 2.1 I2V 프롬프트 역생성(Vision). 실패 시 힌트 기반 로컬 폴백.</summary>
     public async Task<GeminiEnhanceOutcome> AnalyzeReferenceImageAsync(string imagePath, string? userHint,
         VideoDurationMode mode = VideoDurationMode.Sec5_Single, CancellationToken ct = default)

@@ -735,16 +735,20 @@
                     }
                     <div class="ws-dur ws-cut-trans" role="radiogroup" aria-label="컷 전환 방식" data-cut-transition="@(_cutTransition)">
                         <span class="ws-dur-hint">🎬 컷 전환 방식</span>
-                        <button class="ws-dur-chip @(_cutTransition == PromptFlowStudio.Services.Render.CutTransitionMode.IndependentCrossfade ? "on" : null)" role="radio"
-                                aria-checked="@(_cutTransition == PromptFlowStudio.Services.Render.CutTransitionMode.IndependentCrossfade ? "true" : "false")" disabled="@State.IsBusy"
-                                @onclick="() => _cutTransition = PromptFlowStudio.Services.Render.CutTransitionMode.IndependentCrossfade">@PromptFlowStudio.Services.Render.MultiDurationPlanner.TransitionLabel(PromptFlowStudio.Services.Render.CutTransitionMode.IndependentCrossfade)</button>
-                        <button class="ws-dur-chip @(_cutTransition == PromptFlowStudio.Services.Render.CutTransitionMode.LastFrameChain ? "on" : null)" role="radio"
-                                aria-checked="@(_cutTransition == PromptFlowStudio.Services.Render.CutTransitionMode.LastFrameChain ? "true" : "false")" disabled="@State.IsBusy"
-                                @onclick="() => _cutTransition = PromptFlowStudio.Services.Render.CutTransitionMode.LastFrameChain">@PromptFlowStudio.Services.Render.MultiDurationPlanner.TransitionLabel(PromptFlowStudio.Services.Render.CutTransitionMode.LastFrameChain)</button>
+                        @foreach (var tm in CutTransitionChoices)
+                        {
+                            var t = tm;
+                            <button class="ws-dur-chip @(_cutTransition == t ? "on" : null)" role="radio" @key="t"
+                                    aria-checked="@(_cutTransition == t ? "true" : "false")" disabled="@State.IsBusy"
+                                    @onclick="() => _cutTransition = t">@PromptFlowStudio.Services.Render.MultiDurationPlanner.TransitionLabel(t)</button>
+                        }
                     </div>
-                    <div class="ws-dur-hint">@(_cutTransition == PromptFlowStudio.Services.Render.CutTransitionMode.LastFrameChain
-                        ? "비운 파트는 메인 프롬프트 + 카메라 모션 차등 상속 · 이전 컷 마지막 프레임이 다음 컷 I2V 앵커로 주입됩니다(피사체가 화면 밖으로 나가면 왜곡될 수 있음)."
-                        : "각 컷을 자기 프롬프트로 독립 생성 → 0.25초 디졸브 합본 · 피사체/유니폼 일관성 힌트 자동 부착 · 메인이 비면 파트 1 이 주 프롬프트로 쓰입니다.")</div>
+                    <div class="ws-dur-hint">@(_cutTransition switch
+                    {
+                        PromptFlowStudio.Services.Render.CutTransitionMode.LastFrameChain => "비운 파트는 메인 프롬프트 + 카메라 모션 차등 상속 · 이전 컷 마지막 프레임이 다음 컷 I2V 앵커로 주입됩니다(피사체가 화면 밖으로 나가면 왜곡될 수 있음).",
+                        PromptFlowStudio.Services.Render.CutTransitionMode.IndependentCrossfade => "각 컷을 자기 프롬프트로 독립 생성 → 0.25초 디졸브 합본(앵글이 다르면 반투명 잔상이 보일 수 있음) · 피사체/유니폼 일관성 힌트 자동 부착.",
+                        _ => "각 컷을 자기 프롬프트로 독립 생성 → 하드 컷(0.0초 직접 연결) 합본 · 디졸브 고스트 잔상 없음 · 피사체/유니폼 일관성 힌트 자동 부착 · 메인이 비면 파트 1 이 주 프롬프트로 쓰입니다.",
+                    })</div>
                 </div>
             }
             else if (PromptFlowStudio.Services.Render.MultiDurationPlanner.IsSinglePromptLong(_durationMode))
@@ -757,6 +761,19 @@
                                 disabled="@State.IsBusy" @onclick="() => PickWanFamily(f)" @key="f">@PromptFlowStudio.Services.Wan.WanModelCatalog.Label(f)</button>
                     }
                 </div>
+                @if (PromptFlowStudio.Services.Render.MultiDurationPlanner.SegmentPlan(_durationMode, NativeClipSeconds).Count > 1)
+                {
+                    <div class="ws-dur ws-cut-trans" role="radiogroup" aria-label="세그먼트 전환 방식" data-long-transition="@(_longTransition)">
+                        <span class="ws-dur-hint">🎬 세그먼트 전환</span>
+                        @foreach (var lm in LongTransitionChoices)
+                        {
+                            var l = lm;
+                            <button class="ws-dur-chip @(_longTransition == l ? "on" : null)" role="radio" @key="l"
+                                    aria-checked="@(_longTransition == l ? "true" : "false")" disabled="@State.IsBusy"
+                                    @onclick="() => _longTransition = l">@(l == PromptFlowStudio.Services.Render.CutTransitionMode.IndependentCrossfade ? "0.25초 디졸브" : "하드 컷 (기본)")</button>
+                        }
+                    </div>
+                }
                 <div class="ws-dur-hint" data-single-prompt-plan="1">@SegmentPlanLabel() — 파트 입력 없이 메인 프롬프트만 사용합니다@(NativeClipSeconds < 15 && Cfg.ModelFamily == PromptFlowStudio.Services.Wan.WanModelFamily.Wan26 ? " (Cloud 렌더 모드에서만 15초 네이티브)" : "").</div>
             }
             else if (_durationMode == PromptFlowStudio.Services.Render.VideoDurationMode.Sec15_AmbientSlow)
@@ -876,10 +893,29 @@
                 }
                 else
                 {
-                    <button class="ws-btn" disabled="@(!CanStart)" @onclick="Start">✨ 생성 시작</button>
+                    <button class="ws-btn" disabled="@(!CanStart || _preflightBusy)" @onclick="Start">@(_preflightBusy ? "🛡️ 프롬프트 보정 중…" : "✨ 생성 시작")</button>
                 }
+                <label class="ws-pf-tog" title="생성 직전 프롬프트를 분석해 클립 길이에 맞게 동작을 압축하고 카메라·피사체·조명·물리 연속성 앵커와 안티 아티팩트 네거티브를 자동 보정합니다(모든 장르 공통 · Gemini 키 없으면 로컬 규칙)." data-preflight-toggle="@(_preflightOn ? "on" : "off")">
+                    <input type="checkbox" @bind="_preflightOn" disabled="@(State.IsBusy || _preflightBusy)" /> 🛡️ AI 프롬프트 자동 보정
+                </label>
                 <span class="ws-eng ws-eng-@(_renderMode.ToLowerInvariant())" title="[환경설정] 기본 렌더 모드 — 변경 즉시 반영">● 렌더 엔진: @(_renderMode)</span>
             </div>
+            @if (_preflight is { } pf)
+            {
+                <div class="ws-pf-badge" role="status" data-preflight-badge="@(pf.UsedFallback ? "local" : "ai")">
+                    <span class="ws-pf-sum">@(_preflightReverted ? "↩ 원문으로 되돌림 — 다음 생성부터 원문 그대로 전송" : pf.SummaryKo)</span>
+                    <button class="ws-pf-btn" @onclick="() => _preflightInspect = !_preflightInspect" aria-pressed="@(_preflightInspect ? "true" : "false")" data-preflight-inspect="1">@(_preflightInspect ? "접기" : "🔍 비교")</button>
+                    <button class="ws-pf-btn" @onclick="TogglePreflightRevert" data-preflight-revert="1">@(_preflightReverted ? "🛡️ 보정 다시 사용" : "↩ 원문으로")</button>
+                    @if (_preflightInspect)
+                    {
+                        <div class="ws-pf-cmp">
+                            <div><b>원문</b> @pf.RawPrompt</div>
+                            <div><b>보정본</b> @pf.RefinedPrompt</div>
+                            <div><b>네거티브</b> @pf.MergedNegative</div>
+                        </div>
+                    }
+                </div>
+            }
         </div>
 
         @* ── ② 진행 / 결과 ── *@
@@ -1741,6 +1777,11 @@
     .ws-dur-part { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--text-secondary); }
     .ws-ta-part { min-height: 52px; }
     .ws-dur-hint { font-size: 11px; color: var(--text-secondary); margin: 2px 0 4px; }
+    .ws-pf-tog { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-secondary); cursor: pointer; }
+    .ws-pf-badge { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 6px; font-size: 11px; color: var(--text-secondary); }
+    .ws-pf-sum { flex: 1 1 auto; min-width: 0; }
+    .ws-pf-btn { font-size: 11px; padding: 1px 8px; border-radius: 10px; border: 1px solid var(--border, #444); background: transparent; color: inherit; cursor: pointer; }
+    .ws-pf-cmp { flex-basis: 100%; display: grid; gap: 3px; padding: 6px 8px; border-radius: 6px; background: rgba(127,127,127,.08); word-break: break-word; }
     .ws-mini-q { margin: 4px 0 8px; padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--flow-cyan) 40%, transparent); border-radius: 8px; background: color-mix(in srgb, var(--flow-cyan) 6%, transparent); }
     .ws-mini-q.bad { border-color: #e5484d; background: color-mix(in srgb, #e5484d 8%, transparent); }
     .ws-mini-q-l { font-size: 12px; color: var(--text-primary); margin-bottom: 6px; }
@@ -4737,6 +4778,19 @@
     /// <summary>주 프롬프트 — 메인이 비고 멀티 컷 파트 1 이 채워져 있으면 파트 1 폴백.</summary>
     private string EffectivePrompt => PromptFlowStudio.Services.Render.MultiDurationPlanner.ResolvePrimaryPrompt(_prompt, _subPrompts, _durationMode);
     private PromptFlowStudio.Services.Render.CutTransitionMode _cutTransition = PromptFlowStudio.Services.Render.MultiDurationPlanner.DefaultTransition;
+    /// <summary>단일 프롬프트 장편(30초 자동 · 15초 원테이크 5초 백엔드) 세그먼트 전환 — 기본 하드 컷, 0.25초 디졸브는 명시 선택.</summary>
+    private PromptFlowStudio.Services.Render.CutTransitionMode _longTransition = PromptFlowStudio.Services.Render.MultiDurationPlanner.DefaultTransition;
+    private static readonly PromptFlowStudio.Services.Render.CutTransitionMode[] CutTransitionChoices =
+    {
+        PromptFlowStudio.Services.Render.CutTransitionMode.IndependentHardCut,
+        PromptFlowStudio.Services.Render.CutTransitionMode.IndependentCrossfade,
+        PromptFlowStudio.Services.Render.CutTransitionMode.LastFrameChain,
+    };
+    private static readonly PromptFlowStudio.Services.Render.CutTransitionMode[] LongTransitionChoices =
+    {
+        PromptFlowStudio.Services.Render.CutTransitionMode.IndependentHardCut,
+        PromptFlowStudio.Services.Render.CutTransitionMode.IndependentCrossfade,
+    };
     private bool _ffpBindCut1 = true;   // 검증된(원격) 첫 화면 미리보기 → 컷 1 시작 프레임 자동 바인딩
 
     private static readonly PromptFlowStudio.Services.Render.VideoDurationMode[] DurationModes =
@@ -6375,7 +6429,7 @@
     }
 
     /// <summary>10s/15s/Ambient — 렌더 큐 적재(멀티 샷 체이닝·합본 / 앰비언트 루프 후처리는 큐 워커·엔진이 수행).</summary>
-    private void EnqueueDuration(string prompt, string? cut1Ref)
+    private void EnqueueDuration(string prompt, string? cut1Ref, bool antiArtifact = false)
     {
         RefreshRenderMode();   // 렌더 시작 직전 최신 [환경설정] 모드 재조회
         var project = "ws_" + DateTime.Now.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture);
@@ -6390,12 +6444,13 @@
             meta = PromptFlowStudio.Services.Render.MultiDurationPlanner.WithMeta(meta, PromptFlowStudio.Services.Render.MultiDurationPlanner.MetaNativeSeconds, native.ToString(CultureInfo.InvariantCulture));
             if (native >= PromptFlowStudio.Services.Wan.WanModelCatalog.Wan26MaxSeconds)
                 meta = PromptFlowStudio.Services.Render.MultiDurationPlanner.WithMeta(meta, PromptFlowStudio.Services.Render.MultiDurationPlanner.MetaWanFamily, nameof(PromptFlowStudio.Services.Wan.WanModelFamily.Wan26));
+            meta = PromptFlowStudio.Services.Render.MultiDurationPlanner.WithTransition(meta, _longTransition);   // 🎬 기본 하드 컷 · 0.25초 디졸브는 명시 선택
             subs = Array.Empty<string?>();
         }
         else if (PromptFlowStudio.Services.Render.MultiDurationPlanner.IsMultiShot(_durationMode))
         {
-            meta = PromptFlowStudio.Services.Render.MultiDurationPlanner.WithTransition(meta, _cutTransition);   // 🎬 컷 전환 방식(독립 디졸브 / 프레임 체인)
-            if (_cutTransition == PromptFlowStudio.Services.Render.CutTransitionMode.IndependentCrossfade)
+            meta = PromptFlowStudio.Services.Render.MultiDurationPlanner.WithTransition(meta, _cutTransition);   // 🎬 컷 전환 방식(독립 하드 컷 / 독립 디졸브 / 프레임 체인)
+            if (PromptFlowStudio.Services.Render.MultiDurationPlanner.IsIndependent(_cutTransition))
             {
                 prompt = PromptFlowStudio.Services.Render.MultiDurationPlanner.WithContinuityHint(prompt);   // 독립 컷 피사체·유니폼 일관성
                 var hinted = new string?[_subPrompts.Length];
@@ -6406,6 +6461,7 @@
         }
         var negative = EffectiveNegative(prompt);   // 🧭 도메인 격리 네거티브
         if (RunCoherenceGate(prompt, negative, null, null, null, _size) is { WasAutoSanitized: true } gate) negative = gate.SanitizedNegativePrompt;   // 🧩 누출 토큰·중복 구문 보정본 전송
+        if (antiArtifact) negative = PromptFlowStudio.Services.AI.PromptPreflightDirector.MergeNegative(negative, out _);   // 🛡️ 안티 아티팩트 네거티브(중복 없이)
         if (!string.IsNullOrWhiteSpace(negative))   // ☁️ Cloud 요청에 네거티브 프롬프트 전달
             meta = PromptFlowStudio.Services.Render.MultiDurationPlanner.WithMeta(meta, PromptFlowStudio.Services.Render.VideoEngineRenderExecutionEngine.MetaNegativePrompt, negative);
         var template = new PromptFlowStudio.Services.Batch.BatchRenderJob
@@ -6426,8 +6482,40 @@
             : "📥 렌더 큐 적재 " + jobs.Count.ToString(CultureInfo.InvariantCulture) + "컷 · " + PromptFlowStudio.Services.Render.MultiDurationPlanner.Label(_durationMode) + " → " + project;
     }
 
-    private void Start()
+    // ── 🛡️ AI 프롬프트 자동 보정(프리플라이트 디렉터 · 기본 ON · 비영속) ──
+    private bool _preflightOn = true, _preflightBusy, _preflightInspect, _preflightReverted;
+    private PromptFlowStudio.Services.AI.PromptPreflightResult? _preflight;
+    /// <summary>프리플라이트 AI 호출 상한 — 초과 시 결정적 로컬 규칙으로 즉시 폴백.</summary>
+    private static readonly TimeSpan PreflightTimeout = TimeSpan.FromSeconds(8);
+
+    /// <summary>↩ 원문으로 / 🛡️ 보정 다시 사용 — 1클릭 토글(다음 생성부터 적용).</summary>
+    private void TogglePreflightRevert()
     {
+        _preflightReverted = !_preflightReverted;
+        _preflightOn = !_preflightReverted;
+    }
+
+    /// <summary>생성 직전 프리플라이트 — 클립 길이 · 화면비 · 앰비언트 여부 기준 보정(실패/타임아웃은 로컬 규칙 · 절대 throw 없음).</summary>
+    private async Task<PromptFlowStudio.Services.AI.PromptPreflightResult> RunPreflightAsync(string prompt)
+    {
+        var ambient = _durationMode == PromptFlowStudio.Services.Render.VideoDurationMode.Sec15_AmbientSlow;
+        var seconds = ambient ? (int)PromptFlowStudio.Services.Render.MultiDurationPlanner.ShotSeconds : PromptFlowStudio.Services.Render.MultiDurationPlanner.TargetSeconds(_durationMode);
+        var aspect = GeminiPromptService.AspectRatioOf(_size);
+        try
+        {
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(_mediaCts.Token);
+            cts.CancelAfter(PreflightTimeout);
+            return await GeminiSvc.AnalyzeAndRefinePromptAsync(prompt, seconds, aspect, ambient, null, cts.Token);
+        }
+        catch (Exception ex) when (ex is ObjectDisposedException or OperationCanceledException)
+        {
+            return PromptFlowStudio.Services.AI.PromptPreflightDirector.RefineLocal(prompt, seconds, aspect, ambient);
+        }
+    }
+
+    private async Task Start()
+    {
+        if (_preflightBusy) return;
         var block = PromptFlowStudio.Services.Render.WorkspaceGenerationReadiness.Evaluate(State.IsBusy, _prompt, _imagePath, _durationMode, State.Enabled, _subPrompts);
         if (block != PromptFlowStudio.Services.Render.WorkspaceStartBlock.None)
         {
@@ -6435,16 +6523,33 @@
             return;
         }
         _durationMsg = null;
+        var primary = EffectivePrompt;
+        var antiArtifact = false;
+        if (_preflightOn && !string.IsNullOrWhiteSpace(primary))
+        {
+            _preflightBusy = true;
+            try
+            {
+                var result = await RunPreflightAsync(primary);
+                _preflight = result;
+                _preflightReverted = false;
+                primary = result.RefinedPrompt;   // 🛡️ 비영속 — 입력 박스 원문은 그대로(↩ 1클릭 복귀)
+                antiArtifact = true;
+            }
+            finally { _preflightBusy = false; }
+            if (State.IsBusy) return;   // 보정 대기 중 다른 경로로 생성이 시작됨
+        }
         RefreshRenderMode();
-        var anchored = WithIdentityAnchor(EffectivePrompt);   // 🍼 캐릭터 일관성 앵커(비영속 · 멱등) · 메인 비면 파트 1 폴백
+        var anchored = WithIdentityAnchor(primary);   // 🍼 캐릭터 일관성 앵커(비영속 · 멱등) · 메인 비면 파트 1 폴백
         var cut1Ref = StageCut1Reference();   // 사용자 참조 우선 → 검증된 첫 화면 미리보기(토글 ON)
-        if (_durationMode != PromptFlowStudio.Services.Render.VideoDurationMode.Sec5_Single) { EnqueueDuration(anchored, cut1Ref); return; }
+        if (_durationMode != PromptFlowStudio.Services.Render.VideoDurationMode.Sec5_Single) { EnqueueDuration(anchored, cut1Ref, antiArtifact); return; }
         _canvasQueueUrl = _canvasQueuePath = null;   // 단일 생성 — 캔버스를 라이브 진행 표시로 복귀
         // v16.20.0 미세 표정 퍼핏 — 표정 구문·정체성 유지·얼굴 보호 네거티브 비영속 주입(Neutral 은 원문 그대로).
         // v16.22.0 피사체 Identity 고정 — 프로필 정체성/의상/스타일 구문(비영속) · 얼굴 사진 I2V(사용자 이미지 우선) · 프로필 시드(핀 우선).
         var idLock = _idLockOn ? IdentityLockOf() : null;
         var domainNeg = EffectiveNegative(anchored);   // 🧭 GeneralCinematic → 아기 전용 네거티브 미주입
         if (RunCoherenceGate(anchored, domainNeg, null, null, null, _size) is { WasAutoSanitized: true } gate) domainNeg = gate.SanitizedNegativePrompt;   // 🧩 프리플라이트 보정본
+        if (antiArtifact) domainNeg = PromptFlowStudio.Services.AI.PromptPreflightDirector.MergeNegative(domainNeg, out _);   // 🛡️ 안티 아티팩트 네거티브(중복 없이)
         var (lockedPrompt, lockedNeg) = idLock is null ? (anchored, domainNeg) : EpisodicStorySeriesBuilder.ComposeScenePrompt(anchored, domainNeg, idLock);
         var emo = FacialEmotionPuppeteerEngine.Apply(lockedPrompt, lockedNeg, _emotion, _emotionIntensity);
         var faceRef = idLock?.FaceImagePath is { } fp && File.Exists(fp) ? fp : null;
@@ -6578,7 +6683,7 @@
         await BindStartFrameAsync(path, _mediaCts.Token);
         _ffpPath = null;   // 참조 이미지로 소유권 이전(ClearImage 가 정리)
         _ffpMsg = "🎬 첫 화면을 시작 프레임으로 지정했습니다.";
-        if (CanStart) Start();
+        if (CanStart) await Start();
     }
 
     /// <summary>
@@ -7034,7 +7139,7 @@
             && PromptFlowStudio.Services.Platform.ErrorDialogService.IsUploadOrNetworkFailure(err))
         {
             _alertedError = err;
-            Errors.Show(err, () => { State.Reset(); Start(); });
+            Errors.Show(err, () => { State.Reset(); _ = InvokeAsync(Start); });
         }
         // 단일 생성 산출물 사이드카(.meta.json) 1회 기록 — 최근 미디어 역복원용(기존 메타 보존 · 실패 격리).
         if (State.Phase == WanJobPhase.Completed && State.IsLocal && State.LocalPath is { } mp && !string.Equals(_metaWrittenFor, mp, StringComparison.Ordinal))

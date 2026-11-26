@@ -91,9 +91,11 @@ public class SinglePromptLongVideoTests : IDisposable
             Assert.Equal(5f, jobs[i].DurationSec);
             Assert.Equal(i * 5f, jobs[i].StartSec);
             Assert.Equal(6, MultiDurationPlanner.ShotCountOf(jobs[i]));
-            Assert.StartsWith("girl in red uniform plays basketball, " + MultiDurationPlanner.BeatOf(i, 6), jobs[i].Prompt);
+            Assert.StartsWith("girl in red uniform, ", jobs[i].Prompt);   // 피사체 앵커는 양 막 공통
+            Assert.Contains(i < 3 ? MultiDurationPlanner.Act1Directive : MultiDurationPlanner.Act2Directive, jobs[i].Prompt);   // 0~15s 1막 · 15~30s 2막
+            Assert.Equal(i >= 3, jobs[i].Prompt.Contains("plays basketball", StringComparison.Ordinal));   // 단일 동작은 2막에서 완수
             Assert.EndsWith(MultiDurationPlanner.ContinuityHint, jobs[i].Prompt);
-            Assert.Equal(CutTransitionMode.IndependentCrossfade, MultiDurationPlanner.TransitionOf(jobs[i]));
+            Assert.Equal(CutTransitionMode.IndependentHardCut, MultiDurationPlanner.TransitionOf(jobs[i]));
             Assert.Equal(i == 0 ? @"C:\r.png" : null, jobs[i].ReferenceImagePath);
             Assert.Null(VideoEngineRenderExecutionEngine.BuildRequest(jobs[i]).Duration);   // 2.1/로컬 — duration 생략(5초)
         }
@@ -119,8 +121,8 @@ public class SinglePromptLongVideoTests : IDisposable
         Assert.All(jobs, j => Assert.Equal(BatchJobStatus.Completed, j.Status));
         Assert.Equal(new int?[] { 15, 15 }, engine.Durations);
         Assert.DoesNotContain(calls, a => a.Contains("-sseof"));   // 독립 세그먼트(앵커 체인 없음)
-        var graph = Assert.Single(calls, a => a.Contains("-filter_complex"));
-        Assert.Contains("xfade=transition=fade:duration=0.25:offset=14.75", graph[Array.IndexOf(graph.ToArray(), "-filter_complex") + 1]);
+        Assert.DoesNotContain(calls, a => a.Contains("-filter_complex"));   // 기본 하드 컷 — xfade 디졸브 없음(고스트 잔상 차단)
+        Assert.Contains(calls, a => a.Contains("concat"));
         Assert.Equal(Path.Combine(_dir, "sk_30s.mp4"), jobs[1].Metadata![MultiDurationPlanner.MetaStitched]);
     }
 
