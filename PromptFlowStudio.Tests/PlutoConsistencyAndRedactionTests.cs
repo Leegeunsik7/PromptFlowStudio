@@ -175,4 +175,27 @@ public class PlutoConsistencyAndRedactionTests
         Assert.Contains("DescribeWorkspaceMismatch(clip.VideoId, _renderedMasterVideoId, _renderedMasterFingerprint", ws, StringComparison.Ordinal);
         Assert.Contains("mismatch + \" · \" + result.SummaryKorean", ws, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void LocaleRenderBatch_Preconditions_SurfaceKoreanToastInsteadOfSilentReturn()
+    {
+        Assert.Null(PlutoMultiLocaleBatchRenderService.DescribeRenderBlocker(false, false, 2, true, true));
+        Assert.Contains("이미 진행 중", PlutoMultiLocaleBatchRenderService.DescribeRenderBlocker(true, false, 3, true, true), StringComparison.Ordinal);
+        Assert.Contains("다른 렌더/패키지", PlutoMultiLocaleBatchRenderService.DescribeRenderBlocker(false, true, 3, true, true), StringComparison.Ordinal);
+        var photos = PlutoMultiLocaleBatchRenderService.DescribeRenderBlocker(false, false, 1, true, true);
+        Assert.NotNull(photos);
+        Assert.Contains("2장 이상", photos, StringComparison.Ordinal);
+        Assert.Contains("현재 1장", photos, StringComparison.Ordinal);
+        Assert.Contains("다국어 채널", PlutoMultiLocaleBatchRenderService.DescribeRenderBlocker(false, false, 2, false, true), StringComparison.Ordinal);
+        Assert.Contains("서비스가 등록되지", PlutoMultiLocaleBatchRenderService.DescribeRenderBlocker(false, false, 2, true, false), StringComparison.Ordinal);
+
+        var ws = Src("Blazor", "Pages", "Workspace.razor");
+        var start = ws.IndexOf("private async Task RenderAllLocalesAsync()", StringComparison.Ordinal);
+        Assert.True(start >= 0);
+        var head = ws.Substring(start, ws.IndexOf("var mismatch =", start, StringComparison.Ordinal) - start);
+        Assert.Contains("DescribeRenderBlocker(", head, StringComparison.Ordinal);
+        Assert.DoesNotContain("renderSvc) return;", head, StringComparison.Ordinal);
+        Assert.Contains("전 언어 일괄 렌더가 취소되었습니다", ws, StringComparison.Ordinal);
+        Assert.DoesNotContain("_stockBusy || _montagePhotos.Count < 2 || (_catalogClips.Count == 0", ws, StringComparison.Ordinal);
+    }
 }

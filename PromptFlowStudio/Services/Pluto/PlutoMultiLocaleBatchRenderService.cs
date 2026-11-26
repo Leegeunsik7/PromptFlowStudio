@@ -210,6 +210,19 @@ public sealed class PlutoMultiLocaleBatchRenderService : IPlutoMultiLocaleBatchR
         return null;
     }
 
+    /// <summary>
+    /// 🚦 [전 언어 일괄 렌더] 시작 전 사전 조건 점검 — 막히면 사용자에게 보일 한국어 안내 1줄, 통과 → null(무응답 조기 종료 방지).
+    /// </summary>
+    public static string? DescribeRenderBlocker(bool batchBusy, bool otherJobBusy, int photoCount, bool channelsReady, bool servicesReady)
+    {
+        if (batchBusy) return "⏳ 전 언어 일괄 작업이 이미 진행 중입니다 · 끝난 뒤 다시 시도하세요";
+        if (otherJobBusy) return "⏳ 다른 렌더/패키지 작업이 진행 중입니다 · 끝난 뒤 다시 시도하세요";
+        if (photoCount < 2) return "⚠ 전 언어 일괄 렌더에는 몽타주 사진이 2장 이상 필요합니다(현재 " + photoCount.ToString(System.Globalization.CultureInfo.InvariantCulture) + "장)";
+        if (!channelsReady) return "⚠ 다국어 채널 서비스가 준비되지 않아 전 언어 일괄 렌더를 시작할 수 없습니다";
+        if (!servicesReady) return "⚠ 게시 패키지/일괄 렌더 서비스가 등록되지 않아 전 언어 일괄 렌더를 시작할 수 없습니다";
+        return null;
+    }
+
     private readonly IPlutoMultiLanguageChannelService _channels;
     private readonly PlutoLocaleRenderDelegate? _defaultRender;
     private readonly IPlutoAutonomousActivityFeedService? _feed;
