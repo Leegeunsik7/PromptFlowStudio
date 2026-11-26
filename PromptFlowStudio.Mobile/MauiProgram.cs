@@ -509,6 +509,7 @@ public static class MauiProgram
         builder.Services.AddSingleton(sp => new PromptFlowStudio.Services.Gallery.GalleryMediaService(() => sp.GetService<PromptFlowStudio.Services.Ui.UserPreferenceService>()?.StockSuiteAssetPath)); // 갤러리 메타데이터 아카이브 · 작업실 복원 핸드오프
         builder.Services.AddSingleton(sp => new PromptFlowStudio.Services.AI.GeminiPromptEnhancer(new System.Net.Http.HttpClient { Timeout = System.TimeSpan.FromSeconds(30) }, () => sp.GetService<PromptFlowStudio.Services.Wan.GeminiConfigService>()?.ApiKey)); // Gemini 미등록 시 원본 반환
         builder.Services.AddSingleton(sp => new PromptFlowStudio.Services.AI.GeminiPromptService(new System.Net.Http.HttpClient { Timeout = System.TimeSpan.FromSeconds(30) }, () => sp.GetService<PromptFlowStudio.Services.Wan.GeminiConfigService>()?.ApiKey)); // 미등록 시 로컬 룰셋 강화
+        builder.Services.AddSingleton(_ => new PromptFlowStudio.Services.AI.PlutoVideoLearningMemoryService());   // 🧠 플루토 자기학습 디렉터 메모리(👍 레시피 · 👎 회피 규칙 · %LocalAppData%\PromptFlowStudio\pluto_director_memory.json)
 
         builder.Services.AddSingleton<PromptFlowStudio.Services.Media.OsmuExportPackager>();
 

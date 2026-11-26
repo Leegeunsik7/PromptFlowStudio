@@ -183,6 +183,7 @@ public sealed class MainForm : Form
         services.AddSingleton<PromptFlowStudio.ViewModels.GalleryViewModel>();                  // 카테고리/검색 필터 · 인스펙터 선택 · 작업실 복원
         services.AddSingleton(sp => new PromptFlowStudio.Services.AI.GeminiPromptEnhancer(new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(30) }, sp.GetRequiredService<GeminiConfigService>())); // 🪄 AI 문장 자동 강화(실패 시 원본 반환)
         services.AddSingleton(sp => new PromptFlowStudio.Services.AI.GeminiPromptService(new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(30) }, sp.GetRequiredService<GeminiConfigService>())); // ✨ 듀레이션 인지 강화 · Vision I2V · 4컷 디렉터(실패 시 로컬 룰셋)
+        services.AddSingleton(_ => new PromptFlowStudio.Services.AI.PlutoVideoLearningMemoryService());   // 🧠 플루토 자기학습 디렉터 메모리(👍 레시피 · 👎 회피 규칙 · %LocalAppData%\PromptFlowStudio\pluto_director_memory.json)
         services.AddSingleton<IGeminiVideoAnalyzerService, GeminiVideoAnalyzerService>(); // 네이티브 MP4 통비디오 시간축 분석(VideoTemporalScore + 모션 보정)
         services.AddSingleton<IGeminiKineticSyncService, GeminiKineticSyncService>();     // 키네틱 자막/SFX 밀리초 타임코드 추출(단어별 highlight + SfxTriggers)
         services.AddSingleton<IGeminiColorGradingService, GeminiColorGradingService>();   // AI 시네마틱 컬러 그레이딩(분위기별 ffmpeg vf · 안전 검증)

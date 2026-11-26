@@ -21,6 +21,9 @@ public sealed record PromptPreflightResult(
 {
     /// <summary>보정으로 프롬프트가 바뀌었는지.</summary>
     public bool Changed => !string.Equals(RawPrompt.Trim(), RefinedPrompt.Trim(), StringComparison.Ordinal);
+
+    /// <summary>🧠 적용된 플루토 학습 패턴(👍 레시피 · 👎 회피 규칙 · seed 제외) 수.</summary>
+    public int LearnedRulesApplied { get; init; }
 }
 
 /// <summary>
@@ -127,14 +130,41 @@ public static class PromptPreflightDirector
 
     /// <summary>로컬 결정적 보정(도메인 무관 · 멱등 · 절대 throw 하지 않음).</summary>
     public static PromptPreflightResult RefineLocal(string? rawPrompt, int targetDurationSeconds, string? aspectRatio, bool isAmbientLoop, string? existingNegative = null)
+        => RefineLocal(rawPrompt, targetDurationSeconds, aspectRatio, isAmbientLoop, existingNegative, null);
+
+    /// <summary>디렉터 범용 앵커 문구(의 일부)인지(대소문자 무시).</summary>
+    public static bool IsDirectorAnchor(string? clause)
+    {
+        if (string.IsNullOrWhiteSpace(clause)) return false;
+        var c = clause.Trim();
+        foreach (var a in AllAnchors)
+            if (a.Contains(c, StringComparison.OrdinalIgnoreCase)) return true;
+        return false;
+    }
+
+    /// <summary>🧠 학습 앵커 → 디렉터 범용 앵커와 겹치는 부분을 뺀 추가 구문(빈 문자열 = 추가 없음).</summary>
+    public static string LearnedAnchorExtra(string? anchor) => StripAnchors(anchor).TrimStart(',', ' ').TrimEnd(',', '.', ' ');
+
+    /// <summary>기존 네거티브 + 🧠 학습 네거티브 용어(콤마 결합 · 중복 제거는 <see cref="MergeNegative"/>).</summary>
+    public static string? WithLearnedNegative(string? existing, PlutoLearnedGuidance? learned)
+    {
+        if (learned is null || learned.NegativeTerms.Count == 0) return existing;
+        var sb = new StringBuilder(existing ?? "", 256);
+        foreach (var t in learned.NegativeTerms) { if (sb.Length > 0) sb.Append(", "); sb.Append(t); }
+        return sb.ToString();
+    }
+
+    /// <summary>로컬 결정적 보정 + 🧠 플루토 학습 가이던스(👍 레시피 · 👎 회피 앵커/네거티브) 주입 — 학습 앵커도 재보정 시 제거 후 재부착(멱등).</summary>
+    public static PromptPreflightResult RefineLocal(string? rawPrompt, int targetDurationSeconds, string? aspectRatio, bool isAmbientLoop, string? existingNegative,
+        PlutoLearnedGuidance? learned)
     {
         var raw = rawPrompt ?? "";
         var src = raw.Trim();
-        var merged = MergeNegative(existingNegative, out var negAdded);
+        var merged = MergeNegative(WithLearnedNegative(existingNegative, learned), out var negAdded);
         if (src.Length == 0) return new PromptPreflightResult(raw, raw, merged, true, NoChangeSummary, Array.Empty<string>());
 
         var changes = new List<string>(6);
-        var stripped = StripAnchors(src);
+        var stripped = StripLearned(StripAnchors(src), learned);
         var (clauses, originalActions, keptActions, bySentence) = CalibrateBeats(stripped, targetDurationSeconds);
         string body;
         if (keptActions < originalActions && clauses.Count > 0)
@@ -155,11 +185,36 @@ public static class PromptPreflightDirector
         else if (!ContainsAny(lower, LightingKeys) && AppendOnce(sb, LightingAnchor)) changes.Add("조명 안정화");
         if (AppendOnce(sb, PhysicsAnchor)) changes.Add("물리 연속성");
         if (ContainsAny(lower, OutcomeKeys) && AppendOnce(sb, OutcomeOrderAnchor)) changes.Add("인과 순서(결과는 동작 후)");
+        var learnedApplied = learned?.LearnedCount ?? 0;
+        if (learned is not null)
+        {
+            foreach (var a in learned.PromptAnchors)
+            {
+                var extra = LearnedAnchorExtra(a);
+                if (extra.Length > 0) AppendOnce(sb, extra);
+            }
+            if (learnedApplied > 0) changes.Add(LearnedLabel(learnedApplied));
+        }
         if (negAdded > 0) changes.Add("네거티브 +" + negAdded.ToString(System.Globalization.CultureInfo.InvariantCulture));
 
         var refined = Cap(sb.ToString());
         if (string.Equals(refined, src.TrimEnd(',', '.', ' '), StringComparison.Ordinal)) refined = src;
-        return new PromptPreflightResult(raw, refined, merged, true, Summarize(changes), changes);
+        return new PromptPreflightResult(raw, refined, merged, true, Summarize(changes), changes) { LearnedRulesApplied = learnedApplied };
+    }
+
+    /// <summary>"🧠 학습 패턴 N건" 변경 라벨.</summary>
+    public static string LearnedLabel(int n) => "🧠 학습 패턴 " + n.ToString(System.Globalization.CultureInfo.InvariantCulture) + "건";
+
+    private static string StripLearned(string s, PlutoLearnedGuidance? learned)
+    {
+        if (learned is null) return s;
+        foreach (var a in learned.PromptAnchors)
+        {
+            var extra = LearnedAnchorExtra(a);
+            if (extra.Length == 0) continue;
+            s = s.Replace(", " + extra, "", StringComparison.OrdinalIgnoreCase).Replace(extra, "", StringComparison.OrdinalIgnoreCase);
+        }
+        return s.Trim().TrimEnd(',', ' ');
     }
 
     /// <summary>1줄 한국어 요약 배지 문구.</summary>
@@ -228,15 +283,55 @@ public static class PromptPreflightDirector
             + "Respond ONLY with JSON: {\"prompt\": \"refined English prompt\", \"negative\": \"comma-separated negative terms\", \"summary_ko\": \"one short Korean line describing what was refined\"}.";
     }
 
+    /// <summary>AI 지시문 + 🧠 플루토 학습 가이던스(성공 레시피 · 과거 실패 회피 규칙).</summary>
+    public static string BuildInstruction(int targetDurationSeconds, string? aspectRatio, bool isAmbientLoop, PlutoLearnedGuidance? learned)
+    {
+        var baseText = BuildInstruction(targetDurationSeconds, aspectRatio, isAmbientLoop);
+        if (learned is null || learned.IsEmpty) return baseText;
+        var sb = new StringBuilder(baseText, baseText.Length + 512).Append(" 5) Learned director memory from this user's past renders: ");
+        if (learned.PromptAnchors.Count > 0)
+        {
+            sb.Append("apply these proven recipes and failure-avoidance rules: ");
+            for (var i = 0; i < learned.PromptAnchors.Count; i++) { if (i > 0) sb.Append("; "); sb.Append(learned.PromptAnchors[i]); }
+            sb.Append(". ");
+        }
+        if (learned.NegativeTerms.Count > 0)
+        {
+            sb.Append("Include in negative: ");
+            for (var i = 0; i < learned.NegativeTerms.Count; i++) { if (i > 0) sb.Append(", "); sb.Append(learned.NegativeTerms[i]); }
+            sb.Append('.');
+        }
+        return sb.ToString();
+    }
+
     /// <summary>AI 결과 확정 — 네거티브 병합(안티 아티팩트 보장) · 길이 상한 · 요약 1줄.</summary>
     public static PromptPreflightResult FromAi(string rawPrompt, string aiPrompt, string? aiNegative, string? summaryKo, string? existingNegative)
+        => FromAi(rawPrompt, aiPrompt, aiNegative, summaryKo, existingNegative, null);
+
+    /// <summary>AI 결과 확정 + 🧠 학습 앵커/네거티브 보장(AI 가 누락해도 부착).</summary>
+    public static PromptPreflightResult FromAi(string rawPrompt, string aiPrompt, string? aiNegative, string? summaryKo, string? existingNegative, PlutoLearnedGuidance? learned)
     {
+        var applied = learned?.LearnedCount ?? 0;
+        if (applied > 0)
+        {
+            var sbp = new StringBuilder(aiPrompt.Trim(), aiPrompt.Length + 256);
+            foreach (var a in learned!.PromptAnchors)
+            {
+                var extra = LearnedAnchorExtra(a);
+                if (extra.Length > 0) AppendOnce(sbp, extra);
+            }
+            aiPrompt = sbp.ToString();
+        }
+        existingNegative = WithLearnedNegative(existingNegative, learned);
         var baseNeg = string.IsNullOrWhiteSpace(existingNegative) ? aiNegative : existingNegative + (string.IsNullOrWhiteSpace(aiNegative) ? "" : ", " + aiNegative);
         var merged = MergeNegative(baseNeg, out _);
         var line = (summaryKo ?? "").Replace('\n', ' ').Replace('\r', ' ').Trim();
         if (line.Length > 80) line = line[..80].TrimEnd() + "…";
         var summary = line.Length == 0 ? "🛡️ AI 보정 완료" : "🛡️ AI 보정: " + line;
-        return new PromptPreflightResult(rawPrompt, Cap(aiPrompt.Trim()), merged, false, summary, new[] { "AI 디렉터 보정" });
+        if (applied > 0) summary += " · " + LearnedLabel(applied);
+        return new PromptPreflightResult(rawPrompt, Cap(aiPrompt.Trim()), merged, false, summary,
+            applied > 0 ? new[] { "AI 디렉터 보정", LearnedLabel(applied) } : new[] { "AI 디렉터 보정" })
+        { LearnedRulesApplied = applied };
     }
 
     private static string JoinClauses(List<string> clauses, bool bySentence)

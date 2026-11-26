@@ -236,22 +236,29 @@ public sealed class GeminiPromptService : PromptFlowStudio.Services.Pluto.IPluto
     /// 키 있음 → Gemini JSON(<c>prompt · negative · summary_ko</c>) 스키마 검증, 키 없음/오프라인/실패/스키마 불일치 → 결정적 로컬 규칙
     /// (<see cref="PromptPreflightDirector.RefineLocal"/>). 절대 throw 하지 않음(취소 포함 → 로컬).
     /// </summary>
-    public async Task<PromptPreflightResult> AnalyzeAndRefinePromptAsync(string rawPrompt, int targetDurationSeconds, string aspectRatio, bool isAmbientLoop,
+    public Task<PromptPreflightResult> AnalyzeAndRefinePromptAsync(string rawPrompt, int targetDurationSeconds, string aspectRatio, bool isAmbientLoop,
         string? existingNegative = null, CancellationToken ct = default)
+        => AnalyzeAndRefinePromptAsync(rawPrompt, targetDurationSeconds, aspectRatio, isAmbientLoop, existingNegative, null, ct);
+
+    /// <summary>
+    /// 🧠 플루토 학습 가이던스(<see cref="PlutoVideoLearningMemoryService.GetLearnedGuidanceForPrompt"/>)를 Gemini 지시문과 로컬 폴백 양쪽에 주입하는 프리플라이트.
+    /// </summary>
+    public async Task<PromptPreflightResult> AnalyzeAndRefinePromptAsync(string rawPrompt, int targetDurationSeconds, string aspectRatio, bool isAmbientLoop,
+        string? existingNegative, PlutoLearnedGuidance? learned, CancellationToken ct = default)
     {
         var raw = rawPrompt ?? "";
         if (string.IsNullOrWhiteSpace(raw) || !HasKey())
-            return PromptPreflightDirector.RefineLocal(raw, targetDurationSeconds, aspectRatio, isAmbientLoop, existingNegative);
+            return PromptPreflightDirector.RefineLocal(raw, targetDurationSeconds, aspectRatio, isAmbientLoop, existingNegative, learned);
         string? text;
         try
         {
             var user = "Prompt: " + raw.Trim() + (string.IsNullOrWhiteSpace(existingNegative) ? "" : "\nExisting negative: " + existingNegative.Trim());
-            text = await CallAsync(PromptPreflightDirector.BuildInstruction(targetDurationSeconds, aspectRatio, isAmbientLoop), user, null, true, 0.3, ct).ConfigureAwait(false);
+            text = await CallAsync(PromptPreflightDirector.BuildInstruction(targetDurationSeconds, aspectRatio, isAmbientLoop, learned), user, null, true, 0.3, ct).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OutOfMemoryException) { Program.Log("GeminiPromptService.Preflight", ex); text = null; }
         if (PromptPreflightDirector.ParseAiResponse(text) is { } ai)
-            return PromptPreflightDirector.FromAi(raw, ai.Prompt, ai.Negative, ai.SummaryKo, existingNegative);
-        var local = PromptPreflightDirector.RefineLocal(raw, targetDurationSeconds, aspectRatio, isAmbientLoop, existingNegative);
+            return PromptPreflightDirector.FromAi(raw, ai.Prompt, ai.Negative, ai.SummaryKo, existingNegative, learned);
+        var local = PromptPreflightDirector.RefineLocal(raw, targetDurationSeconds, aspectRatio, isAmbientLoop, existingNegative, learned);
         return local with { SummaryKo = local.SummaryKo + " (" + PromptPreflightDirector.LocalNotice + ")" };
     }
 

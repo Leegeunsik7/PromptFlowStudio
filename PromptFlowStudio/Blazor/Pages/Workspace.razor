@@ -18,6 +18,7 @@
 @inject EpisodicStorySeriesBuilder SeriesBuilder
 @inject PromptFlowStudio.Services.Prompt.PromptSynthesizerService Synth
 @inject PromptFlowStudio.Services.AI.GeminiPromptService GeminiSvc
+@inject PromptFlowStudio.Services.AI.PlutoVideoLearningMemoryService PlutoLearn
 @inject PromptFlowStudio.ViewModels.StoryboardViewModel StoryVm
 @inject PromptFlowStudio.Services.Camera.WirelessCameraService WirelessCam
 @inject PromptFlowStudio.Services.Gallery.GalleryMediaService GalleryMedia
@@ -904,6 +905,10 @@
             {
                 <div class="ws-pf-badge" role="status" data-preflight-badge="@(pf.UsedFallback ? "local" : "ai")">
                     <span class="ws-pf-sum">@(_preflightReverted ? "↩ 원문으로 되돌림 — 다음 생성부터 원문 그대로 전송" : pf.SummaryKo)</span>
+                    @if (!_preflightReverted && pf.LearnedRulesApplied > 0)
+                    {
+                        <span class="ws-learn-ind" data-pluto-learned="@(pf.LearnedRulesApplied.ToString(CultureInfo.InvariantCulture))" title="과거 👍 성공 레시피 · 👎 실패 회피 규칙 중 이 프롬프트와 유사한 패턴을 자동 적용했습니다">🧠 플루토 학습 패턴 @(pf.LearnedRulesApplied.ToString(CultureInfo.InvariantCulture))건 적용됨</span>
+                    }
                     <button class="ws-pf-btn" @onclick="() => _preflightInspect = !_preflightInspect" aria-pressed="@(_preflightInspect ? "true" : "false")" data-preflight-inspect="1">@(_preflightInspect ? "접기" : "🔍 비교")</button>
                     <button class="ws-pf-btn" @onclick="TogglePreflightRevert" data-preflight-revert="1">@(_preflightReverted ? "🛡️ 보정 다시 사용" : "↩ 원문으로")</button>
                     @if (_preflightInspect)
@@ -950,6 +955,23 @@
                     <span class="ws-badge @PhaseClass">@PhaseLabel</span>
                 </span>
             </div>
+            @if (InspectPath is not null && _learnRawPrompt is not null)
+            {
+                <div class="ws-learn-fb" role="group" aria-label="플루토 학습 피드백" data-pluto-feedback="1">
+                    <button class="ws-pf-btn" @onclick="LearnPositive" disabled="@_learnBusy" data-pluto-feedback-up="1" title="이 결과의 프롬프트 레시피를 유사 프롬프트에 자동 재사용하도록 플루토에 학습시킵니다">👍 잘 나옴 (학습)</button>
+                    <button class="ws-pf-btn" @onclick="() => _learnReasonOpen = !_learnReasonOpen" disabled="@_learnBusy" aria-pressed="@(_learnReasonOpen ? "true" : "false")" data-pluto-feedback-down="1" title="사유를 고르면 유사 프롬프트용 회피 규칙을 학습하고 보완된 레시피로 재생성합니다">👎 어색함 (보완 재생성)</button>
+                    @if (_learnReasonOpen)
+                    {
+                        @foreach (var reason in PromptFlowStudio.Services.AI.PlutoVideoLearningMemoryService.AllReasons)
+                        {
+                            var rr = reason;
+                            <button class="ws-pf-btn ws-learn-reason" @onclick="() => LearnNegativeAsync(rr)" disabled="@_learnBusy" data-pluto-reason="@rr">@PromptFlowStudio.Services.AI.PlutoVideoLearningMemoryService.ReasonLabel(rr)</button>
+                        }
+                        <label class="ws-learn-auto"><input type="checkbox" @bind="_learnAutoRerender" /> 즉시 재생성</label>
+                    }
+                    @if (_learnMsg is not null) { <span class="ws-learn-msg" role="status">@_learnMsg</span> }
+                </div>
+            }
             @if (_htsHud)
             {
                 <div class="ws-hts-ctl">
@@ -1780,7 +1802,11 @@
     .ws-pf-tog { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-secondary); cursor: pointer; }
     .ws-pf-badge { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 6px; font-size: 11px; color: var(--text-secondary); }
     .ws-pf-sum { flex: 1 1 auto; min-width: 0; }
-    .ws-pf-btn { font-size: 11px; padding: 1px 8px; border-radius: 10px; border: 1px solid var(--border, #444); background: transparent; color: inherit; cursor: pointer; }
+    .ws-learn-ind { font-size: 11px; padding: 1px 8px; border-radius: 10px; background: rgba(124, 92, 255, 0.16); color: #b9a8ff; }
+    .ws-learn-fb { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 4px 0 6px; font-size: 11px; }
+    .ws-learn-auto { display: inline-flex; align-items: center; gap: 4px; color: var(--text-secondary); }
+    .ws-learn-msg { color: var(--text-secondary); }
+    .ws-pf-btn {font-size: 11px; padding: 1px 8px; border-radius: 10px; border: 1px solid var(--border, #444); background: transparent; color: inherit; cursor: pointer; }
     .ws-pf-cmp { flex-basis: 100%; display: grid; gap: 3px; padding: 6px 8px; border-radius: 6px; background: rgba(127,127,127,.08); word-break: break-word; }
     .ws-mini-q { margin: 4px 0 8px; padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--flow-cyan) 40%, transparent); border-radius: 8px; background: color-mix(in srgb, var(--flow-cyan) 6%, transparent); }
     .ws-mini-q.bad { border-color: #e5484d; background: color-mix(in srgb, #e5484d 8%, transparent); }
@@ -5768,6 +5794,7 @@
             var project = StockProjectNameView;   // 📁 비면 루트 라이브 교체(기존) · 값 → {슬러그}_{yyyyMMdd} 하위 폴더 + project_manifest.json
             var r = await StockSuite.ExportWithSubtitlesAsync(path, cues, project, _mediaCts.Token, _snsKit, _prompt, cues ?? _montageCues);   // 🎵 BGM 직접 먹싱 · 💌 시간 게이트 drawtext + {출력}.srt · 🎁 subtitles.srt(🔒 3막 자막) · SNS_게시문.txt · thumbnail.jpg
             if (r.Ok && _specPath == path) { _spec = null; _specPath = null; }   // ⚡ 인코더 텔레메트리 갱신 → 규격 캐시 무효화
+            if (r.Ok) LearnPositiveSilently();   // 🧠 내보내기 = 👍 강화(직전 생성 프롬프트 기준 · 예외 격리)
             var bundleNote = r.Ok && !string.IsNullOrWhiteSpace(project) ? " · 🎁 " + PromptFlowStudio.Services.Export.StockSuiteExporter.DescribeCreatorBundle(r.HasSubtitlesSrt, r.HasSnsCopyText, r.HasThumbnailJpg) : "";
             _camToast = r.Ok ? r.Message + bundleNote : r.NeedsPathSetup ? "⚠ " + r.Message + " (설정 ▸ 사용자 설정 ▸ StockSuite 에셋 경로)" : "⚠ " + r.Message;
             _stockRestart = false;
@@ -6501,16 +6528,67 @@
         var ambient = _durationMode == PromptFlowStudio.Services.Render.VideoDurationMode.Sec15_AmbientSlow;
         var seconds = ambient ? (int)PromptFlowStudio.Services.Render.MultiDurationPlanner.ShotSeconds : PromptFlowStudio.Services.Render.MultiDurationPlanner.TargetSeconds(_durationMode);
         var aspect = GeminiPromptService.AspectRatioOf(_size);
+        var learned = PlutoLearn.GetLearnedGuidanceForPrompt(prompt, ambient);   // 🧠 학습 레시피 · 실패 회피 규칙
         try
         {
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(_mediaCts.Token);
             cts.CancelAfter(PreflightTimeout);
-            return await GeminiSvc.AnalyzeAndRefinePromptAsync(prompt, seconds, aspect, ambient, null, cts.Token);
+            return await GeminiSvc.AnalyzeAndRefinePromptAsync(prompt, seconds, aspect, ambient, null, learned, cts.Token);
         }
         catch (Exception ex) when (ex is ObjectDisposedException or OperationCanceledException)
         {
-            return PromptFlowStudio.Services.AI.PromptPreflightDirector.RefineLocal(prompt, seconds, aspect, ambient);
+            return PromptFlowStudio.Services.AI.PromptPreflightDirector.RefineLocal(prompt, seconds, aspect, ambient, null, learned);
         }
+    }
+
+    // ── 🧠 플루토 자기학습 피드백 루프(👍 레시피 강화 · 👎 사유별 회피 규칙 + 보완 재생성) ──
+    private string? _learnRawPrompt, _learnRefinedPrompt, _learnMsg;
+    private bool _learnBusy, _learnReasonOpen, _learnAutoRerender = true;
+
+    /// <summary>👍 잘 나옴 — 직전 생성 원문/보정본으로 성공 레시피 기록(예외 격리).</summary>
+    private void LearnPositive()
+    {
+        if (_learnRawPrompt is null) return;
+        try
+        {
+            PlutoLearn.RecordPositiveOutcome(_learnRawPrompt, _learnRefinedPrompt);
+            _learnMsg = "🧠 학습 완료 — 유사 프롬프트에 이 레시피를 우선 적용합니다";
+            _learnReasonOpen = false;
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException) { Program.Log("Workspace.LearnPositive", ex); _learnMsg = "⚠ 학습 저장 실패"; }
+    }
+
+    /// <summary>내보내기 성공 = 암묵 👍(메시지 없음 · 예외 격리).</summary>
+    private void LearnPositiveSilently()
+    {
+        if (_learnRawPrompt is null) return;
+        try { PlutoLearn.RecordPositiveOutcome(_learnRawPrompt, _learnRefinedPrompt); }
+        catch (Exception ex) when (ex is not OutOfMemoryException) { Program.Log("Workspace.LearnExport", ex); }
+    }
+
+    /// <summary>👎 어색함 + 사유 — 회피 규칙 학습 → (즉시 재생성 ON) 보완 레시피로 재생성.</summary>
+    private async Task LearnNegativeAsync(PromptFlowStudio.Services.AI.PlutoFeedbackReason reason)
+    {
+        if (_learnRawPrompt is null || _learnBusy) return;
+        _learnBusy = true;
+        try
+        {
+            var ambient = _durationMode == PromptFlowStudio.Services.Render.VideoDurationMode.Sec15_AmbientSlow;
+            var seconds = ambient ? (int)PromptFlowStudio.Services.Render.MultiDurationPlanner.ShotSeconds : PromptFlowStudio.Services.Render.MultiDurationPlanner.TargetSeconds(_durationMode);
+            var refined = PlutoLearn.RecordFailureAndGetRefinement(_learnRawPrompt, reason, seconds, GeminiPromptService.AspectRatioOf(_size), ambient);
+            _preflight = refined;
+            _preflightReverted = false;
+            _learnReasonOpen = false;
+            _learnMsg = "🧠 '" + PromptFlowStudio.Services.AI.PlutoVideoLearningMemoryService.ReasonLabel(reason) + "' 회피 규칙 학습 완료";
+            if (_learnAutoRerender && !State.IsBusy && CanStart)
+            {
+                _preflightOn = true;
+                _learnMsg += " — 보완 레시피로 재생성";
+                await Start();
+            }
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException) { Program.Log("Workspace.LearnNegative", ex); _learnMsg = "⚠ 학습 저장 실패"; }
+        finally { _learnBusy = false; }
     }
 
     private async Task Start()
@@ -6524,6 +6602,8 @@
         }
         _durationMsg = null;
         var primary = EffectivePrompt;
+        _learnRawPrompt = string.IsNullOrWhiteSpace(primary) ? null : primary;   // 🧠 피드백 학습 기준(원문)
+        _learnRefinedPrompt = null;
         var antiArtifact = false;
         if (_preflightOn && !string.IsNullOrWhiteSpace(primary))
         {
@@ -6534,6 +6614,7 @@
                 _preflight = result;
                 _preflightReverted = false;
                 primary = result.RefinedPrompt;   // 🛡️ 비영속 — 입력 박스 원문은 그대로(↩ 1클릭 복귀)
+                _learnRefinedPrompt = result.RefinedPrompt;
                 antiArtifact = true;
             }
             finally { _preflightBusy = false; }
