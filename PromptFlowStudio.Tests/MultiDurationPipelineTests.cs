@@ -93,7 +93,8 @@ public class MultiDurationPipelineTests : IDisposable
         string? stitchedGroup = null;
         q.OnDurationStitched += (g, r) => { if (r.Ok) stitchedGroup = g; };
 
-        var jobs = q.EnqueueJob(new BatchRenderJob { Prompt = "p", DurationMode = VideoDurationMode.Sec15_Triple, OutputPath = Path.Combine(_dir, "proj.mp4") }, null, "proj");
+        var jobs = q.EnqueueJob(new BatchRenderJob { Prompt = "p", DurationMode = VideoDurationMode.Sec15_Triple, OutputPath = Path.Combine(_dir, "proj.mp4"),
+            Metadata = MultiDurationPlanner.WithTransition(null, CutTransitionMode.LastFrameChain) }, null, "proj");   // 명시적 체인 모드(기본은 독립 컷)
         await q.ProcessQueueAsync(CancellationToken.None);
 
         Assert.All(jobs, j => Assert.Equal(BatchJobStatus.Completed, j.Status));

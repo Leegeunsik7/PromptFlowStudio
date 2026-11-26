@@ -10,6 +10,14 @@ namespace PromptFlowStudio.Services.Render;
 public enum VideoDurationMode { Sec5_Single, Sec10_Dual, Sec15_Triple, Sec15_AmbientSlow }
 
 /// <summary>
+/// 멀티 컷(10s 2컷 · 15s 3컷) 컷 전환 방식.
+///   ▸ <see cref="IndependentCrossfade"/>(기본): 컷마다 자기 프롬프트로 독립 생성(1번 컷만 참조/첫 화면 이미지) → 0.25초 xfade 디졸브 합본.
+///     카메라 앵글 전환(와이드 → 미디엄 → 클로즈업)이 자연스럽고, 프레임 밖으로 나간 피사체를 억지로 이어 붙이는 구도·인체 왜곡이 없다.
+///   ▸ <see cref="LastFrameChain"/>: 이전 컷 마지막 프레임 → 다음 컷 I2V 앵커(연속 롱테이크) → 하드 컷 concat.
+/// </summary>
+public enum CutTransitionMode : byte { IndependentCrossfade, LastFrameChain }
+
+/// <summary>
 /// [PromptFlowStudio] 멀티 듀레이션 파이프라인 계획기(순수 함수).
 ///   ▸ 10s/15s 멀티 샷 → 동일 <see cref="BatchRenderJob.StitchGroupId"/>(= <see cref="FFmpegVideoStitchService.MetaGroup"/>) 5초 하위 컷 2~3개로 전개.
 ///   ▸ 빈 서브 프롬프트는 메인 프롬프트 상속 + 파트별 카메라 모션 차등.
@@ -32,6 +40,48 @@ public static class MultiDurationPlanner
     public const string MetaStitchedVirtual = "duration.stitched.virtual";
     public const string LastFrameSuffix = ".lastframe.png";
     public const string DefaultProject = "workspace";
+    /// <summary>작업 메타 — 컷 전환 방식(<see cref="CutTransitionMode"/> 이름). 부재 = 독립 컷(기본).</summary>
+    public const string MetaTransition = "duration.transition";
+    /// <summary>독립 컷 합본 xfade 디졸브 길이(초).</summary>
+    public const double CrossfadeSeconds = 0.25;
+    /// <summary>독립 컷 일관성 힌트 — 피사체·의상(유니폼)·조명 동일, 전신/머리 잘림 금지(멱등 부착).</summary>
+    public const string ContinuityHint = "same subject identity and same outfit/uniform colors as the other cuts, consistent lighting and color palette, head and full body fully in frame, anatomically correct";
+
+    public const CutTransitionMode DefaultTransition = CutTransitionMode.IndependentCrossfade;
+
+    public static string TransitionLabel(CutTransitionMode mode) => mode == CutTransitionMode.LastFrameChain
+        ? "연속 프레임 이어붙이기 (Last-Frame I2V Chain)"
+        : "독립 시네마틱 컷 (Independent T2V + Crossfade)";
+
+    /// <summary>작업 메타 → 전환 방식(부재·미상 = 기본 독립 컷).</summary>
+    public static CutTransitionMode TransitionOf(BatchRenderJob job)
+        => string.Equals(MetaOf(job, MetaTransition), nameof(CutTransitionMode.LastFrameChain), StringComparison.Ordinal)
+            ? CutTransitionMode.LastFrameChain : CutTransitionMode.IndependentCrossfade;
+
+    /// <summary>다음 컷에 마지막 프레임 I2V 앵커를 주입할지 — 체인 모드 멀티 샷만.</summary>
+    public static bool ShouldChainLastFrame(BatchRenderJob job) => IsMultiShot(job.DurationMode) && TransitionOf(job) == CutTransitionMode.LastFrameChain;
+
+    /// <summary>메타에 전환 방식 기록.</summary>
+    public static Dictionary<string, string> WithTransition(IReadOnlyDictionary<string, string>? meta, CutTransitionMode mode)
+        => WithMeta(meta, MetaTransition, mode.ToString());
+
+    /// <summary>일관성 힌트 멱등 부착(빈 프롬프트는 그대로 — 파트 상속/카메라 모션이 채움).</summary>
+    public static string WithContinuityHint(string? prompt)
+    {
+        var p = (prompt ?? "").Trim();
+        if (p.Length == 0 || p.Contains(ContinuityHint, StringComparison.Ordinal)) return p;
+        return p.TrimEnd(',', ' ') + ", " + ContinuityHint;
+    }
+
+    /// <summary>
+    /// [✨ 생성 시작] 주 프롬프트 — 메인이 비어 있고 멀티 컷이며 파트 1 이 채워져 있으면 파트 1 로 폴백.
+    /// </summary>
+    public static string ResolvePrimaryPrompt(string? main, IReadOnlyList<string?>? subPrompts, VideoDurationMode mode)
+    {
+        if (!string.IsNullOrWhiteSpace(main)) return main.Trim();
+        if (IsMultiShot(mode) && subPrompts is { Count: > 0 } && !string.IsNullOrWhiteSpace(subPrompts[0])) return subPrompts[0]!.Trim();
+        return "";
+    }
 
     /// <summary>파트별 카메라 모션 차등(상속 프롬프트 전용) — 도입 · 전개 · 마무리.</summary>
     public static readonly string[] PartCameraMotions =

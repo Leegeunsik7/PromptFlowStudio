@@ -310,7 +310,7 @@ public sealed partial class RenderQueueService : IRenderQueueService
     }
 
     /// <summary>
-    /// 멀티 샷 체이닝 후처리 — 다음 컷이 Queued 면 이 컷의 마지막 프레임을 추출해 다음 컷 I2V 앵커(<see cref="BatchRenderJob.ReferenceImagePath"/>)로 주입,
+    /// 멀티 샷 후처리 — [체인 모드] 다음 컷이 Queued 면 이 컷의 마지막 프레임을 추출해 다음 컷 I2V 앵커(<see cref="BatchRenderJob.ReferenceImagePath"/>)로 주입,
     /// 그룹 전 컷 Completed·로컬 산출물 실존 시 <c>{project}_10s.mp4</c>/<c>_15s.mp4</c> 합본(그룹당 1회). 실패는 격리(T2V 폴백 · 컷 상태 유지).
     /// </summary>
     internal async Task ChainDurationCutAsync(BatchRenderJob job, CancellationToken ct)
@@ -322,7 +322,8 @@ public sealed partial class RenderQueueService : IRenderQueueService
             var snapshot = Snapshot();
             var output = FFmpegVideoStitchService.LocalOutputOf(job);
             var next = MultiDurationPlanner.FindNextCut(snapshot, job);
-            if (output is not null && next is not null && next.Status == BatchJobStatus.Queued)
+            // 독립 컷(기본)은 앵커 주입 없음 — 컷마다 자기 프롬프트로 생성해 구도/인체 왜곡 방지. 체인 모드만 마지막 프레임 I2V.
+            if (output is not null && next is not null && next.Status == BatchJobStatus.Queued && MultiDurationPlanner.ShouldChainLastFrame(job))
             {
                 var png = MultiDurationPlanner.LastFramePathFor(output);
                 if (await stitcher.ExtractLastFrameAsync(output, png, ct).ConfigureAwait(false))
@@ -344,7 +345,9 @@ public sealed partial class RenderQueueService : IRenderQueueService
             lock (_gate) { if (!_stitchedGroups.Add(group)) return; }
             var dir = Path.GetDirectoryName(cuts[0].VideoPath) ?? Path.GetTempPath();
             var target = MultiDurationPlanner.BuildOutputPath(dir, MultiDurationPlanner.MetaOf(job, MultiDurationPlanner.MetaProject), job.DurationMode);
-            var r = await stitcher.StitchCutsAsync(cuts, target, null, null, ct).ConfigureAwait(false);
+            var r = MultiDurationPlanner.TransitionOf(job) == CutTransitionMode.LastFrameChain
+                ? await stitcher.StitchCutsAsync(cuts, target, null, null, ct).ConfigureAwait(false)
+                : await stitcher.StitchCrossfadeAsync(cuts, target, MultiDurationPlanner.CrossfadeSeconds, ct).ConfigureAwait(false);   // 독립 컷 0.25s 디졸브(실패 → 하드 컷)
             if (r.Ok && r.OutputPath is not null)
                 lock (_gate) job.Metadata = MultiDurationPlanner.WithMeta(job.Metadata, r.IsVirtual ? MultiDurationPlanner.MetaStitchedVirtual : MultiDurationPlanner.MetaStitched, r.OutputPath);
             else

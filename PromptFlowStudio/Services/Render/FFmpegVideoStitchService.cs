@@ -217,6 +217,103 @@ public sealed class FFmpegVideoStitchService
         return args.ToArray();
     }
 
+    /// <summary>
+    /// 독립 컷 크로스페이드 합본 인자 — 컷별 레터박스 정규화(<c>scale+pad+setsar+fps+format+settb</c>) 후
+    /// <c>xfade=transition=fade</c> 체인(offset = 누적 길이 − k·겹침), 전 컷 오디오면 <c>acrossfade</c> 동기, 아니면 <c>anullsrc</c> 무음 트랙.
+    /// </summary>
+    public static string[] BuildCrossfadeArgs(IReadOnlyList<string> parts, IReadOnlyList<double> durations, int width, int height, bool includeAudio, double crossfadeSec, string outputPath)
+    {
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
+        var w = (width & ~1).ToString(inv);
+        var h = (height & ~1).ToString(inv);
+        var x = crossfadeSec.ToString("0.###", inv);
+        var args = new List<string>(32 + parts.Count * 2) { "-y", "-hide_banner", "-loglevel", "error" };
+        for (var i = 0; i < parts.Count; i++) { args.Add("-i"); args.Add(parts[i]); }
+        if (!includeAudio) { args.Add("-f"); args.Add("lavfi"); args.Add("-i"); args.Add("anullsrc=r=44100:cl=stereo"); }
+
+        var f = new StringBuilder(parts.Count * 220);
+        for (var i = 0; i < parts.Count; i++)
+        {
+            var n = i.ToString(inv);
+            f.Append('[').Append(n).Append(":v]scale=").Append(w).Append(':').Append(h).Append(":force_original_aspect_ratio=decrease,pad=")
+             .Append(w).Append(':').Append(h).Append(":(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p,settb=AVTB[v").Append(n).Append("];");
+            if (includeAudio)
+                f.Append('[').Append(n).Append(":a]aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo[a").Append(n).Append("];");
+        }
+        var prevV = "v0";
+        var prevA = "a0";
+        var elapsed = 0.0;
+        for (var k = 1; k < parts.Count; k++)
+        {
+            elapsed += durations[k - 1];
+            var offset = Math.Max(0, elapsed - k * crossfadeSec);
+            var n = k.ToString(inv);
+            var outV = k == parts.Count - 1 ? "vout" : "xv" + n;
+            f.Append('[').Append(prevV).Append("][v").Append(n).Append("]xfade=transition=fade:duration=").Append(x)
+             .Append(":offset=").Append(offset.ToString("0.###", inv)).Append('[').Append(outV).Append("];");
+            prevV = outV;
+            if (includeAudio)
+            {
+                var outA = k == parts.Count - 1 ? "aout" : "xa" + n;
+                f.Append('[').Append(prevA).Append("][a").Append(n).Append("]acrossfade=d=").Append(x).Append('[').Append(outA).Append("];");
+                prevA = outA;
+            }
+        }
+        if (f.Length > 0 && f[^1] == ';') f.Length--;
+        args.Add("-filter_complex"); args.Add(f.ToString());
+        args.AddRange(new[] { "-map", "[vout]", "-map", includeAudio ? "[aout]" : parts.Count.ToString(inv) + ":a" });
+        args.AddRange(new[] { "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k" });
+        if (!includeAudio) args.Add("-shortest");
+        args.AddRange(new[] { "-movflags", "+faststart", outputPath });
+        return args.ToArray();
+    }
+
+    /// <summary>
+    /// 독립 시네마틱 컷 합본 — <see cref="BuildCrossfadeArgs"/> 디졸브(기본 0.25초). 컷 1개·ffmpeg 부재·xfade 실패는
+    /// <see cref="StitchAsync"/>(하드 컷 concat / 가상 매니페스트)로 폴백 — 합본 자체는 잃지 않는다.
+    /// </summary>
+    public async Task<VideoStitchResult> StitchCrossfadeAsync(IReadOnlyList<StitchCut> cuts, string outputPath, double crossfadeSec, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(cuts);
+        var parts = new string[cuts.Count];
+        var durs = new double[cuts.Count];
+        var minDur = double.MaxValue;
+        for (var i = 0; i < parts.Length; i++)
+        {
+            parts[i] = cuts[i].VideoPath;
+            durs[i] = cuts[i].DurationSec > 0 ? cuts[i].DurationSec : MultiDurationPlanner.ShotSeconds;
+            if (durs[i] < minDur) minDur = durs[i];
+        }
+        var x = Math.Clamp(crossfadeSec, 0, minDur * 0.4);
+        var ffmpeg = SafeResolve();
+        if (parts.Length < 2 || x <= 0 || ffmpeg is null || string.IsNullOrWhiteSpace(outputPath))
+            return await StitchAsync(parts, outputPath, ct).ConfigureAwait(false);
+        for (var i = 0; i < parts.Length; i++)
+            if (string.IsNullOrWhiteSpace(parts[i]) || !File.Exists(parts[i]))
+                return new(false, false, null, parts.Length, "컷 파일 누락: " + parts[i]);
+
+        var full = Path.GetFullPath(outputPath);
+        try
+        {
+            var dir = Path.GetDirectoryName(full);
+            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+            var probes = new StitchProbe?[parts.Length];
+            for (var i = 0; i < probes.Length; i++) probes[i] = await SafeProbeAsync(ffmpeg, parts[i], ct).ConfigureAwait(false);
+            if (ct.IsCancellationRequested) return new(false, false, null, parts.Length, "취소됨");
+            var plan = PlanTranscode(probes);
+            var ok = await _run(ffmpeg, BuildCrossfadeArgs(parts, durs, plan.Width, plan.Height, plan.AllAudio, x, full), ct).ConfigureAwait(false);
+            if (ct.IsCancellationRequested) return new(false, false, null, parts.Length, "취소됨");
+            if (ok && File.Exists(full) && new FileInfo(full).Length > 0)
+                return new(true, false, full, parts.Length, parts.Length.ToString(System.Globalization.CultureInfo.InvariantCulture) + "컷 크로스페이드 합본 완료");
+            TryDelete(full);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Program.Log("Stitch.Crossfade", ex);
+        }
+        return await StitchAsync(parts, outputPath, ct).ConfigureAwait(false);   // 하드 컷 폴백
+    }
+
     /// <summary>재인코딩 기준 — 최대 해상도(픽셀 면적) 컷 · 오디오는 전 컷 보유 시만 · 프로브 불명이면 1920x1080 무음.
     /// Mixed = 알려진 해상도가 2종 이상(사전 감지 → copy 생략).</summary>
     public static (int Width, int Height, bool AllAudio, bool Mixed) PlanTranscode(IReadOnlyList<StitchProbe?> probes)

@@ -1723,7 +1723,7 @@ public class TitanReleaseTests
             Assert.DoesNotContain("OnStartGenerate=", src, StringComparison.Ordinal);
         }
         Assert.Contains("Size=", File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "Pages", "Storyboard.razor")), StringComparison.Ordinal);
-        Assert.Contains("GenerateFirstFrameImageAsync(_prompt, _size", File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "Pages", "Workspace.razor")), StringComparison.Ordinal);   // 작업실: 선택 해상도 비율로 실제 첫 화면 생성
+        Assert.Contains("GenerateFirstFrameImageAsync(ffpPrompt, _size", File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "Pages", "Workspace.razor")), StringComparison.Ordinal);   // 작업실: 선택 해상도 비율로 실제 첫 화면 생성(메인 비면 파트 1 폴백 프롬프트)
     }
 
     [Fact]

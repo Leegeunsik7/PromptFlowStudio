@@ -733,7 +733,18 @@
                                       placeholder="@PromptFlowStudio.Services.Render.MultiDurationPlanner.ResolvePartPrompt(_prompt, null, idx, PromptFlowStudio.Services.Render.MultiDurationPlanner.ShotCount(_durationMode))"></textarea>
                         </label>
                     }
-                    <div class="ws-dur-hint">비운 파트는 메인 프롬프트 + 카메라 모션 차등 상속 · 이전 컷 마지막 프레임이 다음 컷 I2V 앵커로 자동 주입됩니다.</div>
+                    <div class="ws-dur ws-cut-trans" role="radiogroup" aria-label="컷 전환 방식" data-cut-transition="@(_cutTransition)">
+                        <span class="ws-dur-hint">🎬 컷 전환 방식</span>
+                        <button class="ws-dur-chip @(_cutTransition == PromptFlowStudio.Services.Render.CutTransitionMode.IndependentCrossfade ? "on" : null)" role="radio"
+                                aria-checked="@(_cutTransition == PromptFlowStudio.Services.Render.CutTransitionMode.IndependentCrossfade ? "true" : "false")" disabled="@State.IsBusy"
+                                @onclick="() => _cutTransition = PromptFlowStudio.Services.Render.CutTransitionMode.IndependentCrossfade">@PromptFlowStudio.Services.Render.MultiDurationPlanner.TransitionLabel(PromptFlowStudio.Services.Render.CutTransitionMode.IndependentCrossfade)</button>
+                        <button class="ws-dur-chip @(_cutTransition == PromptFlowStudio.Services.Render.CutTransitionMode.LastFrameChain ? "on" : null)" role="radio"
+                                aria-checked="@(_cutTransition == PromptFlowStudio.Services.Render.CutTransitionMode.LastFrameChain ? "true" : "false")" disabled="@State.IsBusy"
+                                @onclick="() => _cutTransition = PromptFlowStudio.Services.Render.CutTransitionMode.LastFrameChain">@PromptFlowStudio.Services.Render.MultiDurationPlanner.TransitionLabel(PromptFlowStudio.Services.Render.CutTransitionMode.LastFrameChain)</button>
+                    </div>
+                    <div class="ws-dur-hint">@(_cutTransition == PromptFlowStudio.Services.Render.CutTransitionMode.LastFrameChain
+                        ? "비운 파트는 메인 프롬프트 + 카메라 모션 차등 상속 · 이전 컷 마지막 프레임이 다음 컷 I2V 앵커로 주입됩니다(피사체가 화면 밖으로 나가면 왜곡될 수 있음)."
+                        : "각 컷을 자기 프롬프트로 독립 생성 → 0.25초 디졸브 합본 · 피사체/유니폼 일관성 힌트 자동 부착 · 메인이 비면 파트 1 이 주 프롬프트로 쓰입니다.")</div>
                 </div>
             }
             else if (_durationMode == PromptFlowStudio.Services.Render.VideoDurationMode.Sec15_AmbientSlow)
@@ -741,7 +752,7 @@
                 <span class="ws-pcore on" data-ambient-badge="1">🌙 15초 엠비언트 루프 · 5초 마스터 → 무이음새 15초 핑퐁</span>
                 <label class="ws-dur-hint"><input type="checkbox" @bind="_ambientPingPong" disabled="@State.IsBusy" /> 🔁 리버스 핑퐁 루프(시작·끝 이음새 제거)</label>
             }
-            @if (_durationMode != PromptFlowStudio.Services.Render.VideoDurationMode.Sec5_Single && !State.IsBusy && string.IsNullOrWhiteSpace(_prompt) && string.IsNullOrWhiteSpace(_imagePath))
+            @if (_durationMode != PromptFlowStudio.Services.Render.VideoDurationMode.Sec5_Single && !State.IsBusy && string.IsNullOrWhiteSpace(EffectivePrompt) && string.IsNullOrWhiteSpace(_imagePath))
             {
                 <div class="ws-dur-hint" role="status" data-duration-need-input="1">⚠ 프롬프트를 입력하거나(T2V) 참조 사진 1장을 올려 주세요(I2V) — 입력 후 [✨ 생성 시작]</div>
             }
@@ -829,12 +840,19 @@
                     }
                 </div>
                 <div class="ws-ffp-act">
-                    <button class="ws-btn ghost sm" @onclick="GenerateFirstFramePreviewAsync" disabled="@(_ffpBusy || State.IsBusy || string.IsNullOrWhiteSpace(_prompt))"
+                    <button class="ws-btn ghost sm" @onclick="GenerateFirstFramePreviewAsync" disabled="@(_ffpBusy || State.IsBusy || string.IsNullOrWhiteSpace(EffectivePrompt))"
                             title="현재 프롬프트로 정지 이미지 1장을 생성합니다(Gemini 이미지 · 클릭 시에만 호출)">@(_ffpBusy ? "⏳ 생성 중…" : "🖼️ 첫 화면 미리보기")</button>
                     @if (_ffpPath is not null && !_ffpLocal)
                     {
                         <button class="ws-btn sm" @onclick="UseFirstFramePreviewAsync" disabled="@(_ffpBusy || State.IsBusy)" data-first-frame-use="1"
                                 title="이 이미지를 시작 프레임(I2V 참조)으로 지정하고 영상 생성을 시작합니다">🎬 이 첫 화면으로 영상 생성</button>
+                    }
+                    @if (_ffpPath is not null && !_ffpLocal && _imagePath is null)
+                    {
+                        <label class="ws-hint" data-first-frame-bind="1" title="[✨ 생성 시작] 시 이 미리보기를 컷 1 시작 프레임(I2V)으로 자동 사용 — 끄면 프롬프트만으로 생성">
+                            <input type="checkbox" @bind="_ffpBindCut1" disabled="@State.IsBusy" /> 🎯 컷 1 시작 프레임으로 사용
+                        </label>
+                        <button class="ws-btn ghost sm" @onclick="DiscardFirstFramePreviewFile" disabled="@State.IsBusy" data-first-frame-clear="1" title="미리보기 제거(컷 1 바인딩 해제)">✕ 미리보기 지우기</button>
                     }
                     @if (_ffpMsg is { Length: > 0 }) { <span class="ws-hint" role="status">@_ffpMsg</span> }
                 </div>
@@ -4703,7 +4721,11 @@
 
     // t2v 는 프롬프트 필수, i2v 는 이미지가 있으면 프롬프트 없이도 시작 가능.
     // 엔진(Wan 키) 상태로 버튼을 잠그지 않는다 — 10s/15s/앰비언트는 렌더 큐 경로, 5초 직결 미구성은 클릭 시 레드액션 안내.
-    private bool CanStart => PromptFlowStudio.Services.Render.WorkspaceGenerationReadiness.CanPress(State.IsBusy, _prompt, _imagePath);
+    private bool CanStart => PromptFlowStudio.Services.Render.WorkspaceGenerationReadiness.CanPress(State.IsBusy, _prompt, _imagePath, _durationMode, _subPrompts);
+    /// <summary>주 프롬프트 — 메인이 비고 멀티 컷 파트 1 이 채워져 있으면 파트 1 폴백.</summary>
+    private string EffectivePrompt => PromptFlowStudio.Services.Render.MultiDurationPlanner.ResolvePrimaryPrompt(_prompt, _subPrompts, _durationMode);
+    private PromptFlowStudio.Services.Render.CutTransitionMode _cutTransition = PromptFlowStudio.Services.Render.MultiDurationPlanner.DefaultTransition;
+    private bool _ffpBindCut1 = true;   // 검증된(원격) 첫 화면 미리보기 → 컷 1 시작 프레임 자동 바인딩
 
     private static readonly PromptFlowStudio.Services.Render.VideoDurationMode[] DurationModes =
     {
@@ -6325,13 +6347,26 @@
     }
 
     /// <summary>10s/15s/Ambient — 렌더 큐 적재(멀티 샷 체이닝·합본 / 앰비언트 루프 후처리는 큐 워커·엔진이 수행).</summary>
-    private void EnqueueDuration(string prompt)
+    private void EnqueueDuration(string prompt, string? cut1Ref)
     {
         RefreshRenderMode();   // 렌더 시작 직전 최신 [환경설정] 모드 재조회
         var project = "ws_" + DateTime.Now.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture);
         var meta = _durationMode == PromptFlowStudio.Services.Render.VideoDurationMode.Sec15_AmbientSlow && _ambientPingPong
             ? new Dictionary<string, string>(StringComparer.Ordinal) { [PromptFlowStudio.Services.Render.VideoEngineRenderExecutionEngine.MetaAmbientPingPong] = "true" }
             : null;
+        IReadOnlyList<string?> subs = _subPrompts;
+        if (PromptFlowStudio.Services.Render.MultiDurationPlanner.IsMultiShot(_durationMode))
+        {
+            meta = PromptFlowStudio.Services.Render.MultiDurationPlanner.WithTransition(meta, _cutTransition);   // 🎬 컷 전환 방식(독립 디졸브 / 프레임 체인)
+            if (_cutTransition == PromptFlowStudio.Services.Render.CutTransitionMode.IndependentCrossfade)
+            {
+                prompt = PromptFlowStudio.Services.Render.MultiDurationPlanner.WithContinuityHint(prompt);   // 독립 컷 피사체·유니폼 일관성
+                var hinted = new string?[_subPrompts.Length];
+                for (var i = 0; i < hinted.Length; i++)
+                    hinted[i] = string.IsNullOrWhiteSpace(_subPrompts[i]) ? null : PromptFlowStudio.Services.Render.MultiDurationPlanner.WithContinuityHint(_subPrompts[i]);
+                subs = hinted;
+            }
+        }
         var negative = EffectiveNegative(prompt);   // 🧭 도메인 격리 네거티브
         if (RunCoherenceGate(prompt, negative, null, null, null, _size) is { WasAutoSanitized: true } gate) negative = gate.SanitizedNegativePrompt;   // 🧩 누출 토큰·중복 구문 보정본 전송
         if (!string.IsNullOrWhiteSpace(negative))   // ☁️ Cloud 요청에 네거티브 프롬프트 전달
@@ -6342,13 +6377,13 @@
             Seed = _canvas.EffectiveSeed ?? Random.Shared.NextInt64(1, int.MaxValue),   // 그룹 전 컷 동일 시드(일관성)
             Resolution = _size.Replace('*', 'x'),
             DurationSec = PromptFlowStudio.Services.Render.MultiDurationPlanner.ShotSeconds,
-            ReferenceImagePath = _imagePath,
+            ReferenceImagePath = cut1Ref,   // 컷 1 전용(사용자 이미지 > 검증된 첫 화면 미리보기)
             OutputPath = Path.Combine(Media.MediaRoot, project + ".mp4"),
             DurationMode = _durationMode,
             Metadata = meta,
             EngineKind = _renderMode,   // 적재 시점 모드 표기(실제 엔진은 디스패치 시점 설정으로 재확정)
         };
-        var jobs = RenderQueue.EnqueueJob(template, _subPrompts, project);
+        var jobs = RenderQueue.EnqueueJob(template, subs, project);
         TrackMiniQueue(jobs);
         _durationMsg = jobs.Count == 0 ? "⚠ 렌더 큐 적재 실패"
             : "📥 렌더 큐 적재 " + jobs.Count.ToString(CultureInfo.InvariantCulture) + "컷 · " + PromptFlowStudio.Services.Render.MultiDurationPlanner.Label(_durationMode) + " → " + project;
@@ -6356,7 +6391,7 @@
 
     private void Start()
     {
-        var block = PromptFlowStudio.Services.Render.WorkspaceGenerationReadiness.Evaluate(State.IsBusy, _prompt, _imagePath, _durationMode, State.Enabled);
+        var block = PromptFlowStudio.Services.Render.WorkspaceGenerationReadiness.Evaluate(State.IsBusy, _prompt, _imagePath, _durationMode, State.Enabled, _subPrompts);
         if (block != PromptFlowStudio.Services.Render.WorkspaceStartBlock.None)
         {
             if (PromptFlowStudio.Services.Render.WorkspaceGenerationReadiness.BlockMessage(block) is { } msg) _durationMsg = msg;
@@ -6364,8 +6399,9 @@
         }
         _durationMsg = null;
         RefreshRenderMode();
-        var anchored = WithIdentityAnchor(_prompt);   // 🍼 캐릭터 일관성 앵커(비영속 · 멱등)
-        if (_durationMode != PromptFlowStudio.Services.Render.VideoDurationMode.Sec5_Single) { EnqueueDuration(anchored); return; }
+        var anchored = WithIdentityAnchor(EffectivePrompt);   // 🍼 캐릭터 일관성 앵커(비영속 · 멱등) · 메인 비면 파트 1 폴백
+        var cut1Ref = StageCut1Reference();   // 사용자 참조 우선 → 검증된 첫 화면 미리보기(토글 ON)
+        if (_durationMode != PromptFlowStudio.Services.Render.VideoDurationMode.Sec5_Single) { EnqueueDuration(anchored, cut1Ref); return; }
         _canvasQueueUrl = _canvasQueuePath = null;   // 단일 생성 — 캔버스를 라이브 진행 표시로 복귀
         // v16.20.0 미세 표정 퍼핏 — 표정 구문·정체성 유지·얼굴 보호 네거티브 비영속 주입(Neutral 은 원문 그대로).
         // v16.22.0 피사체 Identity 고정 — 프로필 정체성/의상/스타일 구문(비영속) · 얼굴 사진 I2V(사용자 이미지 우선) · 프로필 시드(핀 우선).
@@ -6379,7 +6415,7 @@
         {
             Prompt = emo.Prompt,
             Size = _size,
-            ImagePath = _imagePath ?? faceRef,   // null → t2v · 존재 → i2v(백엔드가 업로드→img_url 바인딩)
+            ImagePath = cut1Ref ?? faceRef,   // null → t2v · 존재 → i2v(백엔드가 업로드→img_url 바인딩) · 사용자 이미지 > 첫 화면 미리보기 > 얼굴
             LastFramePath = _imagePath is null ? null : _lastImagePath,   // v16.5.0: 첫+끝 → kf2v 보간
             NegativePrompt = emo.Negative,           // 비어 있으면 서비스가 필드 생략
             Seed = _canvas.EffectiveSeed ?? (idLock is { Seed: > 0 } ? idLock.Seed : null),   // 핀 해제 시 프로필 시드 → 없으면 서버 랜덤
@@ -6455,7 +6491,8 @@
     /// <summary>[첫 화면 미리보기] — 명시 클릭 시에만 Gemini 이미지 1장 생성 → _uploads 저장 → 가상호스트 표시. 실패는 Redact 안내.</summary>
     private async Task GenerateFirstFramePreviewAsync()
     {
-        if (_ffpBusy || string.IsNullOrWhiteSpace(_prompt)) return;
+        var ffpPrompt = EffectivePrompt;   // 메인이 비면 멀티 컷 파트 1
+        if (_ffpBusy || string.IsNullOrWhiteSpace(ffpPrompt)) return;
         _ffpBusy = true;
         _ffpMsg = null;
         var cts = new CancellationTokenSource();
@@ -6464,7 +6501,7 @@
         StateHasChanged();
         try
         {
-            var r = await GeminiSvc.GenerateFirstFrameImageAsync(_prompt, _size, cts.Token);
+            var r = await GeminiSvc.GenerateFirstFrameImageAsync(ffpPrompt, _size, cts.Token);
             if (_disposed) return;
             if (!r.Ok || r.Image is not { Length: > 0 } img)
             {
@@ -6505,6 +6542,29 @@
         _ffpPath = null;   // 참조 이미지로 소유권 이전(ClearImage 가 정리)
         _ffpMsg = "🎬 첫 화면을 시작 프레임으로 지정했습니다.";
         if (CanStart) Start();
+    }
+
+    /// <summary>
+    /// 컷 1 시작 프레임 확정 — 사용자 참조 이미지 우선, 없으면 토글 ON 인 원격(검증된) 첫 화면 미리보기를 작업 소유 사본으로 복제
+    /// (이후 미리보기 재생성/지우기가 대기 중 작업의 참조를 삭제하지 않도록). 복제 실패는 T2V 폴백.
+    /// </summary>
+    private string? StageCut1Reference()
+    {
+        var src = PromptFlowStudio.Services.Render.WorkspaceGenerationReadiness.ResolveCut1Reference(_imagePath, _ffpPath, _ffpLocal, _ffpBindCut1);
+        if (src is null || ReferenceEquals(src, _imagePath) || string.Equals(src, _imagePath, StringComparison.OrdinalIgnoreCase)) return src;
+        try
+        {
+            if (!File.Exists(src)) return null;
+            var copy = Path.Combine(Path.GetDirectoryName(src) ?? Media.MediaRoot, "cut1_" + Guid.NewGuid().ToString("N") + Path.GetExtension(src));
+            File.Copy(src, copy, overwrite: false);
+            _ffpMsg = "🎯 첫 화면 미리보기를 컷 1 시작 프레임으로 사용합니다.";
+            return copy;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Program.Log("Workspace.Cut1Reference", ex);
+            return null;
+        }
     }
 
     /// <summary>교체된 이전 미리보기 파일 정리(참조로 이전된 파일은 제외 · best-effort).</summary>

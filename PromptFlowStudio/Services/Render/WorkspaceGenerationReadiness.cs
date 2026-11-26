@@ -29,6 +29,25 @@ public static class WorkspaceGenerationReadiness
     public static bool CanPress(bool busy, string? prompt, string? imagePath)
         => !busy && ResolvePath(prompt, imagePath) != WorkspaceGenerationPath.None;
 
+    /// <summary>멀티 컷 인지 버튼 활성 — 메인 프롬프트가 비어도 파트 1 이 채워져 있으면 활성(파트 1 이 주 프롬프트로 폴백).</summary>
+    public static bool CanPress(bool busy, string? prompt, string? imagePath, VideoDurationMode mode, IReadOnlyList<string?>? subPrompts)
+        => CanPress(busy, MultiDurationPlanner.ResolvePrimaryPrompt(prompt, subPrompts, mode), imagePath);
+
+    /// <summary>멀티 컷 인지 클릭 판정(<see cref="CanPress(bool, string?, string?, VideoDurationMode, IReadOnlyList{string?}?)"/> 와 동일 폴백).</summary>
+    public static WorkspaceStartBlock Evaluate(bool busy, string? prompt, string? imagePath, VideoDurationMode mode, bool directEngineEnabled, IReadOnlyList<string?>? subPrompts)
+        => Evaluate(busy, MultiDurationPlanner.ResolvePrimaryPrompt(prompt, subPrompts, mode), imagePath, mode, directEngineEnabled);
+
+    /// <summary>
+    /// 컷 1 시작 프레임 — 사용자가 올린 참조 이미지 우선, 없으면 바인딩 토글이 켜진 원격(검증된) 첫 화면 미리보기.
+    /// 로컬 구도 폴백 미리보기는 실사 프레임이 아니므로 바인딩하지 않는다(T2V 유지).
+    /// </summary>
+    public static string? ResolveCut1Reference(string? userImagePath, string? previewPath, bool previewIsLocalFallback, bool bindPreview)
+    {
+        if (!string.IsNullOrWhiteSpace(userImagePath)) return userImagePath;
+        if (!bindPreview || previewIsLocalFallback || string.IsNullOrWhiteSpace(previewPath)) return null;
+        return previewPath;
+    }
+
     /// <summary>5초 단일 컷 외 모드는 렌더 큐 경로.</summary>
     public static bool UsesRenderQueue(VideoDurationMode mode) => mode != VideoDurationMode.Sec5_Single;
 
