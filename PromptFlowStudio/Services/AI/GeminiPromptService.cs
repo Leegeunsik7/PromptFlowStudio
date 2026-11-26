@@ -24,6 +24,9 @@ public sealed record GeminiEnhanceOutcome(string Prompt, bool UsedFallback, stri
 /// <summary>스토리보드 제미나이 디렉터 1컷 — 프롬프트 · 카메라 앵글 · 듀레이션(초).</summary>
 public sealed record DirectorShot(int Index, string Title, string Prompt, string Camera, float DurationSec);
 
+/// <summary>🖼️ 첫 화면 미리보기 결과 — Ok=false 면 Image=null + 사유(호출부에서 Redact 후 표시).</summary>
+public sealed record FirstFrameImageResult(bool Ok, byte[]? Image, string MimeType, string Message);
+
 /// <summary>✨ 대량생산 일괄 기획 1편 — 제목·영문 프롬프트·카메라·태그.</summary>
 public sealed record BatchPromptItem(int Index, string Title, string Prompt, string Camera, IReadOnlyList<string> Tags);
 
@@ -549,6 +552,116 @@ public sealed class GeminiPromptService : PromptFlowStudio.Services.Pluto.IPluto
         => image is { Length: > 0 } && image.Length <= MaxImageBytes
             ? CallAsync(system, user, new GeminiMedia(string.IsNullOrWhiteSpace(mimeType) ? "image/jpeg" : mimeType, image), true, temperature, ct)
             : Task.FromResult<string?>(null);
+
+    // ══════════════════════ 🖼️ 첫 화면 미리보기(생성 전 스틸 1장) ══════════════════════
+
+    /// <summary>첫 화면 미리보기 이미지 모델(Gemini 네이티브 이미지 출력).</summary>
+    public const string ImageModel = "gemini-2.5-flash-image";
+    public const string ImageEndpoint = "https://generativelanguage.googleapis.com/v1beta/models/" + ImageModel + ":generateContent";
+    /// <summary>이미지 호출 상한 — DI HttpClient(30s) 안쪽.</summary>
+    public static readonly TimeSpan ImageCallTimeout = TimeSpan.FromSeconds(28);
+    /// <summary>응답 이미지 디코드 상한(스키마 검증 · 과대 응답 차단).</summary>
+    public const int MaxPreviewImageBytes = 16 * 1024 * 1024;
+    public const string ImageUnavailableMessage = "이미지 생성 가능한 Gemini 키가 설정되지 않았습니다 — [환경설정]에서 키를 등록하세요.";
+
+    /// <summary>🖼️ 첫 화면 미리보기 — 키 설정 여부.</summary>
+    public bool IsImageGenerationAvailable => HasKey();
+
+    /// <summary>"1280*720"/"720*1280"/"960*960" · "1080x1920" → "16:9"/"9:16"/"1:1".</summary>
+    public static string AspectRatioOf(string? size)
+    {
+        var s = (size ?? "").Trim();
+        var sep = s.IndexOfAny(new[] { '*', 'x', 'X' });
+        if (sep > 0 && int.TryParse(s.AsSpan(0, sep), System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var w)
+            && int.TryParse(s.AsSpan(sep + 1), System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var h) && w > 0 && h > 0)
+            return w == h ? "1:1" : w > h ? "16:9" : "9:16";
+        return "16:9";
+    }
+
+    /// <summary>generateContent 이미지 요청 페이로드(IMAGE 모달리티 · 비율 고정).</summary>
+    internal static string BuildFirstFrameImagePayload(string prompt, string aspectRatio) => new JsonObject
+    {
+        ["contents"] = new JsonArray(new JsonObject
+        {
+            ["role"] = "user",
+            ["parts"] = new JsonArray(new JsonObject
+            {
+                ["text"] = "Generate ONE photorealistic still image that will be used as the very first frame of a short video. "
+                         + "Aspect ratio " + aspectRatio + ". No text, captions, watermarks or borders. Scene: " + prompt,
+            }),
+        }),
+        ["generationConfig"] = new JsonObject
+        {
+            ["responseModalities"] = new JsonArray("IMAGE"),
+            ["imageConfig"] = new JsonObject { ["aspectRatio"] = aspectRatio },
+        },
+    }.ToJsonString();
+
+    /// <summary>응답 본문 → 첫 inline 이미지(inlineData/inline_data · image/* · base64 · 상한). 스키마 불일치는 null.</summary>
+    internal static (byte[] Data, string MimeType)? ExtractInlineImage(string? body)
+    {
+        if (string.IsNullOrWhiteSpace(body)) return null;
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(body);
+            if (!doc.RootElement.TryGetProperty("candidates", out var cands) || cands.ValueKind != System.Text.Json.JsonValueKind.Array) return null;
+            foreach (var cand in cands.EnumerateArray())
+            {
+                if (!cand.TryGetProperty("content", out var content) || !content.TryGetProperty("parts", out var parts) || parts.ValueKind != System.Text.Json.JsonValueKind.Array) continue;
+                foreach (var part in parts.EnumerateArray())
+                {
+                    if (!part.TryGetProperty("inlineData", out var inl) && !part.TryGetProperty("inline_data", out inl)) continue;
+                    var mime = inl.TryGetProperty("mimeType", out var m) || inl.TryGetProperty("mime_type", out m) ? m.GetString() : null;
+                    if (mime is null || !mime.StartsWith("image/", StringComparison.OrdinalIgnoreCase)) continue;
+                    if (!inl.TryGetProperty("data", out var d) || d.GetString() is not { Length: > 0 } b64) continue;
+                    if (b64.Length / 4 * 3 > MaxPreviewImageBytes) return null;
+                    var bytes = Convert.FromBase64String(b64);
+                    return bytes.Length is > 0 and <= MaxPreviewImageBytes ? (bytes, mime) : null;
+                }
+            }
+            return null;
+        }
+        catch (Exception ex) when (ex is System.Text.Json.JsonException or FormatException or InvalidOperationException) { return null; }
+    }
+
+    /// <summary>
+    /// 🖼️ 생성 전 첫 화면 미리보기 1장 — 명시적 버튼 호출 전용(키 입력마다 호출 금지). 키 미설정·HTTP 실패·스키마 불일치는 예외 없이 Ok=false + 사유.
+    /// </summary>
+    public async Task<FirstFrameImageResult> GenerateFirstFrameImageAsync(string? prompt, string? size, CancellationToken ct = default)
+    {
+        var text = (prompt ?? "").Trim();
+        if (text.Length == 0) return new FirstFrameImageResult(false, null, "", "프롬프트를 먼저 입력하세요.");
+        string? key;
+        try { key = _apiKey(); } catch { key = null; }
+        if (string.IsNullOrWhiteSpace(key)) return new FirstFrameImageResult(false, null, "", ImageUnavailableMessage);
+        var payload = BuildFirstFrameImagePayload(text, AspectRatioOf(size));
+        try
+        {
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            cts.CancelAfter(ImageCallTimeout);
+            using var resp = await (Resilience ?? PromptFlowStudio.Services.Network.ResilientHttpClient.Shared).SendAsync(_http, () =>
+            {
+                var req = new HttpRequestMessage(HttpMethod.Post, ImageEndpoint) { Content = new StringContent(payload, Encoding.UTF8, "application/json") };
+                req.Headers.TryAddWithoutValidation("x-goog-api-key", key);
+                return req;
+            }, cts.Token).ConfigureAwait(false);
+            if (!resp.IsSuccessStatusCode)
+                return new FirstFrameImageResult(false, null, "", "이미지 생성 실패 — HTTP " + ((int)resp.StatusCode).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            var body = await resp.Content.ReadAsStringAsync(cts.Token).ConfigureAwait(false);
+            return ExtractInlineImage(body) is { } img
+                ? new FirstFrameImageResult(true, img.Data, img.MimeType, "첫 화면 미리보기 생성 완료")
+                : new FirstFrameImageResult(false, null, "", "이미지 생성 실패 — 응답에 이미지가 없습니다(안전 필터 또는 모델 미지원).");
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            return new FirstFrameImageResult(false, null, "", "이미지 생성 시간 초과 — 잠시 후 다시 시도하세요.");
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException and not OutOfMemoryException)
+        {
+            Program.Log("GeminiPromptService.FirstFrameImage", ex);
+            return new FirstFrameImageResult(false, null, "", "이미지 생성 실패 — " + ex.Message);
+        }
+    }
 
     private bool HasKey()
     {

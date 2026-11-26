@@ -11,7 +11,6 @@
 @inject PromptDraftService Draft
 @inject PromptFlowStudio.Services.Platform.ErrorDialogService Errors
 @inject NavigationManager Nav
-@inject PromptFlowStudio.Services.AI.Wan.LiveStreamVirtualCamPipe VirtualCam
 @inject IJSRuntime JS
 @inject IServiceProvider EcoSp
 @inject AiAudioDrivenLipSyncService LipAi
@@ -775,10 +774,6 @@
                     @if (_miniError is not null) { <div class="ws-mini-err">⛔ @(_miniError)</div> }
                     @if (_miniNotice is not null) { <div class="ws-mini-note">ℹ @(_miniNotice)</div> }
                     @if (_miniCheckpoint is not null) { <div class="ws-mini-note"><span class="ws-ckpt-badge" data-checkpoint-reuse="1" title="@(_miniCheckpoint)">@(PromptFlowStudio.Services.Render.VideoEngineRenderExecutionEngine.CheckpointBadgeLabel)</span> @(_miniCheckpoint)</div> }
-                    @if (_miniUrl is not null)
-                    {
-                        <video class="ws-mini-q-vid" src="@_miniUrl" controls autoplay loop muted preload="auto" @key="_miniUrl"></video>
-                    }
                     @if (_mini.Phase == PromptFlowStudio.Services.Render.MiniQueuePhase.Completed && _mini.FinalPath is { } miniFinal)
                     {
                         <button class="ws-btn sm ws-pub" @onclick="() => OpenPublish(miniFinal)" title="YouTube Shorts · Instagram Reels 원클릭 발행">🚀 SNS 원클릭 발행</button>
@@ -816,9 +811,34 @@
                     }
                 </div>
             </div>
-            @* v5.6.5·v5.6.6: 생성 전 예상 첫 프레임 + 참조(i2v) 이미지 앵커 대조(정체성 드리프트 사전검증)
-               v16.12.0: 정적 스틸 프리뷰 전용 — 렌더 큐 비결선(생성은 [영상 생성 시작] 버튼만 · 재생은 라이브 비디오 캔버스 전담) *@
-            <FirstFramePreviewDeck Prompt="@_prompt" AnchorImageUrl="@_imagePreview" AnchorAspect="@_vm.ReferenceAspectCss" Size="@_size" />
+            @* 🖼️ 첫 화면 미리보기 — 정적 예상 프레임 더미 대체: [첫 화면 미리보기] 명시 클릭 시에만 Gemini 이미지 1장 생성(키 입력마다 호출 금지)
+               → [이 첫 화면으로 영상 생성] 시 시작 프레임(I2V 참조)으로 바인딩 후 생성. 키 미설정/실패는 Redact 안내. *@
+            <div class="ws-ffp" data-first-frame-preview="1">
+                <div class="ws-ffp-h">
+                    <span>🖼️ 첫 화면 미리보기</span>
+                    <span class="ws-hint">@(GeminiPromptService.AspectRatioOf(_size))</span>
+                </div>
+                <div class="ws-ffp-vp" style="aspect-ratio: @(FirstFrameAspectCss)">
+                    @if (_ffpUrl is not null)
+                    {
+                        <img src="@_ffpUrl" alt="첫 화면 미리보기" @key="_ffpUrl" />
+                    }
+                    else
+                    {
+                        <div class="ws-ffp-ph">@(_ffpBusy ? "⏳ 첫 화면 생성 중…" : "프롬프트 입력 후 [첫 화면 미리보기]를 누르면 생성 전 첫 장면을 확인할 수 있습니다.")</div>
+                    }
+                </div>
+                <div class="ws-ffp-act">
+                    <button class="ws-btn ghost sm" @onclick="GenerateFirstFramePreviewAsync" disabled="@(_ffpBusy || State.IsBusy || string.IsNullOrWhiteSpace(_prompt))"
+                            title="현재 프롬프트로 정지 이미지 1장을 생성합니다(Gemini 이미지 · 클릭 시에만 호출)">@(_ffpBusy ? "⏳ 생성 중…" : "🖼️ 첫 화면 미리보기")</button>
+                    @if (_ffpPath is not null)
+                    {
+                        <button class="ws-btn sm" @onclick="UseFirstFramePreviewAsync" disabled="@(_ffpBusy || State.IsBusy)" data-first-frame-use="1"
+                                title="이 이미지를 시작 프레임(I2V 참조)으로 지정하고 영상 생성을 시작합니다">🎬 이 첫 화면으로 영상 생성</button>
+                    }
+                    @if (_ffpMsg is { Length: > 0 }) { <span class="ws-hint" role="status">@_ffpMsg</span> }
+                </div>
+            </div>
             <div class="ws-actions">
                 @if (State.IsBusy)
                 {
@@ -1063,12 +1083,6 @@
                     </div>
                 </div>
             }
-
-            @* v15.4.1 MMF 라이브 프레임 캔버스 — 파이프 시퀀스가 전진할 때만 그린다(최대 ~60FPS) *@
-            <div class="ws-live">
-                <canvas id="ws-live" class="ws-live-cv" width="128" height="128"></canvas>
-                <span class="ws-live-badge @(_liveSignal ? "on" : null)">@(_liveSignal ? "● LIVE · MMF" : "○ 프레임 신호 대기")</span>
-            </div>
 
             @* v15.4.0 ⚙️ Wan 2.1 파라미터 튜너 · 🍼 아기 디테일 복원 스위치 · 📊 미니 텔레메트리 바 *@
             <div class="ws-tune">
@@ -1666,10 +1680,12 @@
     .ws-neg-sent { margin-top: 4px; font: 600 10px var(--mono); color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .ws-domain-reset { font: 700 9.5px var(--mono); color: #f59e0b; background: transparent; border: 1px solid color-mix(in srgb, #f59e0b 45%, var(--line)); border-radius: 999px; padding: 2px 7px; cursor: pointer; }
     .ws-domain-reset:disabled { opacity: .5; cursor: default; }
-    .ws-live { position: relative; border-radius: 12px; overflow: hidden; background: #000; border: 1px solid var(--line); aspect-ratio: 16/9; display: flex; align-items: center; justify-content: center; }
-    .ws-live-cv { height: 100%; max-width: 100%; image-rendering: auto; }
-    .ws-live-badge { position: absolute; left: 8px; top: 8px; font: 700 10px var(--mono); color: var(--text-muted); background: rgba(0,0,0,.55); padding: 3px 8px; border-radius: 999px; }
-    .ws-live-badge.on { color: #ef4444; }
+    .ws-ffp { border: 1px solid var(--line); border-radius: 12px; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+    .ws-ffp-h { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-weight: 700; font-size: 13px; }
+    .ws-ffp-vp { width: 100%; max-height: 360px; border-radius: 8px; overflow: hidden; background: var(--surface-2, rgba(127,127,127,.12)); display: flex; align-items: center; justify-content: center; margin: 0 auto; }
+    .ws-ffp-vp img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .ws-ffp-ph { font-size: 12px; color: var(--text-muted); text-align: center; padding: 12px; }
+    .ws-ffp-act { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
     /* v15.6.0 다크 글래스모피즘 + 네온 액센트(테마 변수 기반 — 라이트 테마에서도 카드 대비 유지) */
     .ws-card, .ws-w { background: color-mix(in srgb, var(--card) 82%, transparent); backdrop-filter: blur(14px) saturate(140%); -webkit-backdrop-filter: blur(14px) saturate(140%);
         box-shadow: inset 0 1px 0 rgba(255,255,255,.06), 0 10px 30px rgba(0,0,0,.22); transition: border-color .2s, box-shadow .2s; }
@@ -1706,7 +1722,6 @@
     .ws-mini-err { margin-top: 6px; font-size: 12px; font-weight: 600; color: #e5484d; }
     .ws-mini-note { margin-top: 6px; font-size: 11px; color: var(--text-secondary); }
     .ws-ckpt-badge { display: inline-block; font: 700 10.5px var(--mono); border-radius: 999px; padding: 2px 8px; color: #10b981; border: 1px solid color-mix(in srgb, #22d3ee 55%, #10b981); background: rgba(16,185,129,.12); white-space: nowrap; }
-    .ws-mini-q-vid { width: 100%; margin-top: 8px; border-radius: 6px; background: #000; }
     .ws-zen-chip.on { color: var(--text-primary); border-color: var(--flow-cyan); box-shadow: 0 0 12px color-mix(in srgb, var(--flow-cyan) 45%, transparent), inset 0 0 8px color-mix(in srgb, var(--flow-cyan) 18%, transparent); }
     .ws-zen-chip:disabled { opacity: .5; cursor: not-allowed; }
     @@media (prefers-reduced-motion: reduce) { .ws-accel.run { animation: none; } }
@@ -6429,6 +6444,76 @@
         return chars.Length == 0 ? "photo" : new string(chars);
     }
 
+    // ── 🖼️ 첫 화면 미리보기(생성 전 스틸 1장) ──
+    private bool _ffpBusy;
+    private string? _ffpPath, _ffpUrl, _ffpMsg;
+    private CancellationTokenSource? _ffpCts;
+
+    /// <summary>선택 해상도 비율 → CSS aspect-ratio("16 / 9" · "9 / 16" · "1 / 1").</summary>
+    private string FirstFrameAspectCss => GeminiPromptService.AspectRatioOf(_size) switch { "9:16" => "9 / 16", "1:1" => "1 / 1", _ => "16 / 9" };
+
+    /// <summary>[첫 화면 미리보기] — 명시 클릭 시에만 Gemini 이미지 1장 생성 → _uploads 저장 → 가상호스트 표시. 실패는 Redact 안내.</summary>
+    private async Task GenerateFirstFramePreviewAsync()
+    {
+        if (_ffpBusy || string.IsNullOrWhiteSpace(_prompt)) return;
+        _ffpBusy = true;
+        _ffpMsg = null;
+        var cts = new CancellationTokenSource();
+        var prev = Interlocked.Exchange(ref _ffpCts, cts);
+        if (prev is not null) { prev.Cancel(); prev.Dispose(); }
+        StateHasChanged();
+        try
+        {
+            var r = await GeminiSvc.GenerateFirstFrameImageAsync(_prompt, _size, cts.Token);
+            if (_disposed) return;
+            if (!r.Ok || r.Image is not { Length: > 0 } img)
+            {
+                _ffpMsg = "⚠ " + PromptFlowStudio.Services.Pluto.PlutoAutonomousActivityFeedService.Redact(r.Message);
+                return;
+            }
+            var dir = Path.Combine(Media.MediaRoot, "_uploads");
+            Directory.CreateDirectory(dir);
+            var ext = r.MimeType.EndsWith("jpeg", StringComparison.OrdinalIgnoreCase) || r.MimeType.EndsWith("jpg", StringComparison.OrdinalIgnoreCase) ? ".jpg" : ".png";
+            var path = Path.Combine(dir, "firstframe_" + Guid.NewGuid().ToString("N") + ext);
+            await File.WriteAllBytesAsync(path, img, cts.Token);
+            DiscardFirstFramePreviewFile();
+            _ffpPath = path;
+            _ffpUrl = Media.ToPlaybackUrl(path);
+            _ffpMsg = "✅ " + r.Message;
+        }
+        catch (OperationCanceledException) { /* 재요청·페이지 이탈 */ }
+        catch (Exception ex)
+        {
+            Program.Log("Workspace.FirstFramePreview", ex);
+            _ffpMsg = "⚠ 첫 화면 미리보기 실패: " + PromptFlowStudio.Services.Pluto.PlutoAutonomousActivityFeedService.Redact(ex.Message);
+        }
+        finally
+        {
+            if (ReferenceEquals(Interlocked.CompareExchange(ref _ffpCts, null, cts), cts)) cts.Dispose();
+            _ffpBusy = false;
+            if (!_disposed) StateHasChanged();
+        }
+    }
+
+    /// <summary>[이 첫 화면으로 영상 생성] — 미리보기를 시작 프레임(I2V 참조)으로 바인딩 후 생성 시작.</summary>
+    private async Task UseFirstFramePreviewAsync()
+    {
+        if (_ffpPath is not { } path || !File.Exists(path) || State.IsBusy) { _ffpMsg = "⚠ 미리보기 이미지가 없습니다 — 다시 생성하세요."; return; }
+        await BindStartFrameAsync(path, _mediaCts.Token);
+        _ffpPath = null;   // 참조 이미지로 소유권 이전(ClearImage 가 정리)
+        _ffpMsg = "🎬 첫 화면을 시작 프레임으로 지정했습니다.";
+        if (CanStart) Start();
+    }
+
+    /// <summary>교체된 이전 미리보기 파일 정리(참조로 이전된 파일은 제외 · best-effort).</summary>
+    private void DiscardFirstFramePreviewFile()
+    {
+        var old = _ffpPath;
+        _ffpPath = null; _ffpUrl = null;
+        if (old is null || string.Equals(old, _imagePath, StringComparison.OrdinalIgnoreCase)) return;
+        try { if (File.Exists(old)) File.Delete(old); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+    }
+
     /// <summary>참조 이미지 제거(임시 파일 정리 · best-effort).</summary>
     private void ClearImage()
     {
@@ -6679,8 +6764,8 @@
         Ipc.OnTickerSelected -= OnIpcTicker;
         _vm.PropertyChanged -= OnVmChanged;
         Presets.Changed -= OnUserPresetsChanged;
-        var cts = Interlocked.Exchange(ref _liveCts, null);
-        if (cts is not null) { cts.Cancel(); cts.Dispose(); }
+        var ffpCts = Interlocked.Exchange(ref _ffpCts, null);
+        if (ffpCts is not null) { ffpCts.Cancel(); ffpCts.Dispose(); }
         _mediaCts.Cancel(); _mediaCts.Dispose();
         _guardCts.Cancel(); _guardCts.Dispose();
         if (_seamCheck)
@@ -6825,22 +6910,12 @@
         finally { _timelineBusy = false; }
     }
 
-    // ── v15.4.1 MMF 라이브 캔버스: 16ms 틱 폴링 → 새 시퀀스만 JS 캔버스로 전달. 리더 복사는 0B, interop 마샬링은 프레임당 1회 ──
-    private LiveCanvasFrameReader? _live;
-    private CancellationTokenSource? _liveCts;
-    private bool _liveSignal;
-    private Func<Task>? _liveDraw;
-
     protected override void OnAfterRender(bool firstRender)
     {
         if (!firstRender) return;
         // 🌱 HTS 스마트 에코 절전 — 백그라운드/최소화 시 <video> 일시정지(GPU 디코더 0%). 설정 서비스 부재(모바일) 시 기본 ON.
         var eco = EcoSp.GetService(typeof(PromptFlowStudio.Services.Ui.UserPreferenceService)) is PromptFlowStudio.Services.Ui.UserPreferenceService ecoPrefs ? ecoPrefs.HtsEcoMode : true;
         _ = SetEcoModeAsync(eco);
-        var live = _live = new LiveCanvasFrameReader(VirtualCam);
-        var draw = _liveDraw = () => JS.InvokeVoidAsync("pfsLiveCanvas.draw", "ws-live", live.Width, live.Height, live.Frame).AsTask();
-        var cts = _liveCts = new CancellationTokenSource();
-        _ = LiveLoopAsync(live, draw, cts.Token);
         _ = RefreshAbPendingAsync();   // 📋 재시작 후 대기 A/B 실험 복원(예외 내부 격리)
         _ = RefreshBrainSummaryAsync();   // 🧠 두뇌 리포트 선집계(예외 내부 격리)
         _ = RefreshCatalogClipsAsync();   // 🎞️ 영속 렌더 카탈로그 선적재(재시작 후 최근 렌더 선택)
@@ -6853,27 +6928,6 @@
         catch (Exception ex) when (ex is JSException or JSDisconnectedException or InvalidOperationException or TaskCanceledException or ObjectDisposedException) { /* 브릿지 미적재 — 무시 */ }
     }
 
-    private async Task LiveLoopAsync(LiveCanvasFrameReader reader, Func<Task> draw, CancellationToken ct)
-    {
-        try
-        {
-            using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(16));
-            while (await timer.WaitForNextTickAsync(ct).ConfigureAwait(false))
-            {
-                try
-                {
-                    if (!reader.TryPoll()) continue;
-                    await InvokeAsync(draw).ConfigureAwait(false);
-                    if (!_liveSignal) { _liveSignal = true; await InvokeAsync(StateHasChanged).ConfigureAwait(false); }
-                }
-                catch (OperationCanceledException) { throw; }
-                catch (JSDisconnectedException) { return; }
-                catch (ObjectDisposedException) { return; }
-                catch (Exception ex) { Program.Log("Workspace.LiveCanvas", ex); }
-            }
-        }
-        catch (OperationCanceledException) { /* 페이지 이탈 */ }
-    }
     private void OnStateChanged()
     {
         // v16.3.1: 업로드/네트워크 실패는 1회 안내 팝업 + [다시 시도](동일 입력으로 재시작). 원문 XML 은 서비스 단에서 이미 정화.

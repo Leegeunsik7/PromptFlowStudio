@@ -150,6 +150,8 @@ public class AmbientLoopTests : IDisposable
         Assert.Contains("-filter_complex", seen!);   // 기본 = 정방향 크로스페이드(역재생 없음)
         Assert.DoesNotContain(seen!, a => a.Contains("reverse", StringComparison.Ordinal));
         Assert.Equal("applied", job.Metadata![VideoEngineRenderExecutionEngine.MetaAmbientApplied]);
+        Assert.False(File.Exists(src));   // 단일 산출물 — 원본 5초 중간본 제거(갤러리 중복 방지)
+        Assert.Single(Directory.GetFiles(_dir, "*.mp4"));
     }
 
     [Fact]

@@ -513,7 +513,29 @@ public sealed class VideoEngineRenderExecutionEngine : IRenderExecutionEngine, I
         job.Metadata = MultiDurationPlanner.WithMeta(job.Metadata, MetaAmbientApplied, state);
         if (!res.Ok) job.Metadata = MultiDurationPlanner.WithMeta(job.Metadata, MetaAmbientNotice, res.Message);
         // 성공본 또는 대체 보존 원본 — 실존 확인 후 채택, 아니면 원본 5초 유지(유실 금지)
-        return res.OutputPath is { } p && File.Exists(p) ? p : output;
+        if (res.OutputPath is not { } p || !File.Exists(p)) return output;
+        if (res.Ok) DiscardIntermediate(output, p);   // 단일 산출물 — 갤러리 중복(wo_<ts>.mp4 + _ambient15s.mp4) 방지
+        return p;
+    }
+
+    /// <summary>
+    /// 앰비언트 성공 후 원본 5초 중간 산출물 삭제 — 최종본이 실존·비어있지 않고 경로가 다를 때만(체크포인트는 별도 캐시 사본이라 무영향).
+    /// 삭제 실패는 격리(최종본 확정을 막지 않음).
+    /// </summary>
+    internal static bool DiscardIntermediate(string intermediate, string final)
+    {
+        try
+        {
+            if (string.Equals(Path.GetFullPath(intermediate), Path.GetFullPath(final), StringComparison.OrdinalIgnoreCase)) return false;
+            if (!File.Exists(intermediate) || new FileInfo(final).Length <= 0) return false;
+            File.Delete(intermediate);
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            Program.Log("RenderExec.AmbientCleanup", ex);
+            return false;
+        }
     }
 
     /// <summary>취소 콜백 — 중단 신호 fire-and-forget(예외 격리 · 콜백 스레드 비차단).</summary>

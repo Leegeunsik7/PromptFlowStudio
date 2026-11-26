@@ -996,7 +996,7 @@ public class VisionActionMapperTests
         Assert.Contains(".ws-grid > .ws-card, .ws-grid > .ws-rail { height: 100%; min-height: 0;", razor);
         Assert.Contains(".ws-rail > .ws-w:last-child { flex: 1 1 auto; }", razor);
         Assert.Contains("text-align: right; font-variant-numeric: tabular-nums;", razor);   // 튜너 수치 우측 정렬선
-        Assert.Contains("id=\"ws-live\"", razor);                                          // MMF 라이브 캔버스 결선점
+        Assert.DoesNotContain("id=\"ws-live\"", razor);                                    // 빈 '프레임 신호 대기' 모니터 제거
         Assert.Contains("Tuning = _canvas.Snapshot()", razor);                             // 튜너 → 요청 결선
 
         // 2) 튜너 스냅숏 → DashScope 토큰: UI 경계값이 그대로 클라우드 프롬프트에 반영.
