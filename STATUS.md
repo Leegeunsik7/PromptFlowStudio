@@ -1,15 +1,17 @@
 # STATUS (2026-11-26)
 
-## 최근 작업
-- 🧠 플루토 자기학습 비디오 디렉터 메모리: `Services/AI/PlutoVideoLearningMemoryService`
-  - 영속 `%LocalAppData%\PromptFlowStudio\pluto_director_memory.json`(주입 경로 ctor · 원자적 저장 · 손상 → seed 복구)
-  - seed 5종(피사체/의상 · eye-level/트래킹 · 순방향 인과 물리 · 안티 왜곡 네거티브 · 앰비언트 로우키)
-  - `GetLearnedGuidanceForPrompt` · `RecordPositiveOutcome`(👍/내보내기 → 레시피 강화) · `RecordFailureAndGetRefinement`(👎 사유 4종 → 회피 규칙 + 즉시 보정본)
-- 프리플라이트 연동: `PromptPreflightDirector.RefineLocal/BuildInstruction/FromAi` 학습 가이던스 오버로드 · `GeminiPromptService.AnalyzeAndRefinePromptAsync(..., learned)` (Gemini 지시문 + 로컬 폴백 양쪽)
-- 작업실: `🧠 플루토 학습 패턴 N건 적용됨` 배지 · 라이브 비디오 캔버스 `👍 잘 나옴 (학습)` / `👎 어색함 (보완 재생성)`(사유 칩 · 즉시 재생성 토글)
-- DI: `MainForm.cs` · `MauiProgram.cs` 동일 팩토리 등록(패리티)
-- 테스트: `PlutoVideoLearningMemoryTests`(격리 경로 영속 · 👎 → 유사 프롬프트 보정 변화 · 👍 강화 · AI/오프라인 주입 · DI 패리티 · Pluto 9/6/2)
+## 최근 작업 — 플루토 자율 비디오 디렉터 확장
+- 🎯 자동 첫 프레임 시드 고정: `GeminiPromptService.GenerateFirstFramePreviewAsync`(원격 전용 · 로컬 폴백 PNG 무시 · 키 없으면 HTTP 0) · `RenderQueueService.TryAutoVisualAnchorAsync` → 컷 1 I2V 시드
+  - 작업실 토글 `🎯 자동 첫 프레임 시드 고정`(기본 = Gemini 키 설정 시 ON) · 고정 미리보기/업로드/얼굴 프로필 우선
+- 🩺 렌더 후 QC: `FFmpegVideoStitchService.AnalyzeRenderQualityAsync/EvaluateFrames`(길이 0 · 시작/중간/끝 정지 · 검정 · 손상 — 32×18 gray 샘플)
+  - `RenderQueueService.TryQcSelfHealAsync`: 결함 → `PlutoVideoLearningMemoryService.RecordRenderQualityDefect` + 안정화 프롬프트/네거티브로 1회 재시도, 재결함 시 `QcDegraded` 경고 후 클립 노출(Mock 엔진 · 원격 산출 · ffmpeg 부재는 생략)
+  - 큐 렌더(10s/15s/앰비언트/장편)에만 적용 — 5초 단일 생성은 큐 미경유
+- ✨ `플루토 감독 확장` 버튼(프롬프트 박스 옆 · 학습 디렉터 보정본 미리보기/적용)
+- 📥 `기존 갤러리 학습 흡수`: `ImportGalleryBaselineFromDirectory`(`*.meta.json` · Mock 제외 · 프롬프트 해시 중복 제거 · 멱등 · 기준선 가중치 0.5)
+- `BatchRenderJob.Prompt` init → set(QC 안정화 재시도)
+- DI 변경 없음(학습 메모리는 작업실에서 큐에 결선) · Pluto 9/6/2 유지
 
 ## 검증
 - Release `-warnaserror -p:NuGetAudit=false` 경고 0 / 오류 0 (Desktop · Tests · bin/Release — 앱 미실행)
-- xUnit 1582/1582 통과(exit 0) · Pluto 9/6/2 유지 · Mobile 빌드 미실행(MAUI 워크로드 범위 외)
+- xUnit 1593/1593 통과(exit 0) · 신규 `PlutoAutoAnchorQcSelfHealAndGalleryBootstrapTests` 11건
+- Mobile 빌드 미실행(MAUI 워크로드 범위 외)

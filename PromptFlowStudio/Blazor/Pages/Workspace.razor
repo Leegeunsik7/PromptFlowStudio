@@ -686,6 +686,18 @@
             <textarea class="ws-ta" @bind="_prompt" @bind:event="oninput" @bind:after="OnPromptTyped"
                       placeholder="@(_imagePath is null ? "예) 노을 지는 해변을 천천히 걷는 골든리트리버, 시네마틱, 부드러운 카메라 팬" : "예) 카메라가 천천히 줌인, 머리카락이 바람에 날림 (i2v는 움직임 위주로 · 프롬프트 선택)")"
                       maxlength="800" disabled="@State.IsBusy"></textarea>
+            @* ✨ 플루토 감독 원클릭 확장 — 거친 1줄 아이디어 → 학습 디렉터 보정본 미리보기 · 적용 *@
+            <div class="ws-magic" role="group" aria-label="플루토 감독 확장" data-pluto-magic-expand="1">
+                <button class="ws-pf-btn" @onclick="MagicExpandAsync" disabled="@(State.IsBusy || _magicBusy || _preflightBusy || string.IsNullOrWhiteSpace(_prompt))"
+                        title="입력한 아이디어를 플루토 학습 디렉터(👍 레시피 · 👎 회피 규칙 · 클립 길이 압축)로 미리 확장합니다 — 적용 전 비교 가능">@(_magicBusy ? "⏳ 확장 중…" : "✨ 플루토 감독 확장")</button>
+                @if (_magic is { } mx)
+                {
+                    <span class="ws-learn-msg" role="status">@mx.SummaryKo</span>
+                    <div class="ws-pf-cmp" data-pluto-magic-preview="1"><div><b>확장본</b> @mx.RefinedPrompt</div></div>
+                    <button class="ws-pf-btn" @onclick="ApplyMagicExpand" disabled="@State.IsBusy" data-pluto-magic-apply="1">✅ 적용</button>
+                    <button class="ws-pf-btn" @onclick="() => _magic = null" data-pluto-magic-cancel="1">✕ 취소</button>
+                }
+            </div>
             @* 👶 아기 감성 & 성장 무드 칩 바 · ✨ 3종 스타일 동시 전개 *@
             <div class="ws-mood-bar" role="group" aria-label="아기 감성 & 성장 무드">
                 <span class="ws-mood-cap">아기 감성 & 성장 무드</span>
@@ -894,10 +906,13 @@
                 }
                 else
                 {
-                    <button class="ws-btn" disabled="@(!CanStart || _preflightBusy)" @onclick="Start">@(_preflightBusy ? "🛡️ 프롬프트 보정 중…" : "✨ 생성 시작")</button>
+                    <button class="ws-btn" disabled="@(!CanStart || _preflightBusy || _anchorBusy)" @onclick="Start">@(_anchorBusy ? "🎯 첫 프레임 시드 생성 중…" : _preflightBusy ? "🛡️ 프롬프트 보정 중…" : "✨ 생성 시작")</button>
                 }
                 <label class="ws-pf-tog" title="생성 직전 프롬프트를 분석해 클립 길이에 맞게 동작을 압축하고 카메라·피사체·조명·물리 연속성 앵커와 안티 아티팩트 네거티브를 자동 보정합니다(모든 장르 공통 · Gemini 키 없으면 로컬 규칙)." data-preflight-toggle="@(_preflightOn ? "on" : "off")">
                     <input type="checkbox" @bind="_preflightOn" disabled="@(State.IsBusy || _preflightBusy)" /> 🛡️ AI 프롬프트 자동 보정
+                </label>
+                <label class="ws-pf-tog" title="참조 사진·고정된 미리보기가 없으면 [✨ 생성 시작] 시 Gemini 로 깨끗한 첫 프레임 1장을 자동 생성해 컷 1 시작 프레임(I2V 시드)으로 고정합니다 — 머리 잘림·크롭 시작 방지(키 없거나 실패 시 프롬프트만으로 생성)" data-auto-anchor-toggle="@(_autoAnchorOn ? "on" : "off")">
+                    <input type="checkbox" @bind="_autoAnchorOn" disabled="@(State.IsBusy || _anchorBusy)" /> 🎯 자동 첫 프레임 시드 고정
                 </label>
                 <span class="ws-eng ws-eng-@(_renderMode.ToLowerInvariant())" title="[환경설정] 기본 렌더 모드 — 변경 즉시 반영">● 렌더 엔진: @(_renderMode)</span>
             </div>
@@ -972,6 +987,12 @@
                     @if (_learnMsg is not null) { <span class="ws-learn-msg" role="status">@_learnMsg</span> }
                 </div>
             }
+            <div class="ws-learn-fb" role="group" aria-label="플루토 학습 상태" data-pluto-learn-status="1">
+                <span class="ws-learn-ind" title="플루토 자기학습 디렉터 메모리(👍 레시피 · 👎/🩺 회피 규칙)">🧠 @PlutoLearn.ToString()</span>
+                <button class="ws-pf-btn" @onclick="ImportGalleryLearningAsync" disabled="@_galleryImportBusy" data-pluto-gallery-import="1"
+                        title="저장된 갤러리 영상의 메타(.meta.json) 프롬프트를 긍정 기준선 레시피로 흡수합니다 — 프롬프트 해시로 중복 제거(여러 번 눌러도 안전)">@(_galleryImportBusy ? "⏳ 흡수 중…" : "📥 기존 갤러리 학습 흡수")</button>
+                @if (_galleryImportMsg is not null) { <span class="ws-learn-msg" role="status">@_galleryImportMsg</span> }
+            </div>
             @if (_htsHud)
             {
                 <div class="ws-hts-ctl">
@@ -1806,6 +1827,7 @@
     .ws-learn-fb { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 4px 0 6px; font-size: 11px; }
     .ws-learn-auto { display: inline-flex; align-items: center; gap: 4px; color: var(--text-secondary); }
     .ws-learn-msg { color: var(--text-secondary); }
+    .ws-magic { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 4px 0; font-size: 11px; }
     .ws-pf-btn {font-size: 11px; padding: 1px 8px; border-radius: 10px; border: 1px solid var(--border, #444); background: transparent; color: inherit; cursor: pointer; }
     .ws-pf-cmp { flex-basis: 100%; display: grid; gap: 3px; padding: 6px 8px; border-radius: 6px; background: rgba(127,127,127,.08); word-break: break-word; }
     .ws-mini-q { margin: 4px 0 8px; padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--flow-cyan) 40%, transparent); border-radius: 8px; background: color-mix(in srgb, var(--flow-cyan) 6%, transparent); }
@@ -6591,9 +6613,77 @@
         finally { _learnBusy = false; }
     }
 
+    // ── ✨ 플루토 감독 원클릭 확장(생성 전 미리보기 · 적용 시 입력 박스 교체) ──
+    private bool _magicBusy;
+    private PromptFlowStudio.Services.AI.PromptPreflightResult? _magic;
+
+    /// <summary>[✨ 플루토 감독 확장] — 학습 디렉터 보정본을 미리 계산(실패/타임아웃은 로컬 규칙 · throw 없음).</summary>
+    private async Task MagicExpandAsync()
+    {
+        if (_magicBusy || string.IsNullOrWhiteSpace(_prompt)) return;
+        _magicBusy = true;
+        try { _magic = await RunPreflightAsync(_prompt); }
+        catch (Exception ex) when (ex is not OutOfMemoryException) { Program.Log("Workspace.MagicExpand", ex); _magic = null; }
+        finally { _magicBusy = false; }
+    }
+
+    /// <summary>[✅ 적용] — 확장본을 입력 박스에 반영(원문은 🧠 학습 기준으로 보존).</summary>
+    private void ApplyMagicExpand()
+    {
+        if (_magic is not { } m || State.IsBusy) return;
+        _prompt = m.RefinedPrompt;
+        _preflight = m;
+        _preflightReverted = false;
+        _magic = null;
+    }
+
+    // ── 📥 기존 갤러리 학습 흡수 ──
+    private bool _galleryImportBusy;
+    private string? _galleryImportMsg;
+
+    /// <summary>미디어 루트의 <c>*.meta.json</c> 프롬프트 → 긍정 기준선 레시피(해시 중복 제거 · 멱등 · 백그라운드 IO).</summary>
+    private async Task ImportGalleryLearningAsync()
+    {
+        if (_galleryImportBusy) return;
+        _galleryImportBusy = true;
+        try
+        {
+            var root = Media.MediaRoot;
+            var r = await Task.Run(() => PlutoLearn.ImportGalleryBaselineFromDirectory(root));
+            _galleryImportMsg = r.SummaryKo;
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            Program.Log("Workspace.GalleryLearn", ex);
+            _galleryImportMsg = "⚠ 갤러리 흡수 실패";
+        }
+        finally { _galleryImportBusy = false; }
+    }
+
+    // ── 🎯 자동 첫 프레임 시드 고정(기본 = Gemini 키 설정 시 ON) ──
+    private bool _autoAnchorOn, _anchorBusy;
+
+    /// <summary>고정된 컷 1 참조가 없을 때 원격 첫 프레임을 자동 생성해 I2V 시드로 반환(키 없음/실패 → null · T2V).</summary>
+    private async Task<string?> ResolveAutoAnchorAsync(string prompt, string? cut1Ref)
+    {
+        if (cut1Ref is not null || !_autoAnchorOn) return cut1Ref;
+        if (_idLockOn && IdentityLockOf()?.FaceImagePath is { } face && File.Exists(face)) return null;   // 얼굴 프로필 I2V 우선
+        _anchorBusy = true;
+        StateHasChanged();
+        try
+        {
+            var r = await PromptFlowStudio.Services.Render.RenderQueueService.TryAutoVisualAnchorAsync(GeminiSvc, prompt, _size, null, true,
+                Path.Combine(Media.MediaRoot, "_uploads"), _mediaCts.Token);
+            _ffpMsg = r.Path is null ? "ℹ " + PromptFlowStudio.Services.Pluto.PlutoAutonomousActivityFeedService.Redact(r.Message) : r.Message;
+            return r.Path;
+        }
+        catch (Exception ex) when (ex is ObjectDisposedException or OperationCanceledException) { return null; }
+        finally { _anchorBusy = false; }
+    }
+
     private async Task Start()
     {
-        if (_preflightBusy) return;
+        if (_preflightBusy || _anchorBusy) return;
         var block = PromptFlowStudio.Services.Render.WorkspaceGenerationReadiness.Evaluate(State.IsBusy, _prompt, _imagePath, _durationMode, State.Enabled, _subPrompts);
         if (block != PromptFlowStudio.Services.Render.WorkspaceStartBlock.None)
         {
@@ -6623,6 +6713,11 @@
         RefreshRenderMode();
         var anchored = WithIdentityAnchor(primary);   // 🍼 캐릭터 일관성 앵커(비영속 · 멱등) · 메인 비면 파트 1 폴백
         var cut1Ref = StageCut1Reference();   // 사용자 참조 우선 → 검증된 첫 화면 미리보기(토글 ON)
+        if (cut1Ref is null && _autoAnchorOn)
+        {
+            cut1Ref = await ResolveAutoAnchorAsync(anchored, cut1Ref);   // 🎯 자동 첫 프레임 시드(원격만 · 로컬 폴백 PNG 무시)
+            if (State.IsBusy || _disposed) return;   // 시드 생성 대기 중 다른 경로로 생성 시작/이탈
+        }
         if (_durationMode != PromptFlowStudio.Services.Render.VideoDurationMode.Sec5_Single) { EnqueueDuration(anchored, cut1Ref, antiArtifact); return; }
         _canvasQueueUrl = _canvasQueuePath = null;   // 단일 생성 — 캔버스를 라이브 진행 표시로 복귀
         // v16.20.0 미세 표정 퍼핏 — 표정 구문·정체성 유지·얼굴 보호 네거티브 비영속 주입(Neutral 은 원문 그대로).
@@ -6841,6 +6936,8 @@
     protected override void OnInitialized()
     {
         RefreshRenderMode();
+        _autoAnchorOn = GeminiSvc.HasApiKey;   // 🎯 기본값 = Gemini 키 설정 시 ON
+        if (RenderQueue is PromptFlowStudio.Services.Render.RenderQueueService rqLearn) rqLearn.LearningMemory ??= PlutoLearn;   // 🩺 QC 결함 → 회피 규칙 학습
         AppSettings.OnSettingsChanged += OnAppSettingsChanged;
         State.OnChange += OnStateChanged;
         RenderQueue.OnChange += OnRenderQueueChanged;

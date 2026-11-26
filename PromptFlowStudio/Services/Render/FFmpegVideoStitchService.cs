@@ -29,6 +29,34 @@ public sealed record StitchProbe(int Width, int Height, bool HasAudio);
 /// <summary>컷 프로브(테스트 주입) — 실패/불명은 null.</summary>
 public delegate Task<StitchProbe?> FfmpegProber(string ffmpegExe, string videoPath, CancellationToken ct);
 
+/// <summary>🩺 렌더 후 자동 QC 결함 플래그.</summary>
+[Flags]
+public enum RenderQualityDefect
+{
+    None = 0,
+    /// <summary>재생 길이 0(또는 판독 불가 수준).</summary>
+    ZeroDuration = 1,
+    /// <summary>시작·중간·끝 프레임이 사실상 동일(정지 화면).</summary>
+    Frozen = 2,
+    /// <summary>샘플 프레임 전부 거의 검정.</summary>
+    NearBlack = 4,
+    /// <summary>프레임 디코드 실패(손상).</summary>
+    Corrupt = 8,
+}
+
+/// <summary>렌더 QC 결과 — Checked=false 면 ffmpeg/ffprobe 부재 등으로 생략(결함 아님).</summary>
+public sealed record RenderQualityReport(bool Checked, RenderQualityDefect Defects, double DurationSec, string SummaryKo)
+{
+    public bool IsSevere => Defects != RenderQualityDefect.None;
+    public static RenderQualityReport Skipped(string why) => new(false, RenderQualityDefect.None, 0, why);
+}
+
+/// <summary>QC 샘플 — 재생 길이(초) + 시작/중간/끝 32×18 그레이 썸네일(디코드 실패 = null).</summary>
+public sealed record RenderFrameSamples(double DurationSec, IReadOnlyList<byte[]?> Frames);
+
+/// <summary>QC 프레임 샘플러(테스트 주입) — null 반환 = 샘플링 불가(QC 생략).</summary>
+public delegate Task<RenderFrameSamples?> RenderFrameSampler(string ffmpegExe, string videoPath, CancellationToken ct);
+
 /// <summary>
 /// [PromptFlowStudio] 멀티 컷 최종 합본 + 커머셜 로고/디스클레이머 번인 — 순수 BCL <c>ffmpeg</c> 외부 프로세스.
 ///   ▸ 합본: 같은 그룹(<see cref="MetaGroup"/>) 렌더 작업이 전부 Completed 면 CutIndex 순 concat demuxer(<c>-c copy</c> 무손실)로 <c>{project}_full.mp4</c>.
@@ -53,6 +81,7 @@ public sealed class FFmpegVideoStitchService
     private readonly Func<string?> _resolveFfmpeg;
     private readonly FfmpegRunner _run;
     private readonly FfmpegProber _probe;
+    private readonly bool _defaultRunner;
 
     /// <summary>프로브 불명 시 재인코딩 기준 해상도.</summary>
     public const int FallbackWidth = 1920, FallbackHeight = 1080;
@@ -68,6 +97,7 @@ public sealed class FFmpegVideoStitchService
     {
         _resolveFfmpeg = resolveFfmpeg ?? DefaultResolveFfmpeg;
         _run = runner ?? DefaultRunAsync;
+        _defaultRunner = runner is null;
         _probe = probe ?? (runner is null ? DefaultProbeAsync : static (_, _, _) => Task.FromResult<StitchProbe?>(null));
     }
 
@@ -585,6 +615,132 @@ public sealed class FFmpegVideoStitchService
             Program.Log("Stitch.Virtual", ex);
             return new(false, true, null, parts.Count, "가상 병합 실패: " + ex.Message);
         }
+    }
+
+    // ── 🩺 렌더 후 경량 QC(길이 · 정지 화면 · 검정/손상 프레임) ──
+    public const int QcThumbWidth = 32, QcThumbHeight = 18;
+    /// <summary>정지 판정 — 인접 샘플 간 평균 절대 휘도 차(0~255) 상한.</summary>
+    public const double QcFrozenMeanAbsDiff = 1.0;
+    /// <summary>검정 판정 — 평균 휘도(0~255) 상한.</summary>
+    public const double QcBlackMeanLuma = 10.0;
+    public const double QcMinDurationSec = 0.2;
+    /// <summary>이보다 짧은 클립은 정지 판정 생략(짧은 정적 샷 오탐 방지).</summary>
+    public const double QcFrozenMinDurationSec = 1.5;
+
+    /// <summary>QC 샘플러 주입(테스트) — null 이면 기본 실행기일 때만 ffprobe+ffmpeg 실물 샘플링, 주입 실행기면 QC 생략.</summary>
+    public RenderFrameSampler? QualitySampler { get; init; }
+
+    /// <summary>
+    /// 렌더 산출물 QC — 길이 0 · 시작/중간/끝 정지 화면 · 전 프레임 검정 · 디코드 실패 판정. ffmpeg/ffprobe 부재·샘플링 실패는 Skipped(결함 아님).
+    /// 호출자 취소만 OCE 전파.
+    /// </summary>
+    public async Task<RenderQualityReport> AnalyzeRenderQualityAsync(string? videoPath, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(videoPath) || !File.Exists(videoPath)) return RenderQualityReport.Skipped("로컬 산출 파일 없음 — QC 생략");
+        var ffmpeg = SafeResolve();
+        if (ffmpeg is null) return RenderQualityReport.Skipped("ffmpeg 부재 — QC 생략");
+        var sampler = QualitySampler ?? (_defaultRunner ? DefaultSampleFramesAsync : null);
+        if (sampler is null) return RenderQualityReport.Skipped("QC 샘플러 없음");
+        RenderFrameSamples? s;
+        try { s = await sampler(ffmpeg, Path.GetFullPath(videoPath), ct).ConfigureAwait(false); }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            Program.Log("Stitch.Qc", ex);
+            return RenderQualityReport.Skipped("QC 샘플링 실패");
+        }
+        return s is null ? RenderQualityReport.Skipped("QC 샘플링 불가") : EvaluateFrames(s.DurationSec, s.Frames);
+    }
+
+    /// <summary>순수 판정 — 샘플 길이 · 32×18 그레이 썸네일 → 결함 플래그.</summary>
+    public static RenderQualityReport EvaluateFrames(double durationSec, IReadOnlyList<byte[]?>? frames)
+    {
+        var defects = RenderQualityDefect.None;
+        if (!(durationSec >= QcMinDurationSec)) defects |= RenderQualityDefect.ZeroDuration;   // NaN 포함
+        const int px = QcThumbWidth * QcThumbHeight;
+        var count = frames?.Count ?? 0;
+        int valid = 0, black = 0;
+        for (var i = 0; i < count; i++)
+        {
+            var f = frames![i];
+            if (f is null || f.Length < px) continue;
+            valid++;
+            if (MeanLuma(f, px) < QcBlackMeanLuma) black++;
+        }
+        if (count > 0 && valid == 0) defects |= RenderQualityDefect.Corrupt;
+        if (valid > 0 && black == valid) defects |= RenderQualityDefect.NearBlack;
+        if (count >= 3 && valid == count && black < valid && durationSec >= QcFrozenMinDurationSec)
+        {
+            var frozen = true;
+            for (var i = 1; i < count && frozen; i++)
+                if (MeanAbsDiff(frames![i - 1]!, frames[i]!, px) >= QcFrozenMeanAbsDiff) frozen = false;
+            if (frozen) defects |= RenderQualityDefect.Frozen;
+        }
+        return new RenderQualityReport(true, defects, durationSec, DescribeDefects(defects));
+    }
+
+    /// <summary>결함 플래그 → 한국어 요약(없으면 "QC 통과").</summary>
+    public static string DescribeDefects(RenderQualityDefect d)
+    {
+        if (d == RenderQualityDefect.None) return "QC 통과";
+        var sb = new System.Text.StringBuilder(48);
+        if ((d & RenderQualityDefect.ZeroDuration) != 0) Append(sb, "재생 길이 0");
+        if ((d & RenderQualityDefect.Frozen) != 0) Append(sb, "정지 화면(시작·중간·끝 동일)");
+        if ((d & RenderQualityDefect.NearBlack) != 0) Append(sb, "검정 프레임");
+        if ((d & RenderQualityDefect.Corrupt) != 0) Append(sb, "프레임 손상");
+        return sb.ToString();
+
+        static void Append(System.Text.StringBuilder b, string t) { if (b.Length > 0) b.Append(" · "); b.Append(t); }
+    }
+
+    private static double MeanLuma(byte[] f, int px)
+    {
+        long sum = 0;
+        for (var i = 0; i < px; i++) sum += f[i];
+        return sum / (double)px;
+    }
+
+    private static double MeanAbsDiff(byte[] a, byte[] b, int px)
+    {
+        long sum = 0;
+        for (var i = 0; i < px; i++) sum += Math.Abs(a[i] - b[i]);
+        return sum / (double)px;
+    }
+
+    /// <summary>ffprobe 길이 + ffmpeg 시작/중간/끝 1프레임 32×18 gray rawvideo — 경량 프로브 게이트 · 임시 폴더 정리.</summary>
+    private static async Task<RenderFrameSamples?> DefaultSampleFramesAsync(string ffmpeg, string video, CancellationToken ct)
+    {
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
+        var dir = Path.GetDirectoryName(ffmpeg);
+        var name = OperatingSystem.IsWindows() ? "ffprobe.exe" : "ffprobe";
+        var probe = !string.IsNullOrEmpty(dir) && File.Exists(Path.Combine(dir, name)) ? Path.Combine(dir, name) : name;
+        var pr = await ProcessRunner.RunAsync(probe, ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", video], ProcessCategory.LightweightProbe, ct: ct).ConfigureAwait(false);
+        ct.ThrowIfCancellationRequested();
+        if (!pr.Ok || !double.TryParse(pr.StdOut.Trim(), System.Globalization.NumberStyles.Float, inv, out var dur)) return null;
+        if (dur <= 0) return new RenderFrameSamples(dur, Array.Empty<byte[]?>());
+        var times = new[] { dur * 0.05, dur * 0.5, Math.Max(0, dur * 0.95 - 0.05) };
+        var frames = new byte[]?[times.Length];
+        var scale = "scale=" + QcThumbWidth.ToString(inv) + ":" + QcThumbHeight.ToString(inv) + ",format=gray";
+        var tmp = Path.Combine(Path.GetTempPath(), "pfs_qc_" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            Directory.CreateDirectory(tmp);
+            for (var i = 0; i < times.Length; i++)
+            {
+                var outPath = Path.Combine(tmp, "f" + i.ToString(inv) + ".gray");
+                var r = await ProcessRunner.RunAsync(ffmpeg, ["-v", "error", "-y", "-ss", times[i].ToString("0.###", inv), "-i", video, "-frames:v", "1", "-vf", scale, "-f", "rawvideo", outPath],
+                    ProcessCategory.LightweightProbe, ct: ct).ConfigureAwait(false);
+                ct.ThrowIfCancellationRequested();
+                frames[i] = r.Ok && File.Exists(outPath) ? await File.ReadAllBytesAsync(outPath, ct).ConfigureAwait(false) : null;
+            }
+        }
+        finally
+        {
+            try { if (Directory.Exists(tmp)) Directory.Delete(tmp, recursive: true); }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+        }
+        return new RenderFrameSamples(dur, frames);
     }
 
     private static bool InGroup(BatchRenderJob job, string groupId)

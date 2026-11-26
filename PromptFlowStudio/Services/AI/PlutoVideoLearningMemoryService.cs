@@ -45,6 +45,15 @@ public sealed class PlutoDirectorMemoryDocument
 {
     public int SchemaVersion { get; set; } = PlutoVideoLearningMemoryService.SchemaVersion;
     public List<PlutoLearnedRule> Rules { get; set; } = new();
+    /// <summary>📥 갤러리 흡수 완료 프롬프트 해시(정규화 SHA-256 앞 16자) — 재실행 멱등.</summary>
+    public List<string> ImportedPromptHashes { get; set; } = new();
+}
+
+/// <summary>📥 기존 갤러리 학습 흡수 결과.</summary>
+public sealed record PlutoGalleryBootstrapResult(int Scanned, int Imported, int Duplicates, int Skipped)
+{
+    public string SummaryKo => "📥 갤러리 " + Scanned.ToString(CultureInfo.InvariantCulture) + "건 스캔 · 신규 흡수 " + Imported.ToString(CultureInfo.InvariantCulture)
+        + "건 · 중복 " + Duplicates.ToString(CultureInfo.InvariantCulture) + "건 · 제외 " + Skipped.ToString(CultureInfo.InvariantCulture) + "건";
 }
 
 /// <summary>프롬프트 1건에 대한 학습 가이던스 — 앵커 · 네거티브 · 적용된 학습(비 seed) 규칙 수.</summary>
@@ -264,6 +273,147 @@ public sealed class PlutoVideoLearningMemoryService
             GetLearnedGuidanceForPrompt(rawPrompt, isAmbientLoop));
     }
 
+    /// <summary>🩺 자동 QC 회피 규칙 사유 라벨.</summary>
+    public const string QcReasonLabel = "자동 QC 결함";
+    /// <summary>🩺 자동 QC 회피 앵커(정지 · 검정 · 손상 방지).</summary>
+    public const string QcAvoidAnchor = "continuous visible subject motion from the first to the last frame with steady well-exposed lighting";
+    public static readonly string[] QcAvoidNegative = { "frozen frame", "static still image", "black frames", "corrupted frames" };
+
+    /// <summary>
+    /// 🩺 렌더 후 QC 가 정지/검정/손상을 감지 — 유사 프롬프트용 진단 회피 규칙을 추가/강화(사유 = <see cref="QcReasonLabel"/> · 진단 요약 보존). 반환 = 규칙 Id.
+    /// </summary>
+    public string RecordRenderQualityDefect(string? rawPrompt, string? diagnosis)
+    {
+        var tokens = Tokenize(rawPrompt);
+        string id;
+        lock (_gate)
+        {
+            var rule = BestMatch("avoid", QcReasonLabel, tokens, 1);
+            if (rule is null && tokens.Count == 0)
+                foreach (var r in _doc.Rules)
+                    if (r.Kind == "avoid" && r.Reason == QcReasonLabel && r.Keywords.Count == 0) { rule = r; break; }
+            if (rule is null)
+            {
+                rule = new PlutoLearnedRule { Id = NewId("q"), Kind = "avoid", Reason = QcReasonLabel, Keywords = tokens, PromptAnchor = QcAvoidAnchor, NegativeTerms = new List<string>(QcAvoidNegative), Weight = 1.0 };
+                _doc.Rules.Add(rule);
+            }
+            else
+            {
+                MergeKeywords(rule.Keywords, tokens);
+                rule.Weight += 1.0;
+            }
+            rule.Hits++;
+            rule.UpdatedUtc = DateTime.UtcNow;
+            id = rule.Id;
+            Prune();
+        }
+        Program.Log("PlutoLearn.QcDefect", new InvalidOperationException(id + " · " + (diagnosis ?? "QC 결함")));   // 진단 이력(로그)
+        Save();
+        RaiseChanged();
+        return id;
+    }
+
+    /// <summary>프롬프트 정규화 해시(소문자 · 공백 축약 · SHA-256 앞 16 hex) — 갤러리 흡수 중복 판정.</summary>
+    public static string PromptHash(string? prompt)
+    {
+        var sb = new StringBuilder(prompt?.Length ?? 0);
+        var space = false;
+        foreach (var c in (prompt ?? "").Trim().ToLowerInvariant())
+        {
+            if (char.IsWhiteSpace(c)) { space = true; continue; }
+            if (space && sb.Length > 0) sb.Append(' ');
+            space = false;
+            sb.Append(c);
+        }
+        var hash = System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(sb.ToString()));
+        return Convert.ToHexString(hash, 0, 8).ToLowerInvariant();
+    }
+
+    /// <summary>갤러리 흡수 기본 가중치(👍 1.0 보다 낮은 기준선).</summary>
+    public const double GalleryBaselineWeight = 0.5;
+
+    /// <summary>
+    /// 📥 기존 갤러리 학습 흡수 — 저장된 프롬프트들을 긍정 기준선 레시피로 흡수(프롬프트 해시 중복 제거 · 재실행 멱등 · 빈/키워드 없음 제외 · 1회 저장).
+    /// 레시피 힌트 = 첫 절(피사체)을 뺀 스타일 절(최대 3).
+    /// </summary>
+    public PlutoGalleryBootstrapResult ImportGalleryBaseline(IEnumerable<string?> prompts)
+    {
+        int scanned = 0, imported = 0, dup = 0, skipped = 0;
+        lock (_gate)
+        {
+            foreach (var p in prompts ?? Array.Empty<string?>())
+            {
+                scanned++;
+                var tokens = Tokenize(p);
+                if (tokens.Count == 0) { skipped++; continue; }
+                var h = PromptHash(p);
+                if (_doc.ImportedPromptHashes.Contains(h)) { dup++; continue; }
+                _doc.ImportedPromptHashes.Add(h);
+                var text = p!.Trim();
+                var comma = text.IndexOf(',');
+                var hint = ExtractRecipeHint(comma > 0 ? text[..comma] : text, text);
+                var recipe = BestMatch("recipe", null, tokens, 2);
+                if (recipe is null)
+                {
+                    recipe = new PlutoLearnedRule { Id = NewId("g"), Kind = "recipe", Keywords = tokens, PromptAnchor = hint, Weight = GalleryBaselineWeight };
+                    _doc.Rules.Add(recipe);
+                }
+                else
+                {
+                    MergeKeywords(recipe.Keywords, tokens);
+                    recipe.Weight += GalleryBaselineWeight;
+                    recipe.PromptAnchor ??= hint;
+                }
+                recipe.Hits++;
+                recipe.UpdatedUtc = DateTime.UtcNow;
+                imported++;
+            }
+            while (_doc.ImportedPromptHashes.Count > 4000) _doc.ImportedPromptHashes.RemoveAt(0);
+            if (imported > 0) Prune();
+        }
+        if (imported > 0) { Save(); RaiseChanged(); }
+        return new PlutoGalleryBootstrapResult(scanned, imported, dup, skipped);
+    }
+
+    /// <summary>
+    /// 📥 디렉터리 스캔판 — <c>*.meta.json</c> 사이드카(갤러리 스키마 camelCase <c>prompt</c>)를 재귀 수집(최대 <paramref name="maxFiles"/>) ·
+    /// Mock 산출물(<c>isMock</c>/<c>engine=Mock</c>) 제외 · 손상 JSON 은 건너뜀(throw 없음).
+    /// </summary>
+    public PlutoGalleryBootstrapResult ImportGalleryBaselineFromDirectory(string? root, int maxFiles = 2000)
+    {
+        var prompts = new List<string?>(64);
+        var skipped = 0;
+        if (!string.IsNullOrWhiteSpace(root) && Directory.Exists(root))
+        {
+            try
+            {
+                var opts = new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = true, MaxRecursionDepth = 6 };
+                foreach (var file in Directory.EnumerateFiles(root, "*.meta.json", opts))
+                {
+                    if (prompts.Count + skipped >= maxFiles) break;
+                    try
+                    {
+                        using var doc = JsonDocument.Parse(File.ReadAllText(file));
+                        var r = doc.RootElement;
+                        if (r.ValueKind != JsonValueKind.Object) { skipped++; continue; }
+                        if ((r.TryGetProperty("isMock", out var m) && m.ValueKind == JsonValueKind.True)
+                            || (r.TryGetProperty("engine", out var e) && e.ValueKind == JsonValueKind.String && string.Equals(e.GetString(), "Mock", StringComparison.OrdinalIgnoreCase)))
+                        { skipped++; continue; }
+                        if (r.TryGetProperty("prompt", out var p) && p.ValueKind == JsonValueKind.String) prompts.Add(p.GetString());
+                        else skipped++;
+                    }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException) { skipped++; }
+                }
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                Program.Log("PlutoVideoLearningMemoryService.GalleryScan", ex);
+            }
+        }
+        var r2 = ImportGalleryBaseline(prompts);
+        return r2 with { Scanned = r2.Scanned + skipped, Skipped = r2.Skipped + skipped };
+    }
+
     /// <summary>문자열 사유 태그 오버로드(라벨 · enum 이름 · 부분 키워드 인식, 미인식 → 서사 중복).</summary>
     public PromptPreflightResult RecordFailureAndGetRefinement(string? rawPrompt, string? reasonTag, int targetDurationSeconds = 5,
         string? aspectRatio = "16:9", bool isAmbientLoop = false, string? existingNegative = null)
@@ -430,6 +580,7 @@ public sealed class PlutoVideoLearningMemoryService
             var doc = JsonSerializer.Deserialize<PlutoDirectorMemoryDocument>(File.ReadAllText(path), JsonOpts);
             if (doc?.Rules is null) return null;
             doc.Rules.RemoveAll(r => r is null || string.IsNullOrWhiteSpace(r.Id));
+            doc.ImportedPromptHashes ??= new List<string>();
             foreach (var r in doc.Rules) { r.Keywords ??= new List<string>(); r.NegativeTerms ??= new List<string>(); }
             return doc;
         }

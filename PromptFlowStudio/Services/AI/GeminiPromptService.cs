@@ -915,6 +915,21 @@ public sealed class GeminiPromptService : PromptFlowStudio.Services.Pluto.IPluto
         try { return !string.IsNullOrWhiteSpace(_apiKey()); } catch { return false; }
     }
 
+    /// <summary>Gemini 키 설정 여부(🎯 자동 첫 프레임 시드 토글 기본값).</summary>
+    public bool HasApiKey => HasKey();
+
+    /// <summary>
+    /// 🎯 자동 첫 프레임 시드 — <see cref="GenerateFirstFrameImageAsync"/> 의 원격 결과만 채택(BCL 로컬 구도 PNG 폴백은 I2V 시드로 부적합 → Ok=false).
+    /// 키 미설정이면 HTTP 호출 없이 즉시 Ok=false.
+    /// </summary>
+    public async Task<FirstFrameImageResult> GenerateFirstFramePreviewAsync(string? prompt, string? size, CancellationToken ct = default)
+    {
+        if (!HasKey()) return new FirstFrameImageResult(false, null, "", "Gemini 키 미설정 — 자동 첫 프레임 시드 생략");
+        var r = await GenerateFirstFrameImageAsync(prompt, size, ct).ConfigureAwait(false);
+        if (r.Ok && !r.IsLocalFallback && r.Image is { Length: > 0 }) return r;
+        return new FirstFrameImageResult(false, null, "", "원격 첫 프레임 생성 실패 — 프롬프트만으로 생성합니다(" + r.Message + ")", r.IsLocalFallback, r.Source);
+    }
+
     /// <summary>generateContent 호출(키 헤더 · 지수 백오프 · 타임아웃). 실패는 null.</summary>
     private async Task<string?> CallAsync(string system, string user, GeminiMedia? media, bool json, double temperature, CancellationToken ct)
     {

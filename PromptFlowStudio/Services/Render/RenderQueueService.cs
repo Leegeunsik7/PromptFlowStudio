@@ -11,6 +11,9 @@ using PromptFlowStudio.Services.Telemetry;
 
 namespace PromptFlowStudio.Services.Render;
 
+/// <summary>🎯 자동 시각 앵커 결과 — Path=null 이면 T2V 진행 · Generated=true 면 이번에 새로 생성된 시드.</summary>
+public sealed record AutoVisualAnchorResult(string? Path, bool Generated, string Message);
+
 /// <summary>
 /// [PromptFlowStudio] 렌더 큐 + 렌더 파이프라인 워커.
 ///   ▸ <see cref="IRenderExecutionEngine"/> 가 가용하면 실물 추론(ComfyUI/클라우드) 호출, 미설정·오프라인이면 내장 시뮬레이션 폴백.
@@ -270,6 +273,7 @@ public sealed partial class RenderQueueService : IRenderQueueService
                     await guard.RunGatedAsync(async c => { await ExecuteOnEngineAsync(engine, job, c).ConfigureAwait(false); return true; }, jobCts.Token).ConfigureAwait(false);
                 else if (engine is { IsAvailable: true }) await ExecuteOnEngineAsync(engine, job, jobCts.Token).ConfigureAwait(false);
                 else await SimulateAsync(job, jobCts.Token).ConfigureAwait(false);
+                if (await TryQcSelfHealAsync(job, jobCts.Token).ConfigureAwait(false)) continue;   // 🩺 정지/검정/손상 → 학습 기록 + 1회 안정화 재시도(Queued 복귀)
                 lock (_gate)
                 {
                     job.ProgressPercent = 100;
@@ -539,6 +543,129 @@ public sealed partial class RenderQueueService : IRenderQueueService
             job.ErrorMessage = OomRetryNotice;
         }
         return true;
+    }
+
+    // ── 🩺 렌더 후 자동 QC · 자가 치유(최대 1회) ──
+    /// <summary>QC 자가 치유 재시도 수행 표시(작업당 1회 상한).</summary>
+    public const string MetaQcSelfHealed = "QcSelfHealed";
+    /// <summary>QC 진단 요약(재시도 사유 또는 최종 경고).</summary>
+    public const string MetaQcDiagnosis = "QcDiagnosis";
+    /// <summary>재시도 후에도 결함 — 최종 클립은 그대로 노출하고 경고만 기록.</summary>
+    public const string MetaQcDegraded = "QcDegraded";
+    public const string QcRetryNotice = "🩺 렌더 QC 결함 감지 — 안정화 파라미터로 1회 자동 재시도합니다";
+    /// <summary>안정화 재시도 앵커(멱등 부착).</summary>
+    public const string QcStabilizeAnchor = "steady continuous natural motion throughout, evenly exposed bright scene, clean intact frames";
+
+    /// <summary>🧠 자기학습 메모리 — 설정 시 QC 결함을 회피 규칙으로 기록(null = 기록 생략).</summary>
+    public PromptFlowStudio.Services.AI.PlutoVideoLearningMemoryService? LearningMemory { get; set; }
+
+    /// <summary>QC 프로브 주입(테스트) — null 이면 <see cref="Stitcher"/> 의 ffmpeg QC(없으면 생략).</summary>
+    public Func<string, CancellationToken, Task<RenderQualityReport>>? QualityProbe { get; set; }
+
+    /// <summary>
+    /// 완료 직후 QC — 로컬 산출물 · 비 Mock 엔진만. 심각 결함이면 학습 메모리에 진단 회피 규칙 기록 후,
+    /// 첫 결함이면 프롬프트/네거티브 안정화 + Queued 복귀(true), 재시도 후에도 결함이면 <see cref="MetaQcDegraded"/> 경고만 남기고 최종 클립 노출(false).
+    /// QC 자체 실패는 격리(false · 정상 완료 흐름).
+    /// </summary>
+    internal async Task<bool> TryQcSelfHealAsync(BatchRenderJob job, CancellationToken ct)
+    {
+        var path = job.ResultPath;
+        if (!IsLocalPath(path) || string.Equals(job.EngineKind, RenderEngineKind.Mock, StringComparison.Ordinal)) return false;
+        var probe = QualityProbe;
+        var stitcher = _stitcher;
+        if (probe is null && stitcher is null) return false;
+        RenderQualityReport report;
+        try { report = probe is not null ? await probe(path!, ct).ConfigureAwait(false) : await stitcher!.AnalyzeRenderQualityAsync(path, ct).ConfigureAwait(false); }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (Exception ex) when (ex is not OutOfMemoryException) { Program.Log("RenderQueue.Qc", ex); return false; }
+        if (report is null || !report.Checked || !report.IsSevere) return false;
+
+        try { LearningMemory?.RecordRenderQualityDefect(MultiDurationPlanner.MetaOf(job, MetaQcRawPrompt) ?? job.Prompt, report.SummaryKo); }
+        catch (Exception ex) when (ex is not OutOfMemoryException) { Program.Log("RenderQueue.QcLearn", ex); }
+
+        lock (_gate)
+        {
+            var healedBefore = MultiDurationPlanner.MetaOf(job, MetaQcSelfHealed) == "true";
+            if (healedBefore)
+            {
+                job.Metadata = MultiDurationPlanner.WithMeta(job.Metadata, MetaQcDegraded, report.SummaryKo);
+                job.ErrorMessage = "⚠ 자동 재시도 후에도 QC 경고: " + report.SummaryKo;
+                return false;
+            }
+            var meta = MultiDurationPlanner.WithMeta(job.Metadata, MetaQcSelfHealed, "true");
+            meta = MultiDurationPlanner.WithMeta(meta, MetaQcDiagnosis, report.SummaryKo);
+            meta = MultiDurationPlanner.WithMeta(meta, MetaQcRawPrompt, job.Prompt);
+            var neg = MultiDurationPlanner.MetaOf(job, VideoEngineRenderExecutionEngine.MetaNegativePrompt);
+            meta = MultiDurationPlanner.WithMeta(meta, VideoEngineRenderExecutionEngine.MetaNegativePrompt, MergeQcNegative(neg));
+            job.Metadata = meta;
+            job.Prompt = StabilizeForRetry(job.Prompt);
+            job.Status = BatchJobStatus.Queued;
+            job.ProgressPercent = 0;
+            job.ErrorMessage = QcRetryNotice + " (" + report.SummaryKo + ")";
+        }
+        Program.Log("RenderQueue.QcSelfHeal", new InvalidOperationException(report.SummaryKo));
+        return true;
+    }
+
+    /// <summary>
+    /// 🎯 자동 시각 앵커 — 고정된 컷 1 참조(사용자 이미지/핀 미리보기)가 없고 토글 ON · Gemini 키 설정 시, 원격 첫 프레임 이미지를 생성해
+    /// <paramref name="saveDir"/> 에 저장하고 컷 1 I2V 시드 경로로 반환. 로컬 폴백 PNG · 키 없음 · 실패 · 저장 오류는 Path=null(T2V 진행 · throw 없음).
+    /// 호출자 취소만 OCE 전파.
+    /// </summary>
+    public static async Task<AutoVisualAnchorResult> TryAutoVisualAnchorAsync(PromptFlowStudio.Services.AI.GeminiPromptService? gemini, string? prompt, string? size,
+        string? existingCut1Ref, bool enabled, string saveDir, CancellationToken ct = default)
+    {
+        if (!string.IsNullOrWhiteSpace(existingCut1Ref)) return new AutoVisualAnchorResult(existingCut1Ref, false, "고정된 첫 프레임 사용");
+        if (!enabled) return new AutoVisualAnchorResult(null, false, "자동 첫 프레임 시드 꺼짐");
+        if (string.IsNullOrWhiteSpace(prompt)) return new AutoVisualAnchorResult(null, false, "프롬프트 없음");
+        if (gemini is null || !gemini.HasApiKey) return new AutoVisualAnchorResult(null, false, "Gemini 키 미설정 — 자동 첫 프레임 시드 생략");
+        PromptFlowStudio.Services.AI.FirstFrameImageResult r;
+        try { r = await gemini.GenerateFirstFramePreviewAsync(prompt, size, ct).ConfigureAwait(false); }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            Program.Log("RenderQueue.AutoAnchor", ex);
+            return new AutoVisualAnchorResult(null, false, "자동 첫 프레임 시드 실패 — 프롬프트만으로 생성");
+        }
+        if (!r.Ok || r.IsLocalFallback || r.Image is not { Length: > 0 } img) return new AutoVisualAnchorResult(null, false, r.Message);
+        try
+        {
+            Directory.CreateDirectory(saveDir);
+            var ext = r.MimeType.EndsWith("jpeg", StringComparison.OrdinalIgnoreCase) || r.MimeType.EndsWith("jpg", StringComparison.OrdinalIgnoreCase) ? ".jpg" : ".png";
+            var path = Path.Combine(saveDir, "autoanchor_" + Guid.NewGuid().ToString("N") + ext);
+            await File.WriteAllBytesAsync(path, img, ct).ConfigureAwait(false);
+            return new AutoVisualAnchorResult(path, true, "🎯 자동 첫 프레임 시드를 컷 1 시작 프레임(I2V)으로 고정했습니다");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            Program.Log("RenderQueue.AutoAnchorSave", ex);
+            return new AutoVisualAnchorResult(null, false, "자동 첫 프레임 저장 실패 — 프롬프트만으로 생성");
+        }
+    }
+
+    /// <summary>QC 재시도 직전 원문 프롬프트(학습 키 일관성).</summary>
+    public const string MetaQcRawPrompt = "QcRawPrompt";
+
+    /// <summary>안정화 프롬프트 — 앵커 멱등 부착.</summary>
+    public static string StabilizeForRetry(string? prompt)
+    {
+        var p = (prompt ?? "").Trim();
+        if (p.Contains(QcStabilizeAnchor, StringComparison.OrdinalIgnoreCase)) return p;
+        if (p.Length == 0) return QcStabilizeAnchor;
+        return p.TrimEnd('.', ',', ' ') + ", " + QcStabilizeAnchor;
+    }
+
+    /// <summary>QC 회피 네거티브 병합(대소문자 무시 중복 제거).</summary>
+    public static string MergeQcNegative(string? negative)
+    {
+        var sb = new System.Text.StringBuilder(negative?.Trim() ?? "");
+        foreach (var t in PromptFlowStudio.Services.AI.PlutoVideoLearningMemoryService.QcAvoidNegative)
+        {
+            if (sb.ToString().Contains(t, StringComparison.OrdinalIgnoreCase)) continue;
+            if (sb.Length > 0) sb.Append(", ");
+            sb.Append(t);
+        }
+        return sb.ToString();
     }
 
     /// <summary>OOM 자동 다운스케일 재시도 메타 키.</summary>

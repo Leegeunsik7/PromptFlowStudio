@@ -10,7 +10,8 @@ public enum BatchJobStatus { Pending, Queued, Processing, Completed, Failed, Can
 public sealed class BatchRenderJob
 {
     public Guid JobId { get; init; } = Guid.NewGuid();
-    public string Prompt { get; init; } = "";
+    /// <summary>프롬프트 — 렌더 후 QC 자가 치유 재시도 시 안정화본으로 교체될 수 있음(set).</summary>
+    public string Prompt { get; set; } = "";
     public long Seed { get; init; }
     /// <summary>렌더 해상도("1280x720") — CUDA OOM 자동 다운스케일 재시도 시 워커가 하향 갱신.</summary>
     public string Resolution { get; set; } = RenderCostEstimatorService.DefaultResolution;
