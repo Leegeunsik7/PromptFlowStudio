@@ -163,6 +163,8 @@ public sealed class GeminiPromptService : PromptFlowStudio.Services.Pluto.IPluto
         "10s" => VideoDurationMode.Sec10_Dual,
         "15s" => VideoDurationMode.Sec15_Triple,
         "15s-ambient" or "ambient" => VideoDurationMode.Sec15_AmbientSlow,
+        "15s-onetake" or "onetake" => VideoDurationMode.Sec15_OneTake,
+        "30s" or "30s-auto" => VideoDurationMode.Sec30_Auto,
         _ => VideoDurationMode.Sec5_Single,
     };
 

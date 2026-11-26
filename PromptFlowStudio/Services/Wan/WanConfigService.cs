@@ -46,6 +46,32 @@ public sealed class WanConfigService : IWanConfigService
     public int PollIntervalSeconds => _s.Poll;
     public int MaxWaitSeconds => _s.MaxWait;
     public bool IsConfigured => !string.IsNullOrWhiteSpace(_s.ApiKey);
+    public WanModelFamily ModelFamily => _s.Family;
+
+    /// <inheritdoc/>
+    public bool SaveModelFamily(WanModelFamily family)
+    {
+        lock (_gate)
+        {
+            if (_s.Family == family) return true;
+            try
+            {
+                var root = ReadRoot();
+                var wan = root["Wan"] as JsonObject ?? new JsonObject();
+                wan["ModelFamily"] = family.ToString();   // 비밀 아님 — 평문
+                root["Wan"] = wan;
+                WriteRoot(root);
+                _s = _s with { Family = family };
+            }
+            catch (Exception ex)
+            {
+                Program.Log("WanConfigService.SaveModelFamily", ex);
+                return false;
+            }
+        }
+        OnConfigChanged?.Invoke();
+        return true;
+    }
 
     /// <inheritdoc/>
     public bool Save(string apiKey, string baseUrl)
@@ -81,7 +107,12 @@ public sealed class WanConfigService : IWanConfigService
         wan["ApiKeyEnc"] = string.IsNullOrEmpty(apiKey) ? "" : LocalCipher.Protect(apiKey, KeyPurpose);   // AES-256-GCM(머신바운드)
         wan["BaseUrl"]   = baseUrl;   // 엔드포인트는 비밀이 아니라 평문
         root["Wan"] = wan;
+        WriteRoot(root);
+    }
 
+    /// <summary>config.json 원자적 기록(.tmp → 교체).</summary>
+    private void WriteRoot(JsonObject root)
+    {
         var dir = Path.GetDirectoryName(_path);
         if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
 
@@ -109,6 +140,7 @@ public sealed class WanConfigService : IWanConfigService
         var apiKey  = cfg["Wan:ApiKey"] ?? "";                       // appsettings 시드(개발용)
         var baseUrl = string.IsNullOrWhiteSpace(cfg["Wan:BaseUrl"]) ? DefaultBaseUrl : cfg["Wan:BaseUrl"]!;
         var legacyPlain = false;
+        var family = WanModelCatalog.ParseFamily(cfg["Wan:ModelFamily"]);
 
         try
         {
@@ -117,6 +149,7 @@ public sealed class WanConfigService : IWanConfigService
                 var wan = (JsonNode.Parse(File.ReadAllText(_path)) as JsonObject)?["Wan"] as JsonObject;
                 var savedUrl = Str(wan, "BaseUrl");
                 if (!string.IsNullOrWhiteSpace(savedUrl)) baseUrl = savedUrl!;
+                if (Str(wan, "ModelFamily") is { Length: > 0 } fam) family = WanModelCatalog.ParseFamily(fam);
 
                 var enc = Str(wan, "ApiKeyEnc");
                 if (!string.IsNullOrEmpty(enc))
@@ -142,7 +175,7 @@ public sealed class WanConfigService : IWanConfigService
         var poll  = int.TryParse(cfg["Wan:PollIntervalSeconds"], out var pv) && pv > 0 ? pv : 3;
         var maxw  = int.TryParse(cfg["Wan:MaxWaitSeconds"],      out var mv) && mv > 0 ? mv : 600;
 
-        var snap = new Snapshot(apiKey.Trim(), baseUrl.TrimEnd('/'), model, size, poll, maxw);
+        var snap = new Snapshot(apiKey.Trim(), baseUrl.TrimEnd('/'), model, size, poll, maxw, family);
 
         // 평문 레거시 키를 발견하면 즉시 암호문으로 승격(평문 잔존 제거 · best-effort).
         if (legacyPlain)
@@ -157,5 +190,5 @@ public sealed class WanConfigService : IWanConfigService
         => o?[key] is JsonValue v && v.TryGetValue<string>(out var s) ? s : null;
 
     /// <summary>불변 설정 스냅샷 — 원자적 교체 단위.</summary>
-    private sealed record Snapshot(string ApiKey, string BaseUrl, string Model, string Size, int Poll, int MaxWait);
+    private sealed record Snapshot(string ApiKey, string BaseUrl, string Model, string Size, int Poll, int MaxWait, WanModelFamily Family = WanModelFamily.Wan21);
 }

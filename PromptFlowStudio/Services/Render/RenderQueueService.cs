@@ -316,7 +316,7 @@ public sealed partial class RenderQueueService : IRenderQueueService
     internal async Task ChainDurationCutAsync(BatchRenderJob job, CancellationToken ct)
     {
         var stitcher = _stitcher;
-        if (stitcher is null || !MultiDurationPlanner.IsMultiShot(job.DurationMode) || job.StitchGroupId is not { Length: > 0 } group) return;
+        if (stitcher is null || !(MultiDurationPlanner.IsMultiShot(job.DurationMode) || MultiDurationPlanner.IsGroupedShot(job)) || job.StitchGroupId is not { Length: > 0 } group) return;
         try
         {
             var snapshot = Snapshot();
@@ -341,7 +341,7 @@ public sealed partial class RenderQueueService : IRenderQueueService
             }
 
             if (!FFmpegVideoStitchService.TryCollectCompletedCuts(snapshot, group, out var cuts)
-                || cuts.Length < MultiDurationPlanner.ShotCount(job.DurationMode)) return;
+                || cuts.Length < MultiDurationPlanner.ShotCountOf(job)) return;
             lock (_gate) { if (!_stitchedGroups.Add(group)) return; }
             var dir = Path.GetDirectoryName(cuts[0].VideoPath) ?? Path.GetTempPath();
             var target = MultiDurationPlanner.BuildOutputPath(dir, MultiDurationPlanner.MetaOf(job, MultiDurationPlanner.MetaProject), job.DurationMode);

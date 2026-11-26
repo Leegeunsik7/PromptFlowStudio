@@ -39,4 +39,10 @@ public interface IWanConfigService
     /// </summary>
     /// <returns>디스크 저장 성공 여부(실패해도 인메모리 반영은 시도하지 않음 — 파일과 상태 일관성 유지).</returns>
     bool Save(string apiKey, string baseUrl);
+
+    /// <summary>선택된 Wan 모델 계열(config.json <c>Wan.ModelFamily</c>). 기본 2.1(5초).</summary>
+    WanModelFamily ModelFamily => WanModelFamily.Wan21;
+
+    /// <summary>모델 계열 저장(구조 보존 · 성공 시 <see cref="OnConfigChanged"/>). 기본 구현은 미지원(false).</summary>
+    bool SaveModelFamily(WanModelFamily family) => false;
 }

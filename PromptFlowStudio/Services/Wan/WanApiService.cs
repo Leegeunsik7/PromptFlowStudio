@@ -141,9 +141,19 @@ public sealed class WanApiService(IWanConfigService cfg, QuotaRateGuardService g
             var provider = FailoverChain[p];
             if (dualKeyframe && provider == WanTokenVault.SiliconFlow) continue;   // v16.5.0: SiliconFlow 는 kf2v 미지원 → 건너뜀
             if (!TryAcquireKey(provider, out var key)) continue;
+            if (provider == WanTokenVault.SiliconFlow && WanModelCatalog.IsWan26(request.Model))
+                request = WanModelCatalog.ToWan21Fallback(request, isI2v);   // SiliconFlow 는 Wan 2.1 만 — 5초 요청으로 정규화
             var (result, quotaHit) = provider == WanTokenVault.SiliconFlow
                 ? await SubmitSiliconFlowAsync(request, prompt, isI2v, key, ct).ConfigureAwait(false)
                 : await SubmitDashScopeAsync(request, prompt, isI2v, provider, key, ct).ConfigureAwait(false);
+            if (!result.Ok && !quotaHit && provider != WanTokenVault.SiliconFlow
+                && WanModelCatalog.IsWan26(request.Model) && WanModelCatalog.IsUnsupportedModelError(result.Message))
+            {
+                // Wan 2.6 미지원 계정/엔드포인트 → 같은 키로 Wan 2.1 5초 1회 재제출(무음 실패 금지 · 안내 문구 부착)
+                request = WanModelCatalog.ToWan21Fallback(request, isI2v);
+                (result, quotaHit) = await SubmitDashScopeAsync(request, prompt, isI2v, provider, key, ct).ConfigureAwait(false);
+                if (result.Ok) result = result with { Message = result.Message + " · " + WanModelCatalog.FallbackNotice };
+            }
             if (result.Ok)
             {
                 // v16.18.0 과금 기록(제출 성공 = 과금 확정 근사 · 생산 스코프에 귀속).

@@ -567,16 +567,25 @@ public sealed class VideoEngineRenderExecutionEngine : IRenderExecutionEngine, I
     /// 렌더 작업 → 엔진 요청. <see cref="BatchRenderJob.ReferenceImagePath"/> 가 실존 로컬 파일이면 <see cref="WanVideoRequest.ImagePath"/> 로 주입해
     /// I2V(첫 프레임 참조)로 분기 — 캡처 롤 · 스토리보드 1번 컷 앵커 · 커머셜 제품 사진. 파일 누락 시 T2V 로 폴백.
     /// </summary>
-    internal static WanVideoRequest BuildRequest(BatchRenderJob job) => new()
+    internal static WanVideoRequest BuildRequest(BatchRenderJob job)
     {
-        Prompt = job.Prompt,
-        Size = ToEngineSize(job.Resolution),
-        Seed = job.Seed,
-        ImagePath = ResolveReferenceImage(job.ReferenceImagePath),
-        NegativePrompt = MultiDurationPlanner.MetaOf(job, MetaNegativePrompt) is { Length: > 0 } neg ? neg : null,
-        // 🌫️ 앰비언트 15초: Wan 2.1 은 5초만 허용 → 항상 5초 요청 후 FFmpeg 로 15초 루프 확장(15 직접 요청 금지)
-        Duration = job.IsAmbientLoop ? AmbientCloudClipSeconds : null,
-    };
+        var image = ResolveReferenceImage(job.ReferenceImagePath);
+        // 🎞️ Wan 2.6 계열 메타(15초 원테이크/30초 자동)만 모델·길이 지정 — 그 외 기존 페이로드 불변(모델 생략 · duration 생략).
+        var wan26 = MultiDurationPlanner.MetaOf(job, MultiDurationPlanner.MetaWanFamily) is { Length: > 0 } fam
+                    && PromptFlowStudio.Services.Wan.WanModelCatalog.ParseFamily(fam) == PromptFlowStudio.Services.Wan.WanModelFamily.Wan26;
+        return new()
+        {
+            Prompt = job.Prompt,
+            Size = ToEngineSize(job.Resolution),
+            Seed = job.Seed,
+            ImagePath = image,
+            NegativePrompt = MultiDurationPlanner.MetaOf(job, MetaNegativePrompt) is { Length: > 0 } neg ? neg : null,
+            Model = wan26 ? PromptFlowStudio.Services.Wan.WanModelCatalog.ModelFor(PromptFlowStudio.Services.Wan.WanModelFamily.Wan26, image is not null) : null,
+            // 🌫️ 앰비언트 15초: Wan 2.1 은 5초만 허용 → 항상 5초 요청 후 FFmpeg 로 15초 루프 확장(15 직접 요청 금지)
+            Duration = job.IsAmbientLoop ? AmbientCloudClipSeconds
+                     : wan26 ? PromptFlowStudio.Services.Wan.WanModelCatalog.DurationFor(PromptFlowStudio.Services.Wan.WanModelFamily.Wan26, job.DurationSec) : null,
+        };
+    }
 
     /// <summary>앰비언트 Cloud 요청 클립 길이(초) — Wan 2.1 허용 최대치.</summary>
     public const int AmbientCloudClipSeconds = 5;

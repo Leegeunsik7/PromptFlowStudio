@@ -7,7 +7,9 @@ using PromptFlowStudio.Services.Batch;
 namespace PromptFlowStudio.Services.Render;
 
 /// <summary>비디오 듀레이션 모드 — 5초 단일 · 10초 2컷 · 15초 3컷 · 15초 앰비언트 슬로우(단일 5초 + 3배 슬로우 루프).</summary>
-public enum VideoDurationMode { Sec5_Single, Sec10_Dual, Sec15_Triple, Sec15_AmbientSlow }
+/// <summary>영상 길이 모드. <see cref="Sec15_OneTake"/>·<see cref="Sec30_Auto"/> 는 메인 프롬프트 1개만 사용(파트 입력 불필요) —
+/// 네이티브 길이(Wan 2.6 = 15초 · 그 외 5초)에 맞춰 <see cref="MultiDurationPlanner.SegmentPlan"/> 로 자동 분할 · 합본.</summary>
+public enum VideoDurationMode { Sec5_Single, Sec10_Dual, Sec15_Triple, Sec15_AmbientSlow, Sec15_OneTake, Sec30_Auto }
 
 /// <summary>
 /// 멀티 컷(10s 2컷 · 15s 3컷) 컷 전환 방식.
@@ -59,7 +61,7 @@ public static class MultiDurationPlanner
             ? CutTransitionMode.LastFrameChain : CutTransitionMode.IndependentCrossfade;
 
     /// <summary>다음 컷에 마지막 프레임 I2V 앵커를 주입할지 — 체인 모드 멀티 샷만.</summary>
-    public static bool ShouldChainLastFrame(BatchRenderJob job) => IsMultiShot(job.DurationMode) && TransitionOf(job) == CutTransitionMode.LastFrameChain;
+    public static bool ShouldChainLastFrame(BatchRenderJob job) => (IsMultiShot(job.DurationMode) || IsGroupedShot(job)) && TransitionOf(job) == CutTransitionMode.LastFrameChain;
 
     /// <summary>메타에 전환 방식 기록.</summary>
     public static Dictionary<string, string> WithTransition(IReadOnlyDictionary<string, string>? meta, CutTransitionMode mode)
@@ -103,12 +105,74 @@ public static class MultiDurationPlanner
     public static int TargetSeconds(VideoDurationMode mode) => mode switch
     {
         VideoDurationMode.Sec10_Dual => 10,
-        VideoDurationMode.Sec15_Triple or VideoDurationMode.Sec15_AmbientSlow => 15,
+        VideoDurationMode.Sec15_Triple or VideoDurationMode.Sec15_AmbientSlow or VideoDurationMode.Sec15_OneTake => 15,
+        VideoDurationMode.Sec30_Auto => 30,
         _ => 5,
     };
 
-    /// <summary>추론 과금 가중치 — 5s 1x · 10s 2x · 15s 3x · 15s-Ambient 1x(로컬 후처리 무과금).</summary>
-    public static int CostMultiplier(VideoDurationMode mode) => ShotCount(mode);
+    /// <summary>추론 과금 가중치(5초 단위) — 5s 1x · 10s 2x · 15s 3x · 15s 원테이크 3x · 30s 자동 6x · 15s-Ambient 1x(로컬 후처리 무과금).</summary>
+    public static int CostMultiplier(VideoDurationMode mode) => mode switch
+    {
+        VideoDurationMode.Sec15_OneTake => 3,
+        VideoDurationMode.Sec30_Auto => 6,
+        _ => ShotCount(mode),
+    };
+
+    /// <summary>메인 프롬프트 1개로 자동 분할되는 장편 모드(파트 입력 UI 없음).</summary>
+    public static bool IsSinglePromptLong(VideoDurationMode mode) => mode is VideoDurationMode.Sec15_OneTake or VideoDurationMode.Sec30_Auto;
+
+    /// <summary>작업 메타 — 엔진 네이티브 최대 클립 길이(초 · Wan 2.6 Cloud = 15, 그 외 5).</summary>
+    public const string MetaNativeSeconds = "duration.native";
+    /// <summary>작업 메타 — Wan 모델 계열(<see cref="PromptFlowStudio.Services.Wan.WanModelFamily"/> 이름).</summary>
+    public const string MetaWanFamily = "wan.family";
+
+    /// <summary>
+    /// 단일 프롬프트 장편 분할 — (세그먼트 수, 세그먼트 길이 초).
+    ///   ▸ 15초 원테이크: 네이티브 ≥15 → 1×15(진짜 원테이크) · 아니면 3×5 비트.
+    ///   ▸ 30초 자동: ≥15 → 2×15 · ≥10 → 3×10 · 아니면 6×5.
+    ///   ▸ 그 외 모드: (<see cref="ShotCount"/>, 5).
+    /// </summary>
+    public static (int Count, int Seconds) SegmentPlan(VideoDurationMode mode, int nativeMaxSeconds) => mode switch
+    {
+        VideoDurationMode.Sec15_OneTake => nativeMaxSeconds >= 15 ? (1, 15) : (3, 5),
+        VideoDurationMode.Sec30_Auto => nativeMaxSeconds >= 15 ? (2, 15) : nativeMaxSeconds >= 10 ? (3, 10) : (6, 5),
+        _ => (ShotCount(mode), (int)ShotSeconds),
+    };
+
+    private static readonly string[][] NarrativeBeats =
+    {
+        new[] { "continuous single take" },
+        new[] { "opening beat: establish the scene and the subject", "closing beat: peak action and satisfying resolution" },
+        new[] { "opening beat: establish the scene and the subject", "middle beat: the action develops and builds", "closing beat: peak moment and resolution" },
+        new[] { "beat 1: establishing shot", "beat 2: the action begins", "beat 3: rising action", "beat 4: resolution" },
+        new[] { "beat 1: establishing shot", "beat 2: the action begins", "beat 3: rising action", "beat 4: peak moment", "beat 5: resolution" },
+        new[] { "beat 1: establishing wide shot", "beat 2: introduce the subject's action", "beat 3: build-up", "beat 4: peak action", "beat 5: reaction close-up", "beat 6: calm closing shot" },
+    };
+
+    /// <summary>세그먼트 i/n 서사 비트 구문(범위 밖은 빈 문자열).</summary>
+    public static string BeatOf(int index, int count)
+        => count >= 1 && count <= NarrativeBeats.Length && (uint)index < (uint)count ? NarrativeBeats[count - 1][index] : "";
+
+    /// <summary>세그먼트 프롬프트 — 메인 + 서사 비트 + (다중 세그먼트면) 일관성 힌트. 단일 원테이크는 메인 그대로.</summary>
+    public static string SegmentPrompt(string? main, int index, int count)
+    {
+        var m = (main ?? "").Trim();
+        if (count <= 1) return m;
+        var beat = BeatOf(index, count);
+        var p = m.Length == 0 ? beat : beat.Length == 0 ? m : m.TrimEnd(',', ' ') + ", " + beat;
+        return WithContinuityHint(p);
+    }
+
+    /// <summary>메타의 네이티브 길이(부재/불량 = 5).</summary>
+    public static int NativeSecondsOf(BatchRenderJob job)
+        => int.TryParse(MetaOf(job, MetaNativeSeconds), System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var s) && s > 0 ? s : (int)ShotSeconds;
+
+    /// <summary>그룹 컷 수 — 메타 <see cref="MetaShots"/> 우선, 없으면 모드 기본.</summary>
+    public static int ShotCountOf(BatchRenderJob job)
+        => int.TryParse(MetaOf(job, MetaShots), System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var s) && s > 0 ? s : ShotCount(job.DurationMode);
+
+    /// <summary>합본 대상 그룹 컷 여부(그룹 키 + 2컷 이상).</summary>
+    public static bool IsGroupedShot(BatchRenderJob job) => job.StitchGroupId is { Length: > 0 } && ShotCountOf(job) > 1;
 
     public static bool IsMultiShot(VideoDurationMode mode) => ShotCount(mode) > 1;
 
@@ -117,6 +181,8 @@ public static class MultiDurationPlanner
         VideoDurationMode.Sec10_Dual => "10초 · 2컷",
         VideoDurationMode.Sec15_Triple => "15초 · 3컷",
         VideoDurationMode.Sec15_AmbientSlow => "15초 앰비언트",
+        VideoDurationMode.Sec15_OneTake => "15초 · 원테이크",
+        VideoDurationMode.Sec30_Auto => "30초 · 자동",
         _ => "5초",
     };
 
@@ -141,6 +207,7 @@ public static class MultiDurationPlanner
     {
         ArgumentNullException.ThrowIfNull(template);
         var mode = template.DurationMode;
+        if (IsSinglePromptLong(mode)) return ExpandSinglePrompt(template, projectName);
         var n = ShotCount(mode);
         var project = string.IsNullOrWhiteSpace(projectName) ? DefaultProject : projectName.Trim();
         if (n == 1)
@@ -172,6 +239,64 @@ public static class MultiDurationPlanner
                 StitchGroupId = group,
                 Metadata = meta,
                 EngineKind = template.EngineKind,   // 적재 시점 렌더 모드 표기(디스패치 시 실엔진으로 재확정)
+            };
+        }
+        return jobs;
+    }
+
+    /// <summary>
+    /// 단일 프롬프트 장편(15초 원테이크 · 30초 자동) 전개 — 메타 <see cref="MetaNativeSeconds"/> 기준 <see cref="SegmentPlan"/>.
+    /// 1세그먼트면 템플릿 1건(DurationSec=15 · 네이티브 원테이크), 다중이면 독립 컷 그룹(서사 비트 + 일관성 힌트 · 1번만 참조 이미지 · 디졸브 합본).
+    /// </summary>
+    public static BatchRenderJob[] ExpandSinglePrompt(BatchRenderJob template, string? projectName)
+    {
+        ArgumentNullException.ThrowIfNull(template);
+        var mode = template.DurationMode;
+        var project = string.IsNullOrWhiteSpace(projectName) ? DefaultProject : projectName.Trim();
+        var (n, sec) = SegmentPlan(mode, NativeSecondsOf(template));
+        if (n <= 1)
+        {
+            return new[]
+            {
+                new BatchRenderJob
+                {
+                    Prompt = (template.Prompt ?? "").Trim(),
+                    Seed = template.Seed,
+                    Resolution = template.Resolution,
+                    DurationSec = sec,   // 네이티브 원테이크(Wan 2.6 duration=15)
+                    SubjectAnchor = template.SubjectAnchor,
+                    ReferenceImagePath = template.ReferenceImagePath,
+                    OutputPath = template.OutputPath,
+                    DurationMode = mode,
+                    Metadata = WithMeta(template.Metadata, MetaMode, mode.ToString(), MetaProject, project),
+                    EngineKind = template.EngineKind,
+                },
+            };
+        }
+
+        var group = string.IsNullOrWhiteSpace(template.StitchGroupId) ? FFmpegVideoStitchService.NewGroupId() : template.StitchGroupId;
+        var shots = n.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        var jobs = new BatchRenderJob[n];
+        for (var i = 0; i < n; i++)
+        {
+            var meta = WithMeta(FFmpegVideoStitchService.WithGroup(template.Metadata, group), MetaMode, mode.ToString(), MetaProject, project);
+            meta[MetaShots] = shots;
+            meta[MetaTransition] = nameof(CutTransitionMode.IndependentCrossfade);
+            jobs[i] = new BatchRenderJob
+            {
+                Prompt = SegmentPrompt(template.Prompt, i, n),
+                Seed = template.Seed,
+                Resolution = template.Resolution,
+                DurationSec = sec,
+                CutIndex = i + 1,
+                StartSec = i * sec,
+                SubjectAnchor = template.SubjectAnchor,
+                ReferenceImagePath = i == 0 ? template.ReferenceImagePath : null,
+                OutputPath = PartOutputPath(template.OutputPath, i),
+                DurationMode = mode,
+                StitchGroupId = group,
+                Metadata = meta,
+                EngineKind = template.EngineKind,
             };
         }
         return jobs;

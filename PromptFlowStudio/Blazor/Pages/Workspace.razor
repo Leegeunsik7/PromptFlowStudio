@@ -747,6 +747,18 @@
                         : "각 컷을 자기 프롬프트로 독립 생성 → 0.25초 디졸브 합본 · 피사체/유니폼 일관성 힌트 자동 부착 · 메인이 비면 파트 1 이 주 프롬프트로 쓰입니다.")</div>
                 </div>
             }
+            else if (PromptFlowStudio.Services.Render.MultiDurationPlanner.IsSinglePromptLong(_durationMode))
+            {
+                <div class="ws-dur ws-wan-model" role="radiogroup" aria-label="Wan 모델" data-wan-model="@(Cfg.ModelFamily)">
+                    @foreach (var fam in new[] { PromptFlowStudio.Services.Wan.WanModelFamily.Wan26, PromptFlowStudio.Services.Wan.WanModelFamily.Wan21 })
+                    {
+                        var f = fam;
+                        <button class="ws-dur-chip @(Cfg.ModelFamily == f ? "on" : null)" role="radio" aria-checked="@(Cfg.ModelFamily == f ? "true" : "false")"
+                                disabled="@State.IsBusy" @onclick="() => PickWanFamily(f)" @key="f">@PromptFlowStudio.Services.Wan.WanModelCatalog.Label(f)</button>
+                    }
+                </div>
+                <div class="ws-dur-hint" data-single-prompt-plan="1">@SegmentPlanLabel() — 파트 입력 없이 메인 프롬프트만 사용합니다@(NativeClipSeconds < 15 && Cfg.ModelFamily == PromptFlowStudio.Services.Wan.WanModelFamily.Wan26 ? " (Cloud 렌더 모드에서만 15초 네이티브)" : "").</div>
+            }
             else if (_durationMode == PromptFlowStudio.Services.Render.VideoDurationMode.Sec15_AmbientSlow)
             {
                 <span class="ws-pcore on" data-ambient-badge="1">🌙 15초 엠비언트 루프 · 5초 마스터 → 무이음새 15초 핑퐁</span>
@@ -4733,8 +4745,24 @@
         PromptFlowStudio.Services.Render.VideoDurationMode.Sec10_Dual,
         PromptFlowStudio.Services.Render.VideoDurationMode.Sec15_Triple,
         PromptFlowStudio.Services.Render.VideoDurationMode.Sec15_AmbientSlow,
+        PromptFlowStudio.Services.Render.VideoDurationMode.Sec15_OneTake,
+        PromptFlowStudio.Services.Render.VideoDurationMode.Sec30_Auto,
     };
     private PromptFlowStudio.Services.Render.VideoDurationMode _durationMode = PromptFlowStudio.Services.Render.VideoDurationMode.Sec5_Single;
+    /// <summary>엔진 네이티브 최대 클립(초) — Cloud(DashScope) + Wan 2.6 이면 15, 그 외 5(로컬/2.1).</summary>
+    private int NativeClipSeconds => string.Equals(_renderMode, PromptFlowStudio.Services.Render.RenderEngineKind.Cloud, StringComparison.Ordinal)
+        ? PromptFlowStudio.Services.Wan.WanModelCatalog.MaxNativeSeconds(Cfg.ModelFamily) : PromptFlowStudio.Services.Wan.WanModelCatalog.Wan21MaxSeconds;
+    private string SegmentPlanLabel()
+    {
+        var (n, s) = PromptFlowStudio.Services.Render.MultiDurationPlanner.SegmentPlan(_durationMode, NativeClipSeconds);
+        return n <= 1
+            ? "🎥 네이티브 " + s.ToString(CultureInfo.InvariantCulture) + "초 원테이크 1회 요청(Wan 2.6)"
+            : "🧩 메인 프롬프트 1개 → " + n.ToString(CultureInfo.InvariantCulture) + "×" + s.ToString(CultureInfo.InvariantCulture) + "초 서사 비트 자동 분할 · 피사체/유니폼 일관성 · 0.25초 디졸브 합본";
+    }
+    private void PickWanFamily(PromptFlowStudio.Services.Wan.WanModelFamily f)
+    {
+        if (!Cfg.SaveModelFamily(f)) _durationMsg = "⚠ 모델 설정 저장 실패";
+    }
     private readonly string?[] _subPrompts = new string?[3];
     private Action[] _durPick = Array.Empty<Action>();
     private bool _ambientPingPong = true;   // 기본 핑퐁(고속 블렌드 필터 조합 · 이음새 없는 15초 루프)
@@ -6355,7 +6383,16 @@
             ? new Dictionary<string, string>(StringComparer.Ordinal) { [PromptFlowStudio.Services.Render.VideoEngineRenderExecutionEngine.MetaAmbientPingPong] = "true" }
             : null;
         IReadOnlyList<string?> subs = _subPrompts;
-        if (PromptFlowStudio.Services.Render.MultiDurationPlanner.IsMultiShot(_durationMode))
+        if (PromptFlowStudio.Services.Render.MultiDurationPlanner.IsSinglePromptLong(_durationMode))
+        {
+            // 🎞️ 단일 프롬프트 장편 — 네이티브 길이·모델 계열 기록(플래너가 1×15 / 2×15 / 3×10 / 6×5 분할), 파트 입력 무시
+            var native = NativeClipSeconds;
+            meta = PromptFlowStudio.Services.Render.MultiDurationPlanner.WithMeta(meta, PromptFlowStudio.Services.Render.MultiDurationPlanner.MetaNativeSeconds, native.ToString(CultureInfo.InvariantCulture));
+            if (native >= PromptFlowStudio.Services.Wan.WanModelCatalog.Wan26MaxSeconds)
+                meta = PromptFlowStudio.Services.Render.MultiDurationPlanner.WithMeta(meta, PromptFlowStudio.Services.Render.MultiDurationPlanner.MetaWanFamily, nameof(PromptFlowStudio.Services.Wan.WanModelFamily.Wan26));
+            subs = Array.Empty<string?>();
+        }
+        else if (PromptFlowStudio.Services.Render.MultiDurationPlanner.IsMultiShot(_durationMode))
         {
             meta = PromptFlowStudio.Services.Render.MultiDurationPlanner.WithTransition(meta, _cutTransition);   // 🎬 컷 전환 방식(독립 디졸브 / 프레임 체인)
             if (_cutTransition == PromptFlowStudio.Services.Render.CutTransitionMode.IndependentCrossfade)

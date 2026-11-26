@@ -9,7 +9,7 @@
     <div class="wc-head">
         <span class="wc-ico">🎬</span>
         <div class="wc-hgrow">
-            <div class="wc-title">영상 생성(Wan 2.1) API 설정</div>
+            <div class="wc-title">영상 생성(Wan 2.6 / 2.1) API 설정</div>
             <div class="wc-desc">알리바바 통의만상 DashScope API 키를 화면에서 설정 — 파일 직접 수정 없이 로컬 저장 · <b>재시작 불필요</b></div>
         </div>
         <span class="wc-live @(Wan.Enabled ? "on" : "off")">@(Wan.Enabled ? "● 연결됨" : "○ 미설정")</span>
@@ -33,6 +33,14 @@
             <select id="wc-url" class="wc-in" @bind="_baseUrl">
                 <option value="https://dashscope-intl.aliyuncs.com">글로벌(싱가포르) — dashscope-intl.aliyuncs.com</option>
                 <option value="https://dashscope.aliyuncs.com">중국 본토(베이징) — dashscope.aliyuncs.com</option>
+            </select>
+        </div>
+
+        <div class="wc-row wide" data-wan-model-select="1">
+            <label class="wc-lbl" for="wc-model">영상 모델 <span class="wc-sub">Wan 2.6 = 15초 원테이크(미지원 계정은 2.1 5초로 자동 폴백)</span></label>
+            <select id="wc-model" class="wc-in" value="@(Cfg.ModelFamily.ToString())" @onchange="OnModelChanged">
+                <option value="@(nameof(PromptFlowStudio.Services.Wan.WanModelFamily.Wan26))">@PromptFlowStudio.Services.Wan.WanModelCatalog.Label(PromptFlowStudio.Services.Wan.WanModelFamily.Wan26)</option>
+                <option value="@(nameof(PromptFlowStudio.Services.Wan.WanModelFamily.Wan21))">@PromptFlowStudio.Services.Wan.WanModelCatalog.Label(PromptFlowStudio.Services.Wan.WanModelFamily.Wan21)</option>
             </select>
         </div>
     </div>
@@ -123,6 +131,13 @@
         _testing = false; _busy = false;
         ShowToast(msg, ok);
         await InvokeAsync(StateHasChanged);
+    }
+
+    private void OnModelChanged(ChangeEventArgs e)
+    {
+        var fam = PromptFlowStudio.Services.Wan.WanModelCatalog.ParseFamily(e.Value?.ToString());
+        var ok = Cfg.SaveModelFamily(fam);   // 즉시 저장 · OnConfigChanged 발행
+        ShowToast(ok ? "🎬 영상 모델: " + PromptFlowStudio.Services.Wan.WanModelCatalog.Label(fam) : "❌ 모델 설정 저장 실패", ok);
     }
 
     private void ShowToast(string msg, bool ok)
