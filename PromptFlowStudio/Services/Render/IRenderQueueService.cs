@@ -63,6 +63,12 @@ public interface IRenderQueueService : IDisposable
         return n;
     }
     bool RetryJob(Guid jobId);
+
+    /// <summary>
+    /// 🔁 결함 컷 단건 재생성 — 끝난 작업(완료·실패·취소)을 새 시드로 같은 자리에 재적재(그룹/CutIndex 유지 → 합본 순서 보존).
+    /// QC 자가 치유 메타 초기화(재시도 1회 다시 허용) · 재생성 횟수 기록. 대기/진행 중이거나 미지원 큐면 false.
+    /// </summary>
+    bool RegenerateJob(Guid jobId, long newSeed) => false;
     int ClearCompleted();
 
     /// <summary>⚡ 대기 작업 우선순위 — 바로 위 대기 작업과 자리 교환(대기/보류 상태만). 이동 시 true.</summary>

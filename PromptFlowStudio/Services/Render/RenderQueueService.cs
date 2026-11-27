@@ -187,6 +187,37 @@ public sealed partial class RenderQueueService : IRenderQueueService
         return true;
     }
 
+    /// <inheritdoc/>
+    public bool RegenerateJob(Guid jobId, long newSeed)
+    {
+        lock (_gate)
+        {
+            var i = IndexOf(jobId);
+            if (i < 0) return false;
+            var job = Queue[i];
+            if (job.Status is not (BatchJobStatus.Completed or BatchJobStatus.Failed or BatchJobStatus.Cancelled)) return false;
+            if (MultiDurationPlanner.MetaOf(job, MetaQcRawPrompt) is { Length: > 0 } raw) job.Prompt = raw;   // 안정화 앵커 누적 방지 — 원문 복귀
+            var meta = job.Metadata is null ? new Dictionary<string, string>(StringComparer.Ordinal) : new Dictionary<string, string>(job.Metadata, StringComparer.Ordinal);
+            meta.Remove(MetaQcSelfHealed);
+            meta.Remove(MetaQcDegraded);
+            meta.Remove(MetaQcDiagnosis);
+            meta.Remove(MetaQcRawPrompt);
+            var prev = int.TryParse(MultiDurationPlanner.MetaOf(job, MultiCutContinuity.MetaRegenCount), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var n) ? n : 0;
+            meta[MultiCutContinuity.MetaRegenCount] = (prev + 1).ToString(System.Globalization.CultureInfo.InvariantCulture);
+            job.Metadata = meta;
+            job.Seed = newSeed;
+            job.Status = BatchJobStatus.Queued;
+            job.ProgressPercent = 0;
+            job.CompletedAt = null;
+            job.RetryCount = 0;
+            ResetRunInfo(job);
+            if (job.StitchGroupId is { Length: > 0 } g) _stitchedGroups.Remove(g);   // 듀레이션 그룹 재합본 허용
+        }
+        Raise();
+        EnsureWorker();
+        return true;
+    }
+
     public int ClearCompleted()
     {
         var removed = 0;

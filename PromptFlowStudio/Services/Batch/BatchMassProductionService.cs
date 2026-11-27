@@ -12,7 +12,7 @@ public sealed class BatchRenderJob
     public Guid JobId { get; init; } = Guid.NewGuid();
     /// <summary>프롬프트 — 렌더 후 QC 자가 치유 재시도 시 안정화본으로 교체될 수 있음(set).</summary>
     public string Prompt { get; set; } = "";
-    public long Seed { get; init; }
+    public long Seed { get; set; }   // set: 결함 컷 단건 재생성(IRenderQueueService.RegenerateJob) 시 새 시드
     /// <summary>렌더 해상도("1280x720") — CUDA OOM 자동 다운스케일 재시도 시 워커가 하향 갱신.</summary>
     public string Resolution { get; set; } = RenderCostEstimatorService.DefaultResolution;
     public float DurationSec { get; init; } = RenderCostEstimatorService.DefaultDurationSec;

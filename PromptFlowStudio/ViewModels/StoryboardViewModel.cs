@@ -24,9 +24,13 @@ public sealed class StoryboardViewModel : INotifyPropertyChanged, IDisposable
     private StoryboardProject? _project;
     private bool _suppress, _syncing, _disposed;
 
-    public StoryboardViewModel(StoryboardSequencerService sequencer)
+    private readonly PromptFlowStudio.Services.AI.PlutoVideoLearningMemoryService? _memory;
+
+    /// <param name="memory">🧠 플루토 학습 메모리(선택) — 컷 1 기준 학습 앵커를 전 컷 공통 부착. null 이면 생략.</param>
+    public StoryboardViewModel(StoryboardSequencerService sequencer, PromptFlowStudio.Services.AI.PlutoVideoLearningMemoryService? memory = null)
     {
         _sequencer = sequencer ?? throw new ArgumentNullException(nameof(sequencer));
+        _memory = memory;
         Cuts.CollectionChanged += OnCutsChanged;
     }
 
@@ -155,6 +159,10 @@ public sealed class StoryboardViewModel : INotifyPropertyChanged, IDisposable
                      : _links.TryGetValue(first, out var s0) && !string.IsNullOrWhiteSpace(s0.ImagePath) ? s0.ImagePath
                      : null;
         var fallbackSeed = _masterSeed ?? (first.Seed != 0 ? first.Seed : StableSeed(first.RawPrompt));
+        var shared = MultiCutContinuity.Extract(first.RawPrompt, anchor);   // 컷 1 의상 · 장소 → 전 컷 공유
+        PromptFlowStudio.Services.AI.PlutoLearnedGuidance? guidance = null;
+        try { guidance = _memory?.GetLearnedGuidanceForPrompt(first.RawPrompt); }
+        catch (Exception ex) when (ex is not OutOfMemoryException) { Program.Log("Storyboard.LearnedAnchor", ex); }
 
         var jobs = new BatchRenderJob[Cuts.Count];
         var start = 0f;
@@ -164,9 +172,7 @@ public sealed class StoryboardViewModel : INotifyPropertyChanged, IDisposable
             var seed = _masterSeed is long m ? unchecked(m + i)
                      : cut.Seed != 0 ? cut.Seed
                      : unchecked(fallbackSeed + i);
-            var prompt = cut.RawPrompt;
-            if (i > 0 && anchor is not null && prompt.IndexOf(anchor, StringComparison.OrdinalIgnoreCase) < 0)
-                prompt = prompt.Length == 0 ? "same subject as cut 1: " + anchor : prompt + ", same subject as cut 1: " + anchor;
+            var prompt = MultiCutContinuity.Apply(cut.RawPrompt, shared, i + 1, guidance);   // 학습 앵커(전 컷) + 의상/장소/피사체(컷 2~)
             jobs[i] = new BatchRenderJob
             {
                 Prompt = prompt,
@@ -178,11 +184,16 @@ public sealed class StoryboardViewModel : INotifyPropertyChanged, IDisposable
                 TransitionFx = cut.TransitionType.ToString(),
                 SubjectAnchor = anchor,
                 ReferenceImagePath = refImage,
+                Metadata = MultiCutContinuity.WithHardCut(null),   // 독립 T2V + 하드 컷 기본(마지막 프레임 체인 없음)
             };
             start += jobs[i].DurationSec;
         }
         return jobs;
     }
+
+    /// <summary>🔁 마지막 전송 그룹의 결함 컷 1건만 새 시드로 재렌더 — 나머지 컷은 그대로(전체 재렌더 없음).</summary>
+    public bool RegenerateCut(IRenderQueueService queue, int cutIndex)
+        => MultiCutContinuity.RegenerateCut(queue, LastDispatchGroupId, cutIndex);
 
     /// <summary>마지막 일괄 전송 합본 그룹(<see cref="FFmpegVideoStitchService.MetaGroup"/>) — 전 컷 Completed 시 최종 합본 대상.</summary>
     public string? LastDispatchGroupId { get; private set; }

@@ -14,11 +14,29 @@ public sealed class AiShortsViewModel
 {
     private readonly AiShortsService _shorts;
     private readonly IRenderQueueService _queue;
+    private readonly PromptFlowStudio.Services.AI.PlutoVideoLearningMemoryService? _memory;
 
-    public AiShortsViewModel(AiShortsService shorts, IRenderQueueService queue)
+    /// <param name="memory">🧠 플루토 학습 메모리(선택) — 주제 기준 학습 앵커를 3컷 공통 부착. null 이면 생략.</param>
+    public AiShortsViewModel(AiShortsService shorts, IRenderQueueService queue, PromptFlowStudio.Services.AI.PlutoVideoLearningMemoryService? memory = null)
     {
         _shorts = shorts ?? throw new ArgumentNullException(nameof(shorts));
         _queue = queue ?? throw new ArgumentNullException(nameof(queue));
+        _memory = memory;
+    }
+
+    /// <summary>마지막 전송 그룹에 대기/렌더 중 컷이 남아 있는지 — UI 중복 전송 차단.</summary>
+    public bool IsLastDispatchInFlight => MultiCutContinuity.IsGroupInFlight(_queue.Snapshot(), LastDispatchGroupId);
+
+    /// <summary>마지막 전송 그룹의 컷별 QC 상태.</summary>
+    public List<CutStatus> CutStatuses() => MultiCutContinuity.GroupStatuses(_queue.Snapshot(), LastDispatchGroupId);
+
+    /// <summary>🔁 결함 컷 1건만 새 시드로 재렌더(나머지 컷 유지).</summary>
+    public bool RegenerateCut(int cutIndex)
+    {
+        var ok = MultiCutContinuity.RegenerateCut(_queue, LastDispatchGroupId, cutIndex);
+        StatusMessage = ok ? "컷 " + cutIndex.ToString(System.Globalization.CultureInfo.InvariantCulture) + " 재생성 적재 — 나머지 컷 유지" : "재생성 불가(진행 중이거나 대상 없음)";
+        Raise();
+        return ok;
     }
 
     public event Action? Changed;
@@ -51,12 +69,16 @@ public sealed class AiShortsViewModel
         if (Cuts.Count == 0) GenerateSequence();
         var jobs = new BatchRenderJob[Cuts.Count];
         var group = FFmpegVideoStitchService.NewGroupId();
+        var shared = MultiCutContinuity.Extract(Cuts[0].VisualPrompt, string.IsNullOrWhiteSpace(TopicInput) ? null : TopicInput.Trim());   // 주제 = 피사체 앵커
+        PromptFlowStudio.Services.AI.PlutoLearnedGuidance? guidance = null;
+        try { guidance = _memory?.GetLearnedGuidanceForPrompt(TopicInput); }
+        catch (Exception ex) when (ex is not OutOfMemoryException) { PromptFlowStudio.Program.Log("AiShorts.LearnedAnchor", ex); }
         for (var i = 0; i < jobs.Length; i++)
         {
             var cut = Cuts[i];
             jobs[i] = new BatchRenderJob
             {
-                Prompt = cut.VisualPrompt,
+                Prompt = MultiCutContinuity.Apply(cut.VisualPrompt, shared, cut.CutIndex, guidance),   // 학습 앵커(전 컷) + 피사체/의상/장소(컷 2~)
                 Seed = cut.Seed,
                 Resolution = AiShortsService.NormalizeVerticalResolution(cut.Resolution),   // 9:16 잠금 — 가로형/빈 값이 섞여도 세로로 강제
                 DurationSec = cut.DurationSec,
@@ -65,7 +87,7 @@ public sealed class AiShortsViewModel
                 BgmBpm = cut.BgmBpm,
                 TransitionBeatIndex = cut.TransitionBeatIndex,
                 TransitionFx = cut.TransitionFx,
-                Metadata = FFmpegVideoStitchService.WithGroup(null, group, cut.Script),   // 나레이션 대본 → 합본 TTS·SRT
+                Metadata = FFmpegVideoStitchService.WithGroup(MultiCutContinuity.WithHardCut(null), group, cut.Script),   // 하드 컷 기본 + 나레이션 대본 → 합본 TTS·SRT
             };
         }
         var added = _queue.Enqueue(jobs);

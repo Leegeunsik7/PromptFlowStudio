@@ -73,19 +73,28 @@
             {
                 <div class="acd-hint">주제를 입력하고 시퀀스를 생성하세요.</div>
             }
+            @{ var cutStates = Vm.CutStatuses(); var inFlight = Vm.IsLastDispatchInFlight; }
             @foreach (var cut in Vm.Cuts)
             {
+                var st = StatusOf(cutStates, cut.CutIndex);
                 <div class="ash-cut ash-cut-@(cut.CutIndex)">
                     <div class="ash-cut-h"><b>#@(cut.CutIndex) @(cut.Phase)</b><span>@(cut.DurationSec.ToString("0.#", CultureInfo.InvariantCulture))s</span></div>
                     <div class="ash-cut-m">🎥 @(cut.CameraMotion) · 🥁 @(cut.BgmBpm)BPM @(cut.TransitionBeatIndex)박 · @(cut.TransitionFx)</div>
                     <div class="ash-cut-p" title="@cut.VisualPrompt">@(cut.VisualPrompt)</div>
+                    @if (st is { } s)
+                    {
+                        <div class="ash-cut-qc" data-cut-qc="@(cut.CutIndex)">
+                            <span class="mc-qc @(PromptFlowStudio.Services.Render.MultiCutContinuity.Css(s.State))" title="@(s.Diagnosis)">@(PromptFlowStudio.Services.Render.MultiCutContinuity.Label(s.State))@(s.Regenerations > 0 ? " · 재생성 " + s.Regenerations.ToString(CultureInfo.InvariantCulture) : "")</span>
+                            <button class="mc-regen" data-cut-regen="@(cut.CutIndex)" disabled="@(_stitching || !PromptFlowStudio.Services.Render.MultiCutContinuity.CanRegenerate(s.State))" @onclick="() => RegenerateShortsCut(cut.CutIndex)" title="이 컷만 새 시드로 다시 렌더(나머지 컷 유지 · 전체 재렌더 없음)">↻ 이 컷만 재생성</button>
+                        </div>
+                    }
                 </div>
             }
-            <button class="acd-btn go" @onclick="DispatchShorts">📤 숏폼 전체 렌더 큐로 전송</button>
+            <button class="acd-btn go" data-shorts-dispatch="1" @onclick="DispatchShorts" disabled="@(inFlight || _stitching)" title="@(inFlight ? "이전 전송 컷이 아직 렌더 중입니다 — 완료 후 다시 전송하세요(중복 렌더 차단)" : "3컷을 9:16 렌더 큐로 일괄 전송")">📤 숏폼 전체 렌더 큐로 전송</button>
             <span class="acd-hint">전송 @(Vm.DispatchedCount)건@(Vm.StatusMessage is null ? "" : " · " + Vm.StatusMessage)</span>
             @if (_stitchTotal > 0)
             {
-                <button class="acd-btn go" disabled="@(_stitching || _stitchDone < _stitchTotal)" @onclick="ExportFullVideoAsync">🎬 최종 완성본 1개로 합치기 (Export Full Video)</button>
+                <button class="acd-btn go" disabled="@(_stitching || inFlight || _stitchDone < _stitchTotal)" @onclick="ExportFullVideoAsync">@(_stitching ? "⏳ 합치는 중…" : "🎬 최종 완성본 1개로 합치기 (Export Full Video)")</button>
                 <span class="acd-hint">렌더 큐 @(_stitchDone)/@(_stitchTotal) 완료@(_stitchMessage is null ? "" : " · " + _stitchMessage)</span>
             }
             @if (_fullVideoPath is not null)
@@ -245,6 +254,16 @@
     .ash-cut-h{display:flex; justify-content:space-between; font:800 11.5px var(--mono); color:var(--text-primary)}
     .ash-cut-m{font:700 10.5px var(--mono); color:#7dd3fc}
     .ash-cut-p{font-size:10.5px; color:var(--text-muted); display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden}
+    /* 컷별 QC 배지 + 단건 재생성 */
+    .ash-cut-qc{display:flex; align-items:center; justify-content:space-between; gap:6px}
+    .mc-qc{font:800 10px var(--mono); padding:2px 7px; border-radius:999px; border:1px solid var(--line); color:var(--text-secondary)}
+    .mc-qc.ok{color:#22c55e; border-color:color-mix(in srgb,#22c55e 45%,var(--line))}
+    .mc-qc.warn{color:#f59e0b; border-color:color-mix(in srgb,#f59e0b 45%,var(--line))}
+    .mc-qc.bad{color:#ef4444; border-color:color-mix(in srgb,#ef4444 45%,var(--line))}
+    .mc-qc.run{color:#7dd3fc}
+    .mc-regen{font:800 10px Pretendard,'Malgun Gothic',sans-serif; padding:3px 8px; border-radius:8px; border:1px solid var(--line); background:var(--card); color:var(--text-secondary); cursor:pointer}
+    .mc-regen:hover:not(:disabled){border-color:var(--accent); color:var(--text-primary)}
+    .mc-regen:disabled{opacity:.45; cursor:not-allowed}
 </style>
 
 @code {
@@ -315,21 +334,54 @@
 
     private void DispatchShorts()
     {
-        try { Vm.DispatchToRenderQueue(); _stitchMessage = null; RefreshStitchProgress(); }
+        if (_stitching || Vm.IsLastDispatchInFlight) return;   // 이전 전송 렌더 중 → 중복 렌더 차단
+        try
+        {
+            if (Vm.DispatchToRenderQueue() > 0)
+            {
+                _fullVideoPath = null;   // 이전 합본은 새 전송과 무관 — 낡은 영상 발행 방지
+                _stitchTotal = _stitchDone = 0; _statusSig = 0;
+            }
+            _stitchMessage = null;
+            RefreshStitchProgress();
+        }
         catch (Exception ex) { Program.Log("AiShorts.Dispatch", ex); }
     }
 
+    /// <summary>🔁 결함 컷 1건만 재렌더 — 기존 합본은 낡았으므로 해제.</summary>
+    private void RegenerateShortsCut(int cutIndex)
+    {
+        if (_stitching) return;
+        try
+        {
+            if (Vm.RegenerateCut(cutIndex)) { _fullVideoPath = null; _stitchMessage = null; }
+            RefreshStitchProgress();
+        }
+        catch (Exception ex) { Program.Log("AiShorts.RegenerateCut", ex); }
+    }
+
+    private static PromptFlowStudio.Services.Render.CutStatus? StatusOf(List<PromptFlowStudio.Services.Render.CutStatus> list, int cutIndex)
+    {
+        for (var i = 0; i < list.Count; i++) if (list[i].CutIndex == cutIndex) return list[i];
+        return null;
+    }
+
     // ── 숏폼 3컷 최종 합본 ──
-    private int _stitchTotal, _stitchDone;
+    private int _stitchTotal, _stitchDone, _statusSig;
     private bool _stitching;
     private string? _stitchMessage;
     private string? _fullVideoPath;
+    private CancellationTokenSource? _stitchCts;
 
     protected override void OnInitialized() => RenderQueue.OnChange += OnRenderQueueChanged;
 
-    public void Dispose() => RenderQueue.OnChange -= OnRenderQueueChanged;
+    public void Dispose()
+    {
+        RenderQueue.OnChange -= OnRenderQueueChanged;
+        try { _stitchCts?.Cancel(); } catch (ObjectDisposedException) { }   // 합본 중 화면 이탈 → ffmpeg 취소
+    }
 
-    /// <summary>합본 그룹 완료 수가 바뀔 때만 다시 그림.</summary>
+    /// <summary>합본 그룹 완료 수 · 컷 상태 지문이 바뀔 때만 다시 그림(진행률 틱 무시).</summary>
     private void OnRenderQueueChanged()
     {
         try { if (RefreshStitchProgress()) _ = InvokeAsync(StateHasChanged); }
@@ -340,9 +392,11 @@
     {
         var group = Vm.LastDispatchGroupId;
         if (group is null) return false;
-        var (total, done) = PromptFlowStudio.Services.Render.FFmpegVideoStitchService.GroupProgress(RenderQueue.Snapshot(), group);
-        if (total == _stitchTotal && done == _stitchDone) return false;
-        _stitchTotal = total; _stitchDone = done;
+        var snap = RenderQueue.Snapshot();
+        var (total, done) = PromptFlowStudio.Services.Render.FFmpegVideoStitchService.GroupProgress(snap, group);
+        var sig = PromptFlowStudio.Services.Render.MultiCutContinuity.StatusSignature(snap, group);
+        if (total == _stitchTotal && done == _stitchDone && sig == _statusSig) return false;
+        _stitchTotal = total; _stitchDone = done; _statusSig = sig;
         return true;
     }
 
@@ -352,10 +406,12 @@
         if (!PromptFlowStudio.Services.Render.FFmpegVideoStitchService.TryCollectCompletedCuts(RenderQueue.Snapshot(), Vm.LastDispatchGroupId, out var cuts))
         { _stitchMessage = "모든 컷 완료 + 로컬 산출물 필요"; return; }
         _stitching = true;
+        var cts = new CancellationTokenSource();
+        _stitchCts = cts;
         try
         {
             var name = string.IsNullOrWhiteSpace(Vm.TopicInput) ? "shorts" : "shorts_" + Vm.TopicInput.Trim();
-            var r = await Stitcher.StitchCutsAsync(cuts, PromptFlowStudio.Services.Render.FFmpegVideoStitchService.BuildFullOutputPath(Media.MediaRoot, name), ScriptTts, Subtitles);   // 나레이션 AAC 믹싱 + SRT
+            var r = await Stitcher.StitchCutsAsync(cuts, PromptFlowStudio.Services.Render.FFmpegVideoStitchService.BuildFullOutputPath(Media.MediaRoot, name), ScriptTts, Subtitles, cts.Token);   // 나레이션 AAC 믹싱 + SRT
             _stitchMessage = r.Message;
             if (r.Ok && !r.IsVirtual && r.OutputPath is not null)
             {
@@ -363,8 +419,13 @@
                 _fullVideoPath = r.OutputPath;
             }
         }
+        catch (OperationCanceledException) when (cts.IsCancellationRequested) { _stitchMessage = "합본 취소됨"; }
         catch (Exception ex) { Program.Log("AiShorts.Stitch", ex); _stitchMessage = "합본 실패"; }
-        finally { _stitching = false; }
+        finally
+        {
+            _stitching = false;
+            if (ReferenceEquals(Interlocked.CompareExchange(ref _stitchCts, null, cts), cts)) cts.Dispose();
+        }
     }
 
     /// <summary>🚀 SNS 발행 모달 — 훅 = 주제(없으면 첫 컷 대본) · 3컷 대본/길이 → 타임스탬프 설명.</summary>
