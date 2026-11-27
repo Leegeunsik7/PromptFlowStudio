@@ -1120,6 +1120,11 @@
                             <span>🛡️ 숏츠 UI 가이드</span>
                         </label>
                     }
+                    @if (State.QcSelfHealed || State.QcDegraded)
+                    {
+                        <span class="ws-src @(State.QcDegraded ? "warn" : "ok")" role="status" data-qc-5s="@(State.QcDegraded ? "degraded" : "healed")"
+                              title="@("렌더 후 QC 진단: " + (State.QcDiagnosis ?? ""))">@(State.QcDegraded ? "⚠ QC 경고(재시도 후)" : "🩺 QC 자가 치유됨")</span>
+                    }
                     @if (State.IsLocal)
                     {
                         <span class="ws-src ok">💾 로컬 저장됨</span>
@@ -1195,7 +1200,7 @@
 
             @* v15.4.0 ⚙️ Wan 2.1 파라미터 튜너 · 🍼 아기 디테일 복원 스위치 · 📊 미니 텔레메트리 바 *@
             <div class="ws-tune">
-                <div class="ws-tune-h">⚙️ Wan 2.1 파라미터 튜너 <button class="ws-more inl" @onclick="_canvas.Reset" disabled="@State.IsBusy">기본값</button></div>
+                <div class="ws-tune-h">⚙️ Wan 2.1/2.6 파라미터 튜너 <button class="ws-more inl" @onclick="_canvas.Reset" disabled="@State.IsBusy">기본값</button></div>
                 <label class="ws-tune-r"><span>Inference Steps</span><b>@_canvas.Steps</b>
                     <input type="range" min="@LiveVideoCanvasStudio.MinSteps" max="@LiveVideoCanvasStudio.MaxSteps" step="1" @bind="_canvas.Steps" @bind:event="oninput" disabled="@State.IsBusy" /></label>
                 <label class="ws-tune-r"><span>CFG Scale</span><b>@_canvas.CfgLabel</b>
@@ -1571,7 +1576,7 @@
     @@media (max-width: 1180px) { .ws-grid { grid-template-columns: 1fr 1fr; } .ws-rail { grid-column: 1 / -1; } }
     @@media (max-width: 860px) { .ws-grid { grid-template-columns: 1fr; } }
 
-    .ws-card { border: 1px solid var(--line); border-radius: 16px; background: var(--card); padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+    .ws-card { border: 1px solid var(--line); border-radius: 16px; background: var(--card); padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }   /* 컴팩트 v2: 좌·우 칼럼 수직 리듬 8px 통일 */
     .ws-card-h { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 10px; font-size: 13.5px; font-weight: 800; color: var(--text-primary); }
     .ws-card-h > span:first-child { white-space: nowrap; flex-shrink: 0; }
 
@@ -1619,7 +1624,7 @@
     .ws-thumb-x:hover:not(:disabled) { background: #ef4444; } .ws-thumb-x:disabled { opacity: .5; cursor: not-allowed; }
     .ws-imgerr { font-size: 11.5px; color: #ef4444; }
 
-    .ws-actions { display: flex; gap: 10px; align-items: center; }
+    .ws-actions { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; }   /* 토글 2종 + 엔진 배지가 좁은 칼럼에서 가로 넘침 없이 줄바꿈 */
     .ws-eng { margin-left: auto; font-size: 11.5px; font-weight: 800; padding: 4px 10px; border-radius: 999px; border: 1px solid rgba(148,163,184,.35); color: #cbd5e1; }
     .ws-eng-cloud { color: #38bdf8; border-color: rgba(56,189,248,.45); background: rgba(56,189,248,.1); }
     .ws-eng-comfyui { color: #a78bfa; border-color: rgba(167,139,250,.45); background: rgba(167,139,250,.1); }
@@ -1639,7 +1644,7 @@
     .ws-empty { flex: 0 0 auto; display: flex; flex-direction: column; align-items: center; justify-content: flex-start; text-align: center; gap: 6px;   /* 컴팩트: 유휴 캔버스가 칼럼 높이를 채우지 않고 16:9 박스에 밀착 */
         min-height: 0; color: var(--text-muted); font-size: 12.5px; line-height: 1.5; }
     .ws-empty-ic { font-size: 32px; opacity: .5; }
-    .ws-vf { position: relative; height: min(26vh, 216px); width: auto; max-width: 100%; margin-bottom: 2px; border: 1px dashed color-mix(in srgb, #22d3ee 55%, var(--line)); border-radius: 6px;
+    .ws-vf { position: relative; height: min(20vh, 172px); width: auto; max-width: 100%; margin-bottom: 2px; border: 1px dashed color-mix(in srgb, #22d3ee 55%, var(--line)); border-radius: 6px;
         background: radial-gradient(ellipse at center, color-mix(in srgb, #22d3ee 6%, transparent), transparent 70%); overflow: hidden; }
     .ws-vf-g { position: absolute; background: color-mix(in srgb, #22d3ee 22%, transparent); }
     .ws-vf-g.v1, .ws-vf-g.v2 { top: 0; bottom: 0; width: 1px; }
@@ -1665,7 +1670,7 @@
         background: color-mix(in srgb, var(--flow-cyan) 8%, var(--card-2)); border: 1px solid color-mix(in srgb, var(--flow-cyan) 30%, var(--line)); }
     .ws-empty-card:hover { border-color: var(--accent-2); color: var(--text-primary); }
 
-    .ws-prog { display: flex; flex-direction: column; gap: 10px; min-height: 160px; justify-content: center; }
+    .ws-prog { display: flex; flex-direction: column; gap: 8px; min-height: 88px; justify-content: center; }   /* 컴팩트: 진행 중에도 튜너·피드백이 첫 화면 안 */
     .ws-bar { height: 10px; border-radius: 999px; background: var(--card-2); border: 1px solid var(--line); overflow: hidden; }
     .ws-bar-f { height: 100%; border-radius: 999px; transition: width .5s ease;
         background: linear-gradient(90deg, var(--flow-violet), var(--flow-cyan), var(--flow-magenta)); background-size: 200% 100%; animation: ws-flow 2.4s linear infinite; }
@@ -1686,6 +1691,7 @@
     .ws-hts-ctl label { display: flex; align-items: center; gap: 6px; }
     .ws-hts-ctl input[type=range] { width: 120px; }
     .ws-hts-wrap { position: relative; }
+    .ws-hts-wrap > .ws-xd > video, .ws-hts-wrap > .ws-xd > canvas { max-height: min(42vh, 400px); }   /* 16:9 뷰포트 상한(레터박스) — 피드백 바·튜너가 첫 화면 안 */
     .ws-video { filter: var(--ws-lut, none); transition: filter .25s ease; }
     /* 🔀 캔버스 A/B 스플릿 — 원본(좌) | backdrop LUT+샤프닝(우) · --ab 는 JS 가 직접 갱신 */
     .ws-hts-wrap.ab-on .ws-video { filter: none; }
@@ -1753,7 +1759,7 @@
     .ws-src { font: 700 11px var(--mono); border-radius: 999px; padding: 5px 10px; border: 1px solid var(--line); white-space: nowrap; }
     .ws-src.ok { color: #10b981; border-color: color-mix(in srgb, #10b981 45%, var(--line)); }
     .ws-src.warn { color: #f5a623; border-color: color-mix(in srgb, #f5a623 45%, var(--line)); }
-    .ws-err { padding: 14px 16px; border-radius: 12px; font-size: 13px; line-height: 1.6; min-height: 120px; display: flex; align-items: center;
+    .ws-err { padding: 14px 16px; border-radius: 12px; font-size: 13px; line-height: 1.6; min-height: 64px; display: flex; align-items: center;
         border: 1px solid color-mix(in srgb, #ef4444 45%, var(--line)); background: color-mix(in srgb, #ef4444 10%, var(--card)); color: var(--text-secondary); }
 
     /* ── 퀵 위젯 레일 ── */
@@ -1824,10 +1830,10 @@
     .ws-pf-badge { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 6px; font-size: 11px; color: var(--text-secondary); }
     .ws-pf-sum { flex: 1 1 auto; min-width: 0; }
     .ws-learn-ind { font-size: 11px; padding: 1px 8px; border-radius: 10px; background: rgba(124, 92, 255, 0.16); color: #b9a8ff; }
-    .ws-learn-fb { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 4px 0 6px; font-size: 11px; }
+    .ws-learn-fb { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0; font-size: 11px; }
     .ws-learn-auto { display: inline-flex; align-items: center; gap: 4px; color: var(--text-secondary); }
     .ws-learn-msg { color: var(--text-secondary); }
-    .ws-magic { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 4px 0; font-size: 11px; }
+    .ws-magic { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0; font-size: 11px; }
     .ws-pf-btn {font-size: 11px; padding: 1px 8px; border-radius: 10px; border: 1px solid var(--border, #444); background: transparent; color: inherit; cursor: pointer; }
     .ws-pf-cmp { flex-basis: 100%; display: grid; gap: 3px; padding: 6px 8px; border-radius: 6px; background: rgba(127,127,127,.08); word-break: break-word; }
     .ws-mini-q { margin: 4px 0 8px; padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--flow-cyan) 40%, transparent); border-radius: 8px; background: color-mix(in srgb, var(--flow-cyan) 6%, transparent); }
@@ -1844,11 +1850,12 @@
     .ws-zen-chip.on { color: var(--text-primary); border-color: var(--flow-cyan); box-shadow: 0 0 12px color-mix(in srgb, var(--flow-cyan) 45%, transparent), inset 0 0 8px color-mix(in srgb, var(--flow-cyan) 18%, transparent); }
     .ws-zen-chip:disabled { opacity: .5; cursor: not-allowed; }
     @@media (prefers-reduced-motion: reduce) { .ws-accel.run { animation: none; } }
-    .ws-tune { margin-top: 0; border-top: 1px dashed var(--line); padding-top: 10px; display: flex; flex-direction: column; gap: 8px; }   /* 컴팩트: 캔버스 바로 아래 고정(하단 밀어내기 제거) */
+    .ws-tune { margin-top: 0; border-top: 1px dashed var(--line); padding-top: 8px; display: flex; flex-direction: column; gap: 6px; }   /* 컴팩트: 캔버스 바로 아래 고정(하단 밀어내기 제거) */
     .ws-tune-h { display: flex; align-items: center; justify-content: space-between; min-height: 20px; font-size: 12px; font-weight: 800; color: var(--text-primary); }
-    .ws-tune-r { display: grid; grid-template-columns: minmax(0, 1fr) 44px; align-items: center; gap: 4px 10px; font-size: 11.5px; color: var(--text-secondary); }
-    .ws-tune-r b { font: 700 11px var(--mono); color: var(--accent-2); text-align: right; font-variant-numeric: tabular-nums; }
-    .ws-tune-r input[type=range] { grid-column: 1 / -1; width: 100%; margin: 0; accent-color: var(--flow-violet); }
+    .ws-tune-r { display: grid; grid-template-columns: 104px minmax(0, 1fr) 40px; align-items: center; gap: 4px 8px; font-size: 11.5px; color: var(--text-secondary); }   /* 컴팩트: 라벨·슬라이더·값 1행(3행 절약) */
+    .ws-tune-r > span { grid-column: 1; grid-row: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .ws-tune-r b { grid-column: 3; grid-row: 1; font: 700 11px var(--mono); color: var(--accent-2); text-align: right; font-variant-numeric: tabular-nums; }
+    .ws-tune-r input[type=range] { grid-column: 2; grid-row: 1; width: 100%; margin: 0; accent-color: var(--flow-violet); }
     .ws-tune-seed { display: grid; grid-template-columns: minmax(0, 1fr) 120px 36px; align-items: center; gap: 8px; }
     .ws-tune-seed .ws-btn.sm { padding: 6px 0; text-align: center; }
     .ws-seed { width: 120px; padding: 6px 8px; }
@@ -1883,8 +1890,8 @@
     @@media (prefers-reduced-motion: reduce) { .ws-bar-f { animation: none; } }
 
     /* 💡 스토리 레시피 & 인스피레이션 모달 */
-    .ws-watch-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 4px 0 6px; }
-    .ws-mood-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 6px 0; }
+    .ws-watch-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 2px 0 4px; }
+    .ws-mood-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 2px 0; }
     .ws-mood-cap { font-size: 11px; opacity: .7; margin-right: 2px; }
     .ws-mood-chip { font-size: 12px; padding: 3px 9px; border-radius: 999px; border: 1px solid rgba(255,255,255,.15); background: rgba(255,255,255,.04); color: inherit; cursor: pointer; }
     .ws-mood-chip small { opacity: .6; }
@@ -6561,6 +6568,12 @@
         {
             return PromptFlowStudio.Services.AI.PromptPreflightDirector.RefineLocal(prompt, seconds, aspect, ambient, null, learned);
         }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            // 예기치 못한 원격 보정 예외가 [생성 시작] 핸들러 밖으로 새면 생성이 조용히 중단된다 → 로컬 규칙 폴백(1초 내)
+            Program.Log("Workspace.Preflight", ex);
+            return PromptFlowStudio.Services.AI.PromptPreflightDirector.RefineLocal(prompt, seconds, aspect, ambient, null, learned);
+        }
     }
 
     // ── 🧠 플루토 자기학습 피드백 루프(👍 레시피 강화 · 👎 사유별 회피 규칙 + 보완 재생성) ──
@@ -6616,13 +6629,20 @@
     // ── ✨ 플루토 감독 원클릭 확장(생성 전 미리보기 · 적용 시 입력 박스 교체) ──
     private bool _magicBusy;
     private PromptFlowStudio.Services.AI.PromptPreflightResult? _magic;
+    private string? _magicSource;   // 확장본이 계산된 원문(적용 시 현재 입력과 일치해야 함)
 
     /// <summary>[✨ 플루토 감독 확장] — 학습 디렉터 보정본을 미리 계산(실패/타임아웃은 로컬 규칙 · throw 없음).</summary>
     private async Task MagicExpandAsync()
     {
         if (_magicBusy || string.IsNullOrWhiteSpace(_prompt)) return;
         _magicBusy = true;
-        try { _magic = await RunPreflightAsync(_prompt); }
+        var source = _prompt;
+        try
+        {
+            var r = await RunPreflightAsync(source);
+            _magic = string.Equals(_prompt, source, StringComparison.Ordinal) ? r : null;   // 확장 대기 중 입력이 바뀌면 낡은 확장본 폐기(최신 입력 덮어쓰기 방지)
+            _magicSource = _magic is null ? null : source;
+        }
         catch (Exception ex) when (ex is not OutOfMemoryException) { Program.Log("Workspace.MagicExpand", ex); _magic = null; }
         finally { _magicBusy = false; }
     }
@@ -6631,6 +6651,7 @@
     private void ApplyMagicExpand()
     {
         if (_magic is not { } m || State.IsBusy) return;
+        if (!string.Equals(_magicSource, _prompt, StringComparison.Ordinal)) { _magic = null; return; }   // 낡은 확장본(칩·히스토리·직접 입력으로 원문 변경 후) 적용 차단
         _prompt = m.RefinedPrompt;
         _preflight = m;
         _preflightReverted = false;
@@ -6708,7 +6729,7 @@
                 antiArtifact = true;
             }
             finally { _preflightBusy = false; }
-            if (State.IsBusy) return;   // 보정 대기 중 다른 경로로 생성이 시작됨
+            if (State.IsBusy || _disposed) return;   // 보정 대기 중 다른 경로로 생성이 시작됨 · 페이지 이탈
         }
         RefreshRenderMode();
         var anchored = WithIdentityAnchor(primary);   // 🍼 캐릭터 일관성 앵커(비영속 · 멱등) · 메인 비면 파트 1 폴백
@@ -6938,6 +6959,10 @@
         RefreshRenderMode();
         _autoAnchorOn = GeminiSvc.HasApiKey;   // 🎯 기본값 = Gemini 키 설정 시 ON
         if (RenderQueue is PromptFlowStudio.Services.Render.RenderQueueService rqLearn) rqLearn.LearningMemory ??= PlutoLearn;   // 🩺 QC 결함 → 회피 규칙 학습
+        // 🩺 5초 단일 생성도 렌더 후 QC · 1회 자가 치유(싱글턴 상태 — 컴포넌트 this 캡처 금지: 지역 복사만 람다로)
+        State.LearningMemory ??= PlutoLearn;
+        State.Stitcher ??= EcoSp.GetService(typeof(PromptFlowStudio.Services.Render.FFmpegVideoStitchService)) as PromptFlowStudio.Services.Render.FFmpegVideoStitchService;
+        if (State.SkipQc is null) { var qcApp = AppSettings; State.SkipQc = () => qcApp.IsMockMode; }
         AppSettings.OnSettingsChanged += OnAppSettingsChanged;
         State.OnChange += OnStateChanged;
         RenderQueue.OnChange += OnRenderQueueChanged;
@@ -7219,6 +7244,7 @@
     /// <summary>입력 정지 1.5초 후 스냅샷(디바운스 · 타이머 1개 재사용).</summary>
     private void OnPromptTyped()
     {
+        if (_magic is not null && !string.Equals(_magicSource, _prompt, StringComparison.Ordinal)) _magic = null;   // ✨ 입력 변경 → 낡은 확장 미리보기 즉시 숨김
         RefreshMotionPreviewSubs();   // 🎞 프리뷰 자막 핫스왑(사진 없으면 no-op)
         SyncDomainNegativeBox();      // 🔎 일반 프롬프트 전환 시 기본 아기 네거티브 박스 교체
         _typingTimer ??= new System.Threading.Timer(static st =>

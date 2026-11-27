@@ -159,7 +159,7 @@ public sealed class FirstFramePreviewFallbackTests
         Assert.Contains("<section class=\"ws-grid\" data-compact-layout=\"1\">", src, StringComparison.Ordinal);
         Assert.Contains("<div class=\"ws-empty\" data-canvas-compact=\"1\">", src, StringComparison.Ordinal);
         Assert.Contains(".ws-empty { flex: 0 0 auto;", src, StringComparison.Ordinal);          // 유휴 캔버스가 칼럼을 채우지 않음
-        Assert.Contains("height: min(26vh, 216px)", src, StringComparison.Ordinal);            // 16:9 박스 밀착
+        Assert.Contains("height: min(20vh, 172px)", src, StringComparison.Ordinal);            // 16:9 박스 밀착(컴팩트 v2)
         Assert.Contains(".ws-tune { margin-top: 0;", src, StringComparison.Ordinal);           // 튜너 하단 밀어내기 제거
         Assert.DoesNotContain(".ws-tune { margin-top: auto;", src, StringComparison.Ordinal);
         Assert.Contains(".ws-ta { width: 100%; min-height: 108px;", src, StringComparison.Ordinal);

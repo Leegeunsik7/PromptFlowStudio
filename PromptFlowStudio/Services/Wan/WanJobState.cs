@@ -69,55 +69,152 @@ public sealed class WanJobState : IProgress<WanProgress>, IProgress<double>
 
         _cts?.Dispose();
         _cts = new CancellationTokenSource();
+        var ct = _cts.Token;
 
         LastPrompt = request.Prompt;
         VideoUrl = null; LocalPath = null; RemoteUrl = null; IsLocal = false;
         Error = null; TaskId = null; Percent = 0; Elapsed = TimeSpan.Zero;
+        QcSelfHealed = false; QcDegraded = false; QcDiagnosis = null;
         SetPhase(WanJobPhase.Submitting, "생성 요청 제출 중…");
 
         try
         {
-            // ── 1) 원격 생성(제출→폴링) · 진행은 IProgress<WanProgress>(this) 로 흡수 ──
-            var gen = await _wan.GenerateAsync(request, this, _cts.Token).ConfigureAwait(false);
-            if (gen.Status == WanTaskStatus.Canceled) { SetPhase(WanJobPhase.Canceled, "작업이 취소되었습니다."); return; }
-            if (!gen.Ok || gen.VideoUrl is null) { Fail(gen.Message); return; }
-
-            TaskId = gen.TaskId;
-            RemoteUrl = gen.VideoUrl;   // 원격(24h) 보관 — 다운로드 실패 시 폴백
-
-            // ── 2) 로컬 자산화(스트리밍 다운로드) · 진행은 IProgress<double>(this) 로 흡수 ──
-            Percent = 0;
-            SetPhase(WanJobPhase.Downloading, "완성 영상 다운로드 중…");
-            var jobId = gen.TaskId ?? Guid.NewGuid().ToString("N");
-            var dl = await _media.DownloadAsync(jobId, gen.VideoUrl, this, _cts.Token).ConfigureAwait(false);
-
-            if (_cts.Token.IsCancellationRequested)
+            var attempt = request;
+            for (var pass = 0; ; pass++)
             {
-                SetPhase(WanJobPhase.Canceled, "작업이 취소되었습니다.");
+                // ── 1) 원격 생성(제출→폴링) · 진행은 IProgress<WanProgress>(this) 로 흡수 ──
+                var gen = await _wan.GenerateAsync(attempt, this, ct).ConfigureAwait(false);
+                if (gen.Status == WanTaskStatus.Canceled) { SetPhase(WanJobPhase.Canceled, "작업이 취소되었습니다."); return; }
+                if (!gen.Ok || gen.VideoUrl is null) { Fail(gen.Message); return; }
+
+                TaskId = gen.TaskId;
+                RemoteUrl = gen.VideoUrl;   // 원격(24h) 보관 — 다운로드 실패 시 폴백
+
+                // ── 2) 로컬 자산화(스트리밍 다운로드) · 진행은 IProgress<double>(this) 로 흡수 ──
+                Percent = 0;
+                SetPhase(WanJobPhase.Downloading, "완성 영상 다운로드 중…");
+                var jobId = gen.TaskId ?? Guid.NewGuid().ToString("N");
+                var dl = await _media.DownloadAsync(jobId, gen.VideoUrl, this, ct).ConfigureAwait(false);
+
+                if (ct.IsCancellationRequested)
+                {
+                    SetPhase(WanJobPhase.Canceled, "작업이 취소되었습니다.");
+                    return;
+                }
+
+                // ── 3) 완료 방송(로컬 확정 or 원격 폴백) ──
+                if (dl.Ok && dl.LocalPath is not null)
+                {
+                    // 🩺 렌더 후 QC — Completed 방송 전(결함 클립에 메타·Foley·정합성 측정이 붙지 않도록) · 최대 1회 안정화 재시도
+                    var report = await RunQcAsync(dl.LocalPath, ct).ConfigureAwait(false);
+                    if (report is { Checked: true, IsSevere: true })
+                    {
+                        RecordQcLearning(request.Prompt, report.SummaryKo);
+                        QcDiagnosis = report.SummaryKo;
+                        if (pass == 0)
+                        {
+                            QcSelfHealed = true;
+                            attempt = BuildQcRetryRequest(request);
+                            Program.Log("WanJob.QcSelfHeal", new InvalidOperationException(report.SummaryKo));
+                            Percent = 0;
+                            SetPhase(WanJobPhase.Submitting, PromptFlowStudio.Services.Render.RenderQueueService.QcRetryNotice + " (" + report.SummaryKo + ")");
+                            continue;
+                        }
+                        QcDegraded = true;
+                    }
+                    LocalPath = dl.LocalPath;
+                    VideoUrl  = dl.PlaybackUrl;   // 로컬 가상호스트 URL(디스크 직접 스트리밍)
+                    IsLocal   = true;
+                    Percent   = 100;
+                    SetPhase(WanJobPhase.Completed, QcDegraded ? QcDegradedPrefix + QcDiagnosis
+                        : QcSelfHealed ? QcHealedPrefix + QcDiagnosis + ") · " + FormatBytes(dl.Bytes)
+                        : $"완성! 로컬 저장됨 · {FormatBytes(dl.Bytes)}");
+                }
+                else
+                {
+                    // Graceful fallback — 다운로드 실패해도 작업은 완료(원격 URL로 재생 · 원격은 QC 생략)
+                    LocalPath = null;
+                    VideoUrl  = dl.PlaybackUrl;   // = 원격 URL(폴백)
+                    IsLocal   = false;
+                    Percent   = 100;
+                    SetPhase(WanJobPhase.Completed, "완성 · 원격 링크로 재생(로컬 저장 실패 — 링크 24시간 후 만료)");
+                }
                 return;
-            }
-
-            // ── 3) 완료 방송(로컬 확정 or 원격 폴백) ──
-            if (dl.Ok && dl.LocalPath is not null)
-            {
-                LocalPath = dl.LocalPath;
-                VideoUrl  = dl.PlaybackUrl;   // 로컬 가상호스트 URL(디스크 직접 스트리밍)
-                IsLocal   = true;
-                Percent   = 100;
-                SetPhase(WanJobPhase.Completed, $"완성! 로컬 저장됨 · {FormatBytes(dl.Bytes)}");
-            }
-            else
-            {
-                // Graceful fallback — 다운로드 실패해도 작업은 완료(원격 URL로 재생)
-                LocalPath = null;
-                VideoUrl  = dl.PlaybackUrl;   // = 원격 URL(폴백)
-                IsLocal   = false;
-                Percent   = 100;
-                SetPhase(WanJobPhase.Completed, "완성 · 원격 링크로 재생(로컬 저장 실패 — 링크 24시간 후 만료)");
             }
         }
         catch (OperationCanceledException) { SetPhase(WanJobPhase.Canceled, "작업이 취소되었습니다."); }
         catch (Exception ex) { Fail("예상치 못한 오류: " + PromptFlowStudio.Services.Pluto.PlutoAutonomousActivityFeedService.Redact(ex.Message)); }
+    }
+
+    // ── 🩺 5초 단일 생성 렌더 후 QC · 자가 치유(최대 1회) — 큐 경로(RenderQueueService)와 같은 판정·안정화 규칙 ──
+    /// <summary>재시도 후에도 결함 — 최종 클립은 그대로 노출하고 경고만.</summary>
+    public const string QcDegradedPrefix = "⚠ 자동 재시도 후에도 QC 경고: ";
+    /// <summary>1회 안정화 재시도로 치유 완료.</summary>
+    public const string QcHealedPrefix = "🩺 QC 자가 치유 완료(1회 자동 재생성 · 원인: ";
+    /// <summary>Wan 서버 프롬프트 상한(초과분은 서비스가 절단 — 안정화 앵커가 잘리지 않도록 원문 쪽을 줄인다).</summary>
+    public const int MaxPromptChars = 800;
+
+    /// <summary>이번 작업에서 QC 자가 치유 재생성이 실행됐는지.</summary>
+    public bool QcSelfHealed { get; private set; }
+    /// <summary>재시도 후에도 QC 결함(최종 클립 노출 · 경고).</summary>
+    public bool QcDegraded { get; private set; }
+    /// <summary>QC 진단 요약(재시도 사유 또는 최종 경고) · 없으면 null.</summary>
+    public string? QcDiagnosis { get; private set; }
+
+    /// <summary>🧠 자기학습 메모리 — 설정 시 QC 결함을 회피 규칙으로 기록(null = 기록 생략).</summary>
+    public PromptFlowStudio.Services.AI.PlutoVideoLearningMemoryService? LearningMemory { get; set; }
+    /// <summary>ffmpeg QC 분석기(null = QC 생략 · ffmpeg 부재는 분석기가 Skipped 반환).</summary>
+    public PromptFlowStudio.Services.Render.FFmpegVideoStitchService? Stitcher { get; set; }
+    /// <summary>QC 프로브 주입(테스트) — 설정 시 <see cref="Stitcher"/> 보다 우선.</summary>
+    public Func<string, CancellationToken, Task<PromptFlowStudio.Services.Render.RenderQualityReport>>? QualityProbe { get; set; }
+    /// <summary>true 반환 시 QC 생략(Mock 렌더 모드 등).</summary>
+    public Func<bool>? SkipQc { get; set; }
+
+    /// <summary>QC 1회 실행 — 생략/실패는 null(정상 완료 흐름) · 호출자 취소만 OCE 전파.</summary>
+    private async Task<PromptFlowStudio.Services.Render.RenderQualityReport?> RunQcAsync(string localPath, CancellationToken ct)
+    {
+        var probe = QualityProbe;
+        var stitcher = Stitcher;
+        if (probe is null && stitcher is null) return null;
+        try
+        {
+            if (SkipQc?.Invoke() == true) return null;
+            SetPhase(WanJobPhase.Downloading, "🩺 렌더 품질 검사 중…");
+            return probe is not null ? await probe(localPath, ct).ConfigureAwait(false) : await stitcher!.AnalyzeRenderQualityAsync(localPath, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            Program.Log("WanJob.Qc", ex);
+            return null;
+        }
+    }
+
+    private void RecordQcLearning(string rawPrompt, string diagnosis)
+    {
+        try { LearningMemory?.RecordRenderQualityDefect(rawPrompt, diagnosis); }
+        catch (Exception ex) when (ex is not OutOfMemoryException) { Program.Log("WanJob.QcLearn", ex); }
+    }
+
+    /// <summary>
+    /// QC 안정화 재시도 요청 — 프롬프트 안정화 앵커(멱등 · 800자 상한 내 보존) + 회피 네거티브 병합. 이미지/시드/튜닝 등 나머지는 원 요청 그대로.
+    /// </summary>
+    public static WanVideoRequest BuildQcRetryRequest(WanVideoRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        var anchor = PromptFlowStudio.Services.Render.RenderQueueService.QcStabilizeAnchor;
+        var prompt = PromptFlowStudio.Services.Render.RenderQueueService.StabilizeForRetry(request.Prompt);
+        if (prompt.Length > MaxPromptChars)
+        {
+            var keep = Math.Max(0, MaxPromptChars - anchor.Length - 2);
+            var raw = (request.Prompt ?? "").Trim();
+            prompt = PromptFlowStudio.Services.Render.RenderQueueService.StabilizeForRetry(raw.Length > keep ? raw[..keep] : raw);
+        }
+        return request with
+        {
+            Prompt = prompt,
+            NegativePrompt = PromptFlowStudio.Services.Render.RenderQueueService.MergeQcNegative(request.NegativePrompt),
+        };
     }
 
     /// <summary>진행 중 작업 취소(폴링·다운로드 중단). 원격 서버 태스크 자체는 계속될 수 있다.</summary>
