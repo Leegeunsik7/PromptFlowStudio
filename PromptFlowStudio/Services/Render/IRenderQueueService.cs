@@ -69,7 +69,14 @@ public interface IRenderQueueService : IDisposable
     /// QC 자가 치유 메타 초기화(재시도 1회 다시 허용) · 재생성 횟수 기록. 대기/진행 중이거나 미지원 큐면 false.
     /// </summary>
     bool RegenerateJob(Guid jobId, long newSeed) => false;
+    /// <summary>
+    /// 🎲 1클릭 재시도 — <see cref="RegenerateJob"/> 과 같되 <paramref name="stabilize"/> 면 원문을 보존하고 QC 안정화 앵커를 붙여 재적재.
+    /// 미지원 큐는 새 시드 재생성으로 폴백.
+    /// </summary>
+    bool RetryFresh(Guid jobId, long newSeed, bool stabilize) => RegenerateJob(jobId, newSeed);
     int ClearCompleted();
+    /// <summary>🧹 완료/실패 항목 정리 — 끝난 작업(완료·실패·취소)을 목록에서만 제거(산출 미디어 보존). 미지원 큐는 완료 항목만.</summary>
+    int ClearFinished() => ClearCompleted();
 
     /// <summary>⚡ 대기 작업 우선순위 — 바로 위 대기 작업과 자리 교환(대기/보류 상태만). 이동 시 true.</summary>
     bool MoveJobUp(Guid jobId) => false;

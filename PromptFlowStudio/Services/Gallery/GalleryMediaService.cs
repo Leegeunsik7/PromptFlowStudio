@@ -11,6 +11,18 @@ namespace PromptFlowStudio.Services.Gallery;
 
 public enum AspectCategory { Vertical9x16, Landscape16x9, Square1x1 }
 
+/// <summary>🩺 렌더 후 QC 상태 — None = 기록 없음(QC 미실행 또는 무결함) · SelfHealed = 1회 자동 재시도로 통과 · Degraded = 재시도 후에도 경고.</summary>
+public enum GalleryQcStatus { None, SelfHealed, Degraded }
+
+/// <summary>🗑️ 중복/실패 정리 후보 사유.</summary>
+public enum GalleryCleanupReason { Duplicate, EmptyOrBroken, OrphanSidecar }
+
+/// <summary>정리 후보 1건 — <see cref="KeptPath"/> 는 중복일 때 남겨 두는 원본.</summary>
+public sealed record GalleryCleanupCandidate(string Path, GalleryCleanupReason Reason, long SizeBytes, string? KeptPath = null);
+
+/// <summary>정리 결과 — 삭제 수 · 실패(잠김 등) 수 · 확보 바이트.</summary>
+public sealed record GalleryCleanupResult(int Deleted, int Failed, long FreedBytes);
+
 /// <summary>갤러리 미디어 종류 — Still = <c>MediaRoot/_stills</c> 캡처 스냅샷(PNG).</summary>
 public enum GalleryMediaType { Video, Image, Still }
 
@@ -44,6 +56,20 @@ public sealed class GalleryItem
     public string? PosterPath { get; init; }
     /// <summary>파일 크기(바이트) — 스토리지 대시보드 집계용(샘플 0).</summary>
     public long SizeBytes { get; init; }
+    /// <summary>🛡️ 보정 전 원문 프롬프트(메타 <c>rawPrompt</c> · <c>metadata["prompt.raw"]</c> · QC 원문) — 원문 그대로 렌더면 null.</summary>
+    public string? RawPrompt { get; init; }
+    /// <summary>🛡️ AI 보정본으로 렌더됨(원문 ≠ 사용 프롬프트).</summary>
+    public bool IsRefinedPrompt => RawPrompt is { Length: > 0 } r && !string.Equals(r.Trim(), Prompt.Trim(), StringComparison.Ordinal);
+    /// <summary>모델 패밀리(메타 <c>model</c>/<c>modelFamily</c> · <c>metadata["WanFamily"]</c>) — 미상 null.</summary>
+    public string? ModelFamily { get; init; }
+    /// <summary>실행 엔진(메타 <c>engine</c> — ComfyUI · Cloud · Mock) — 미상 null.</summary>
+    public string? Engine { get; init; }
+    /// <summary>🩺 렌더 QC 상태(메타 <c>metadata.QcSelfHealed/QcDegraded</c>).</summary>
+    public GalleryQcStatus QcStatus { get; init; }
+    /// <summary>QC 진단 요약(경고/자가 치유 사유) — 없으면 null.</summary>
+    public string? QcDiagnosis { get; init; }
+    /// <summary>👍 Pluto 학습 등록됨(메타 <c>plutoLearned:true</c>) — 중복 학습 방지.</summary>
+    public bool IsLearned { get; internal set; }
     public bool IsVideo => !IsImagePath(FilePath);
     /// <summary>🖼️ <c>_stills/</c> 폴더 PNG 스냅샷.</summary>
     public bool IsStill { get; init; }
@@ -70,6 +96,13 @@ public sealed record GalleryRestoreContext(Guid SourceItemId, string Title, stri
 public sealed class GalleryMediaService
 {
     public const string MetaSuffix = ".meta.json";
+    // 사이드카 metadata 키 — RenderQueueService/MultiDurationPlanner 상수와 동일 값(회귀 테스트로 잠금)
+    public const string MetaKeyWanFamily = "wan.family";
+    public const string MetaKeyRawPrompt = "prompt.raw";
+    public const string MetaKeyQcRawPrompt = "QcRawPrompt";
+    public const string MetaKeyQcSelfHealed = "QcSelfHealed";
+    public const string MetaKeyQcDegraded = "QcDegraded";
+    public const string MetaKeyQcDiagnosis = "QcDiagnosis";
     private const int MaxItems = 500;
     private static readonly string[] MediaExtensions = { ".mp4", ".webm", ".mov", ".png", ".jpg", ".jpeg", ".webp" };
 
@@ -230,9 +263,12 @@ public sealed class GalleryMediaService
         if (root is null || !IsUnderRoot(root, target.FilePath)) return false;
         try
         {
-            if (File.Exists(target.FilePath)) File.Delete(target.FilePath);
+            if (File.Exists(target.FilePath)) DeleteWithLockRetry(target.FilePath);
             var meta = MetaPathFor(target.FilePath);
             if (File.Exists(meta)) File.Delete(meta);
+            // 🧹 포스터(.poster.jpg)는 스캔에서 숨겨지므로 함께 지우지 않으면 고아 파일로 누적
+            var poster = PosterPathFor(target.FilePath);
+            if (File.Exists(poster)) { try { File.Delete(poster); } catch (IOException ex) { Program.Log("GalleryMedia.DeletePoster", ex); } }
             return true;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
@@ -367,6 +403,228 @@ public sealed class GalleryMediaService
         return m.ToString(CultureInfo.InvariantCulture) + ":" + (s - m * 60).ToString("00.0", CultureInfo.InvariantCulture);
     }
 
+    /// <summary>
+    /// Windows 공유 위반(WebView2 &lt;video&gt; 가 막 언마운트된 직후 핸들 해제 지연) 대비 — IOException 시 짧게 2회 재시도 후 최종 예외 전파.
+    /// </summary>
+    private static void DeleteWithLockRetry(string path)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            try { File.Delete(path); return; }
+            catch (IOException) when (attempt < 2) { Thread.Sleep(120); }
+        }
+    }
+
+    /// <summary>메타 <c>plutoLearned</c> 기록(기존 필드 보존 · 원자 교체). 루트 이탈/쓰기 실패 false.</summary>
+    public bool MarkLearned(Guid itemId)
+    {
+        GalleryItem? target = null;
+        string? root;
+        lock (_lock)
+        {
+            root = _root;
+            for (int i = 0; i < _items.Count; i++)
+                if (_items[i].ItemId == itemId) { target = _items[i]; break; }
+        }
+        if (target is null || target.IsSample || root is null || !IsUnderRoot(root, target.FilePath)) return false;
+        var meta = MetaPathFor(target.FilePath);
+        try
+        {
+            System.Text.Json.Nodes.JsonObject obj;
+            try { obj = File.Exists(meta) ? System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(meta)) as System.Text.Json.Nodes.JsonObject ?? new() : new(); }
+            catch (JsonException) { obj = new(); }
+            obj["plutoLearned"] = true;
+            var tmp = meta + ".~tmp";
+            File.WriteAllText(tmp, obj.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+            File.Move(tmp, meta, overwrite: true);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            Program.Log("GalleryMedia.Learned", ex);
+            return false;
+        }
+        lock (_lock) target.IsLearned = true;
+        return true;
+    }
+
+    /// <summary>이보다 작은 영상은 렌더 실패/잘린 산출물로 간주(MP4 헤더조차 없는 크기).</summary>
+    public const long MinValidVideoBytes = 1024;
+
+    /// <summary>
+    /// 🗑️ 중복/실패 정리 계획(읽기 전용 · 아무것도 지우지 않음) — 마지막 스캔 루트(없으면 <paramref name="root"/>) 하위:
+    ///   ▸ EmptyOrBroken: 0바이트 미디어 · <see cref="MinValidVideoBytes"/> 미만 영상
+    ///   ▸ Duplicate: 크기 동일 → 내용 SHA-256 동일 묶음에서 1개만 보존(즐겨찾기·내보냄·학습 등록 > 메타 보유 > 가장 오래된 원본). 보호 항목은 절대 후보 아님.
+    ///   ▸ OrphanSidecar: 미디어가 사라진 <c>.meta.json</c> · <c>.poster.jpg</c>
+    /// </summary>
+    public IReadOnlyList<GalleryCleanupCandidate> PlanCleanup(string? root = null, int maxFiles = 5000)
+    {
+        string? scanRoot;
+        lock (_lock) scanRoot = _root;
+        scanRoot ??= string.IsNullOrWhiteSpace(root) ? null : root;
+        var result = new List<GalleryCleanupCandidate>();
+        if (scanRoot is null || !Directory.Exists(scanRoot)) return result;
+        scanRoot = Path.GetFullPath(scanRoot);
+        var bySize = new Dictionary<long, List<(FileInfo Info, bool Protected)>>();
+        var seen = 0;
+        try
+        {
+            var opts = new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = true, MaxRecursionDepth = 8 };
+            foreach (var file in Directory.EnumerateFiles(scanRoot, "*", opts))
+            {
+                if (++seen > maxFiles) break;
+                if (file.EndsWith(MetaSuffix, StringComparison.OrdinalIgnoreCase))
+                {
+                    if (!HasMediaSibling(file[..^MetaSuffix.Length])) result.Add(new(file, GalleryCleanupReason.OrphanSidecar, SafeLength(file)));
+                    continue;
+                }
+                if (file.EndsWith(PosterSuffix, StringComparison.OrdinalIgnoreCase))
+                {
+                    if (!HasMediaSibling(file[..^PosterSuffix.Length])) result.Add(new(file, GalleryCleanupReason.OrphanSidecar, SafeLength(file)));
+                    continue;
+                }
+                if (!IsMediaFile(file) || IsInUploads(scanRoot, file)) continue;
+                var info = new FileInfo(file);
+                var prot = IsProtectedMedia(file);
+                var len = info.Length;
+                if (!prot && (len == 0 || (!GalleryItem.IsImagePath(file) && len < MinValidVideoBytes)))
+                {
+                    result.Add(new(file, GalleryCleanupReason.EmptyOrBroken, len));
+                    continue;
+                }
+                if (len == 0) continue;
+                if (!bySize.TryGetValue(len, out var bucket)) bySize[len] = bucket = new(2);
+                bucket.Add((info, prot));
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { Program.Log("GalleryMedia.PlanCleanup", ex); }   // [부분 구제]
+
+        foreach (var bucket in bySize.Values)
+        {
+            if (bucket.Count < 2) continue;   // 크기가 유일하면 해시 생략
+            var byHash = new Dictionary<string, List<(FileInfo Info, bool Protected)>>(StringComparer.Ordinal);
+            foreach (var e in bucket)
+            {
+                if (TryHash(e.Info.FullName) is not { } h) continue;
+                if (!byHash.TryGetValue(h, out var g)) byHash[h] = g = new(2);
+                g.Add(e);
+            }
+            foreach (var group in byHash.Values)
+            {
+                if (group.Count < 2) continue;
+                // 보존 우선순위: 보호(즐겨찾기·내보냄·학습) > 메타 보유 > 가장 오래된 원본
+                group.Sort(static (a, b) =>
+                {
+                    if (a.Protected != b.Protected) return a.Protected ? -1 : 1;
+                    var ma = File.Exists(MetaPathFor(a.Info.FullName)); var mb = File.Exists(MetaPathFor(b.Info.FullName));
+                    if (ma != mb) return ma ? -1 : 1;
+                    return a.Info.LastWriteTimeUtc.CompareTo(b.Info.LastWriteTimeUtc);
+                });
+                var keeper = group[0].Info.FullName;
+                for (var i = 1; i < group.Count; i++)
+                    if (!group[i].Protected)   // 보호 항목은 중복이어도 절대 삭제 후보 아님
+                        result.Add(new(group[i].Info.FullName, GalleryCleanupReason.Duplicate, group[i].Info.Length, keeper));
+            }
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// 🗑️ 정리 실행 — 계획 후보만 삭제(루트 이탈 차단 · 미디어는 사이드카 메타/포스터 동반 삭제 · 잠긴 파일은 실패로 집계 · [부분 구제]).
+    /// 삭제된 미디어는 메모리 목록에서도 제거.
+    /// </summary>
+    public GalleryCleanupResult ExecuteCleanup(IReadOnlyList<GalleryCleanupCandidate> plan)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        string? root;
+        lock (_lock) root = _root;
+        if (root is null) return new(0, plan.Count, 0);
+        int deleted = 0, failed = 0;
+        long freed = 0;
+        var removed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var c in plan)
+        {
+            if (!IsUnderRoot(root, c.Path)) { failed++; continue; }
+            try
+            {
+                if (File.Exists(c.Path)) DeleteWithLockRetry(c.Path);
+                if (c.Reason != GalleryCleanupReason.OrphanSidecar)
+                {
+                    var meta = MetaPathFor(c.Path);
+                    if (File.Exists(meta)) File.Delete(meta);
+                    var poster = PosterPathFor(c.Path);
+                    if (File.Exists(poster)) File.Delete(poster);
+                    removed.Add(Path.GetFullPath(c.Path));
+                }
+                deleted++;
+                freed += c.SizeBytes;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+            {
+                Program.Log("GalleryMedia.Cleanup", ex);
+                failed++;
+            }
+        }
+        if (removed.Count > 0)
+            lock (_lock) _items.RemoveAll(it => !it.IsSample && it.FilePath.Length > 0 && removed.Contains(Path.GetFullPath(it.FilePath)));
+        return new(deleted, failed, freed);
+    }
+
+    private static bool HasMediaSibling(string basePath)
+    {
+        foreach (var ext in MediaExtensions)
+            if (File.Exists(basePath + ext)) return true;
+        return false;
+    }
+
+    private static long SafeLength(string file)
+    {
+        try { return new FileInfo(file).Length; }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return 0; }
+    }
+
+    /// <summary>즐겨찾기 · 내보냄 · Pluto 학습 등록 미디어 — 정리 대상에서 절대 제외.</summary>
+    private static bool IsProtectedMedia(string file)
+    {
+        var meta = MetaPathFor(file);
+        if (!File.Exists(meta)) return false;
+        try
+        {
+            using var doc = JsonDocument.Parse(File.ReadAllText(meta));
+            var r = doc.RootElement;
+            if (r.ValueKind != JsonValueKind.Object) return false;
+            return (r.TryGetProperty("isFavorite", out var f) && f.ValueKind == JsonValueKind.True)
+                || (r.TryGetProperty("isExported", out var e) && e.ValueKind == JsonValueKind.True)
+                || (r.TryGetProperty("plutoLearned", out var l) && l.ValueKind == JsonValueKind.True);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException) { return true; }   // 판독 불가 → 보수적으로 보호
+    }
+
+    private static string? TryHash(string file)
+    {
+        try
+        {
+            using var fs = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 81920);
+            return Convert.ToHexString(SHA256.HashData(fs));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { Program.Log("GalleryMedia.Hash", ex); return null; }
+    }
+
+    /// <summary>카드 모델 배지 문구 — 모델 패밀리 우선, 없으면 엔진(Mock 제외) · 미상 null.</summary>
+    public static string? ModelBadge(GalleryItem item)
+    {
+        if (item is null) return null;
+        if (item.ModelFamily is { Length: > 0 } m) return m;
+        return item.Engine is { Length: > 0 } e && !e.Equals("Mock", StringComparison.OrdinalIgnoreCase) ? e : null;
+    }
+
+    /// <summary>카드 QC 배지 문구 — 기록 없으면 null.</summary>
+    public static string? QcBadge(GalleryQcStatus s) => s switch
+    {
+        GalleryQcStatus.SelfHealed => "🩺 QC 자가 치유",
+        GalleryQcStatus.Degraded => "⚠ QC 경고",
+        _ => null,
+    };
+
     public bool ToggleFavorite(Guid itemId)
     {
         GalleryItem? t = null;
@@ -447,7 +705,9 @@ public sealed class GalleryMediaService
             float duration = 0;
             double? playDur = null;
             DateTime created = info.LastWriteTime;
-            bool isMock = HasTestSrc(title), isFav = false, isExported = false;
+            bool isMock = HasTestSrc(title), isFav = false, isExported = false, learned = false;
+            string? rawPrompt = null, model = null, engine = null, qcDiag = null;
+            var qc = GalleryQcStatus.None;
 
             var metaPath = MetaPathFor(file);
             if (File.Exists(metaPath))
@@ -469,6 +729,20 @@ public sealed class GalleryMediaService
                         if (r.TryGetProperty("seed", out var s) && s.ValueKind == JsonValueKind.Number && s.TryGetInt64(out var sv)) seed = sv;
                         if (r.TryGetProperty("renderDurationSec", out var d) && d.ValueKind == JsonValueKind.Number && d.TryGetSingle(out var dv)) duration = dv;
                         if (r.TryGetProperty("durationSeconds", out var pd) && pd.ValueKind == JsonValueKind.Number && pd.TryGetDouble(out var pdv) && pdv > 0) playDur = pdv;
+                        // 렌더 큐 사이드카는 클립 길이를 durationSec 로 기록 — 재생시간 뱃지 누락 방지 폴백
+                        else if (r.TryGetProperty("durationSec", out var ds) && ds.ValueKind == JsonValueKind.Number && ds.TryGetDouble(out var dsv) && dsv > 0) playDur = dsv;
+                        learned = r.TryGetProperty("plutoLearned", out var lv) && lv.ValueKind == JsonValueKind.True;
+                        engine = Str(r, "engine") is { Length: > 0 } en ? en : Str(r, "engineKind") is { Length: > 0 } ek ? ek : null;
+                        model = Str(r, "modelFamily") is { Length: > 0 } mf ? mf : Str(r, "model") is { Length: > 0 } mo ? mo : null;
+                        rawPrompt = Str(r, "rawPrompt") is { Length: > 0 } rp ? rp : null;
+                        if (r.TryGetProperty("metadata", out var md) && md.ValueKind == JsonValueKind.Object)
+                        {
+                            model ??= Str(md, MetaKeyWanFamily) is { Length: > 0 } wf ? wf : null;
+                            rawPrompt ??= Str(md, MetaKeyRawPrompt) is { Length: > 0 } mr ? mr : Str(md, MetaKeyQcRawPrompt) is { Length: > 0 } qr ? qr : null;
+                            qcDiag = Str(md, MetaKeyQcDegraded) is { Length: > 0 } dg ? dg : null;
+                            if (qcDiag is not null) qc = GalleryQcStatus.Degraded;
+                            else if (Str(md, MetaKeyQcSelfHealed) == "true") { qc = GalleryQcStatus.SelfHealed; qcDiag = Str(md, MetaKeyQcDiagnosis) is { Length: > 0 } dq ? dq : null; }
+                        }
                         if (r.TryGetProperty("createdAt", out var c) && c.ValueKind == JsonValueKind.String && c.TryGetDateTime(out var cv)) created = cv;
                     }
                 }
@@ -502,6 +776,12 @@ public sealed class GalleryMediaService
                 IsStill = isStill,
                 PosterPath = File.Exists(poster) ? poster : null,
                 SizeBytes = info.Length,
+                RawPrompt = rawPrompt,
+                ModelFamily = model,
+                Engine = engine,
+                QcStatus = qc,
+                QcDiagnosis = qcDiag,
+                IsLearned = learned,
             };
         }
         catch (Exception ex) { Program.Log("GalleryMedia.Item", ex); return null; }

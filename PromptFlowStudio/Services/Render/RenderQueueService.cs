@@ -188,7 +188,10 @@ public sealed partial class RenderQueueService : IRenderQueueService
     }
 
     /// <inheritdoc/>
-    public bool RegenerateJob(Guid jobId, long newSeed)
+    public bool RegenerateJob(Guid jobId, long newSeed) => RetryFresh(jobId, newSeed, stabilize: false);
+
+    /// <inheritdoc/>
+    public bool RetryFresh(Guid jobId, long newSeed, bool stabilize)
     {
         lock (_gate)
         {
@@ -211,11 +214,44 @@ public sealed partial class RenderQueueService : IRenderQueueService
             job.CompletedAt = null;
             job.RetryCount = 0;
             ResetRunInfo(job);
+            if (stabilize)
+            {
+                // 🎲 안정화 재시도 — 원문은 QcRawPrompt 로 보존(다음 재생성 시 복귀 · 앵커 누적 방지) · 자가 치유 1회 허용은 유지
+                meta[MetaQcRawPrompt] = job.Prompt;
+                job.Prompt = StabilizeForRetry(job.Prompt);
+            }
             if (job.StitchGroupId is { Length: > 0 } g) _stitchedGroups.Remove(g);   // 듀레이션 그룹 재합본 허용
         }
         Raise();
         EnsureWorker();
         return true;
+    }
+
+    /// <summary>
+    /// 🧹 완료/실패 항목 정리 — 끝난 작업(완료·실패·취소)을 큐 목록에서만 제거(내보낸 미디어·메타 파일은 건드리지 않음).
+    /// 같은 합본 그룹에 아직 대기/진행 중인 컷이 있으면 그 그룹 항목은 보존(합본 순서·재시도 보호).
+    /// </summary>
+    public int ClearFinished()
+    {
+        var removed = 0;
+        lock (_gate)
+        {
+            HashSet<string>? liveGroups = null;
+            for (var i = 0; i < Queue.Count; i++)
+                if (Queue[i].Status is BatchJobStatus.Pending or BatchJobStatus.Queued or BatchJobStatus.Processing
+                    && Queue[i].StitchGroupId is { Length: > 0 } lg)
+                    (liveGroups ??= new HashSet<string>(StringComparer.Ordinal)).Add(lg);
+            for (var i = Queue.Count - 1; i >= 0; i--)
+            {
+                var j = Queue[i];
+                if (j.Status is not (BatchJobStatus.Completed or BatchJobStatus.Failed or BatchJobStatus.Cancelled)) continue;
+                if (liveGroups is not null && j.StitchGroupId is { Length: > 0 } g && liveGroups.Contains(g)) continue;
+                Queue.RemoveAt(i);
+                removed++;
+            }
+        }
+        if (removed > 0) Raise();
+        return removed;
     }
 
     public int ClearCompleted()
@@ -625,7 +661,7 @@ public sealed partial class RenderQueueService : IRenderQueueService
             }
             var meta = MultiDurationPlanner.WithMeta(job.Metadata, MetaQcSelfHealed, "true");
             meta = MultiDurationPlanner.WithMeta(meta, MetaQcDiagnosis, report.SummaryKo);
-            meta = MultiDurationPlanner.WithMeta(meta, MetaQcRawPrompt, job.Prompt);
+            meta = MultiDurationPlanner.WithMeta(meta, MetaQcRawPrompt, MultiDurationPlanner.MetaOf(job, MetaQcRawPrompt) is { Length: > 0 } keepRaw ? keepRaw : job.Prompt);   // 🎲 수동 안정화 재시도의 원문 보존
             var neg = MultiDurationPlanner.MetaOf(job, VideoEngineRenderExecutionEngine.MetaNegativePrompt);
             meta = MultiDurationPlanner.WithMeta(meta, VideoEngineRenderExecutionEngine.MetaNegativePrompt, MergeQcNegative(neg));
             job.Metadata = meta;

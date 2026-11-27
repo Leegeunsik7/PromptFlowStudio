@@ -370,6 +370,91 @@ public sealed class GalleryViewModel
         return r;
     }
 
+    // ── 👍 Pluto 학습 등록 · 🗑️ 중복/실패 정리 ──
+    /// <summary>
+    /// 👍 학습 등록 — 원문(없으면 사용 프롬프트)·보정본을 성공 레시피로 기록하고 메타 <c>plutoLearned</c> 표시(재클릭 중복 학습 차단).
+    /// 샘플·Mock·빈 프롬프트·이미 등록됨은 false. 메모리 서비스 예외 격리.
+    /// </summary>
+    public bool LearnFromItem(GalleryItem item, PromptFlowStudio.Services.AI.PlutoVideoLearningMemoryService? memory)
+    {
+        if (item is null || memory is null) return false;
+        if (item.IsSample || item.IsMock || item.IsStill) { SetStatus("👍 학습 등록은 실제 AI 렌더 영상만 가능합니다"); return false; }
+        if (item.IsLearned) { SetStatus("👍 이미 학습 등록된 클립입니다 — " + item.Title); return false; }
+        if (string.IsNullOrWhiteSpace(item.Prompt)) { SetStatus("👍 프롬프트 메타가 없어 학습할 수 없습니다"); return false; }
+        string? ruleId;
+        try { ruleId = memory.RecordPositiveOutcome(item.RawPrompt ?? item.Prompt, item.Prompt); }
+        catch (Exception ex) { Program.Log("Gallery.Learn", ex); SetStatus("⚠ 학습 등록 실패: " + ex.Message); return false; }
+        if (ruleId is null) { SetStatus("👍 학습할 키워드가 없습니다 — " + item.Title); return false; }
+        var marked = _gallery.MarkLearned(item.ItemId);
+        SetStatus(marked ? "🧠 Pluto 학습 등록 완료 — " + item.Title : "🧠 학습 등록 완료(메타 표시 실패 · 파일 잠금)");
+        return true;
+    }
+
+    private int _cleanupBusy;
+    /// <summary>정리 계획/실행 진행 중(중복 클릭 · 동시 실행 차단).</summary>
+    public bool IsCleanupBusy => Volatile.Read(ref _cleanupBusy) != 0;
+    /// <summary>마지막 정리 계획(확인 대기) — 실행/취소 시 null.</summary>
+    public IReadOnlyList<GalleryCleanupCandidate>? PendingCleanup { get; private set; }
+
+    /// <summary>🗑️ 중복/실패 정리 계획 수립(스레드풀 · 삭제 없음). 이미 진행 중이면 null.</summary>
+    public async Task<IReadOnlyList<GalleryCleanupCandidate>?> PlanCleanupAsync(string? root)
+    {
+        if (Interlocked.CompareExchange(ref _cleanupBusy, 1, 0) != 0) return null;
+        Raise();
+        try
+        {
+            var plan = await Task.Run(() => _gallery.PlanCleanup(root)).ConfigureAwait(false);
+            PendingCleanup = plan;
+            StatusMessage = plan.Count == 0 ? "✨ 정리할 중복/실패 파일이 없습니다" : null;
+            return plan;
+        }
+        catch (Exception ex) { Program.Log("Gallery.PlanCleanup", ex); PendingCleanup = null; StatusMessage = "⚠ 정리 계획 실패: " + ex.Message; return null; }
+        finally { Volatile.Write(ref _cleanupBusy, 0); Raise(); }
+    }
+
+    /// <summary>확인된 정리 계획 실행 — 이미 진행 중이거나 계획 없음이면 null.</summary>
+    public async Task<GalleryCleanupResult?> ExecutePendingCleanupAsync()
+    {
+        var plan = PendingCleanup;
+        if (plan is null || plan.Count == 0) return null;
+        if (Interlocked.CompareExchange(ref _cleanupBusy, 1, 0) != 0) return null;
+        Raise();
+        try
+        {
+            var r = await Task.Run(() => _gallery.ExecuteCleanup(plan)).ConfigureAwait(false);
+            PendingCleanup = null;
+            if (SelectedItem is { } sel && !File.Exists(sel.FilePath) && !sel.IsSample) SelectedItem = null;
+            AfterBulkDelete();
+            StatusMessage = "🗑️ 중복/실패 " + r.Deleted.ToString(System.Globalization.CultureInfo.InvariantCulture) + "개 정리 · "
+                + PromptFlowStudio.Services.Media.MediaLibraryService.FormatBytes(r.FreedBytes) + " 확보"
+                + (r.Failed > 0 ? " · " + r.Failed.ToString(System.Globalization.CultureInfo.InvariantCulture) + "개 실패(사용 중)" : "");
+            return r;
+        }
+        catch (Exception ex) { Program.Log("Gallery.Cleanup", ex); StatusMessage = "⚠ 정리 실패: " + ex.Message; return null; }
+        finally { Volatile.Write(ref _cleanupBusy, 0); Raise(); }
+    }
+
+    /// <summary>정리 확인 취소.</summary>
+    public void CancelPendingCleanup() { PendingCleanup = null; Raise(); }
+
+    /// <summary>정리 후보 사유별 개수(확인 배너 문구).</summary>
+    public static (int Duplicates, int Broken, int Orphans, long Bytes) Summarize(IReadOnlyList<GalleryCleanupCandidate>? plan)
+    {
+        int d = 0, b = 0, o = 0; long bytes = 0;
+        if (plan is null) return (0, 0, 0, 0);
+        for (var i = 0; i < plan.Count; i++)
+        {
+            bytes += plan[i].SizeBytes;
+            switch (plan[i].Reason)
+            {
+                case GalleryCleanupReason.Duplicate: d++; break;
+                case GalleryCleanupReason.EmptyOrBroken: b++; break;
+                default: o++; break;
+            }
+        }
+        return (d, b, o, bytes);
+    }
+
     private void AfterBulkDelete()
     {
         _checked.Clear();

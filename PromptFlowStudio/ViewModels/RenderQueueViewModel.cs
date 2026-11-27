@@ -83,6 +83,40 @@ public sealed class RenderQueueViewModel : IDisposable
     public void ClearCompleted() => _queue.ClearCompleted();
     public void Cancel(Guid jobId) => _queue.CancelJob(jobId);
     public void Retry(Guid jobId) => _queue.RetryJob(jobId);
+    /// <summary>🧹 완료/실패/취소 항목을 목록에서만 정리(산출 미디어 파일 보존) — 제거 개수.</summary>
+    public int ClearFinished() => _queue.ClearFinished();
+    /// <summary>정리 가능한 끝난 항목 수(완료 + 실패/취소).</summary>
+    public int FinishedCount => CompletedCount + FailedCount;
+
+    /// <summary>
+    /// 🎲 새 시드 + 안정화 프롬프트 1클릭 재시도 — 실패·취소 작업 또는 QC 경고가 남은 완료 작업 대상. 재적재 시 true.
+    /// 시드는 이전 시드에서 결정적으로 파생(같은 결함 시드 반복 방지).
+    /// </summary>
+    public bool RetryFresh(Guid jobId)
+    {
+        var job = Find(jobId);
+        if (job is null || !CanRetryFresh(job)) return false;
+        return _queue.RetryFresh(jobId, FreshSeed(job.Seed), stabilize: true);
+    }
+
+    /// <summary>🎲 재시도 버튼 노출 조건 — 실패/취소, 또는 QC 경고(<c>QcDegraded</c>)가 남은 완료 작업.</summary>
+    public static bool CanRetryFresh(BatchRenderJob job)
+        => job is not null && (job.Status is BatchJobStatus.Failed or BatchJobStatus.Cancelled
+            || (job.Status == BatchJobStatus.Completed && IsQcWarned(job)));
+
+    /// <summary>⚠ QC 경고 완료 작업(자동 재시도 후에도 결함) 여부.</summary>
+    public static bool IsQcWarned(BatchRenderJob job)
+        => job?.Metadata is { } m && m.TryGetValue(RenderQueueService.MetaQcDegraded, out var d) && !string.IsNullOrEmpty(d);
+
+    /// <summary>새 시드 — 이전 시드에서 결정적 파생(양수 · 0 회피).</summary>
+    public static long FreshSeed(long seed) => PromptFlowStudio.Services.Render.MultiCutContinuity.RegenSeed(seed, 1);
+
+    private BatchRenderJob? Find(Guid jobId)
+    {
+        var jobs = Jobs;
+        for (var i = 0; i < jobs.Count; i++) if (jobs[i].JobId == jobId) return jobs[i];
+        return null;
+    }
     public void MoveUp(Guid jobId) => _queue.MoveJobUp(jobId);
     public void MoveDown(Guid jobId) => _queue.MoveJobDown(jobId);
     public void MoveToTop(Guid jobId) => _queue.MoveJobToTop(jobId);
@@ -123,9 +157,13 @@ public sealed class RenderQueueViewModel : IDisposable
         int pending = 0, processing = 0, completed = 0, failed = 0;
         string? lastError = null;
         var progress = new HashCode();
+        var order = new HashCode();   // 순서·상태·시드 — 0% 대기 작업 재정렬(▲▼⚡)·새 시드 재시도도 Version 증가(ShouldRender 누락 방지)
         for (var i = 0; i < snap.Length; i++)
         {
             progress.Add(snap[i].ProgressPercent);
+            order.Add(snap[i].JobId);
+            order.Add((int)snap[i].Status);
+            order.Add(snap[i].Seed);
             switch (snap[i].Status)
             {
                 case BatchJobStatus.Pending or BatchJobStatus.Queued: pending++; break;
@@ -149,7 +187,7 @@ public sealed class RenderQueueViewModel : IDisposable
         FailedCount = failed;
         UpdateEta();
 
-        var sig = HashCode.Combine(snap.Length, pending, processing, completed, failed, IsPaused, IsVramPaused, HashCode.Combine(ActiveJob?.JobId, ActiveEngineKind, lastError, IsDiskPaused));
+        var sig = HashCode.Combine(snap.Length, pending, processing, completed, failed, IsPaused, IsVramPaused, HashCode.Combine(ActiveJob?.JobId, ActiveEngineKind, lastError, IsDiskPaused, order.ToHashCode()));
         var data = HashCode.Combine(sig, progress.ToHashCode());
         structural = sig != _structSig;
         _structSig = sig;

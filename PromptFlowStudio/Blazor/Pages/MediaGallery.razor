@@ -13,6 +13,7 @@
 @inject IClipboardService Clipboard
 @inject PublishViewModel PubVm
 @inject Microsoft.JSInterop.IJSRuntime JS
+@inject PromptFlowStudio.Services.AI.PlutoVideoLearningMemoryService PlutoLearn
 @inject PromptFlowStudio.Services.Export.StockSuiteExporter StockSuite
 @inject PromptFlowStudio.Services.Export.StockSuitePlaylistService Playlist
 @inject PromptFlowStudio.Services.Export.AssetBundleService Bundles
@@ -52,6 +53,7 @@
             <input class="gl-search" value="@Vm.SearchQuery" @oninput="OnArchiveSearch" placeholder="🔎 프롬프트(영/한)·티커·파일명 검색…" />
             <button class="gl-btn ghost" @onclick="RefreshArchive" title="아카이브 새로고침">⟳</button>
             <button class="gl-btn bad" @onclick="DeleteMockAll" disabled="@(Vm.MockCount == 0)" title="🧪 Mock 태그 영상 + 메타데이터를 디스크에서 영구 삭제">🧹 더미/Mock 파일 일괄 삭제 (@(Vm.MockCount))</button>
+            <button class="gl-btn bad" @onclick="PlanCleanup" disabled="@(Vm.IsCleanupBusy || Vm.PendingCleanup is not null)" data-gallery-cleanup="1" title="내용이 같은 중복 영상 · 0바이트/깨진 렌더 · 미디어 없는 고아 메타/포스터를 찾아 확인 후 정리(즐겨찾기·내보냄·학습 등록은 항상 보존)">@(Vm.IsCleanupBusy ? "⏳ 정리 중…" : "🗑️ 중복/실패 파일 일괄 정리")</button>
             <button class="gl-btn @(Vm.IsSelectModeActive ? "up" : "ghost")" @onclick="Vm.ToggleSelectMode" aria-pressed="@(Vm.IsSelectModeActive ? "true" : "false")" title="카드 체크박스로 골라 번들 내보내기 · 일괄 삭제">☑️ Select Mode</button>
             @if (Vm.IsSelectModeActive)
             {
@@ -113,6 +115,15 @@
                 <button class="gl-btn ghost" @onclick="() => _confirmBulk = null">취소</button>
             </div>
         }
+        @if (Vm.PendingCleanup is { Count: > 0 } plan)
+        {
+            var cs = GalleryViewModel.Summarize(plan);
+            <div class="ga-confirm" data-gallery-cleanup-confirm="1">
+                <span>⚠ 중복 @(cs.Duplicates.ToString(CultureInfo.InvariantCulture))개 · 깨진/빈 렌더 @(cs.Broken.ToString(CultureInfo.InvariantCulture))개 · 고아 메타/포스터 @(cs.Orphans.ToString(CultureInfo.InvariantCulture))개 (@MediaLibraryService.FormatBytes(cs.Bytes))를 영구 삭제할까요? 중복은 원본 1개를 남깁니다.</span>
+                <button class="gl-btn bad" disabled="@Vm.IsCleanupBusy" @onclick="ExecuteCleanup">정리</button>
+                <button class="gl-btn ghost" disabled="@Vm.IsCleanupBusy" @onclick="CancelCleanup">취소</button>
+            </div>
+        }
         <div class="ga-body">
             <div class="ga-grid">
                 @foreach (var g in Vm.MediaItems)
@@ -120,7 +131,7 @@
                     <div class="ga-card @(ReferenceEquals(g, Vm.SelectedItem) ? "sel" : null)" @key="g.ItemId" @onclick="() => Vm.SelectMedia(g)">
                         <div class="ga-thumb" @onmouseenter="() => HoverOn(g)" @onmouseleave="() => HoverOff(g)">
                             @* 초경량 Hover-to-Play — 기본은 정적 포스터(VRAM 0) · 호버 시에만 <video> 마운트(2초 무음 루프) · 이탈 시 언마운트 *@
-                            @if (g.IsVideo && !g.IsSample && _hoverId == g.ItemId)
+                            @if (g.IsVideo && !g.IsSample && _hoverId == g.ItemId && _releaseId != g.ItemId)
                             {
                                 <video src="@Media.ToPlaybackUrl(g.FilePath)" autoplay muted loop playsinline preload="auto"
                                        ontimeupdate="if(this.currentTime>=2)this.currentTime=0"></video>
@@ -171,7 +182,33 @@
                             }
                         </div>
                         <div class="ga-t" title="@g.Title">@g.Title</div>
-                        <div class="ga-d">@g.CreatedAt.ToString("MM-dd HH:mm", CultureInfo.InvariantCulture)</div>
+                        <div class="ga-d">
+                            <span>@g.CreatedAt.ToString("MM-dd HH:mm", CultureInfo.InvariantCulture)</span>
+                            @if (!g.IsSample && !g.IsStill)
+                            {
+                                @if (g.IsRefinedPrompt)
+                                {
+                                    <span class="ga-mb ref" data-gallery-prompt="refined" title="@("🛡️ AI 보정본으로 렌더됨 · 원문: " + g.RawPrompt)">🛡️ 보정</span>
+                                }
+                                else if (g.Prompt.Length > 0)
+                                {
+                                    <span class="ga-mb" data-gallery-prompt="raw" title="원문 프롬프트 그대로 렌더">원문</span>
+                                }
+                                @if (PromptFlowStudio.Services.Gallery.GalleryMediaService.ModelBadge(g) is { } mdl)
+                                {
+                                    <span class="ga-mb" title="모델/엔진">@mdl</span>
+                                }
+                                @if (PromptFlowStudio.Services.Gallery.GalleryMediaService.QcBadge(g.QcStatus) is { } qcb)
+                                {
+                                    <span class="ga-mb @(g.QcStatus == GalleryQcStatus.Degraded ? "warn" : "ok")" data-gallery-qc="@g.QcStatus" title="@g.QcDiagnosis">@qcb</span>
+                                }
+                                @if (g.IsVideo && !g.IsMock)
+                                {
+                                    <button class="ga-learn @(g.IsLearned ? "on" : null)" data-gallery-learn="1" disabled="@g.IsLearned" @onclick="() => LearnItem(g)" @onclick:stopPropagation="true"
+                                            title="@(g.IsLearned ? "이미 Pluto 학습 등록됨" : "👍 잘 나온 클립 — Pluto 성공 레시피로 학습 등록")">@(g.IsLearned ? "🧠" : "👍")</button>
+                                }
+                            }
+                        </div>
                     </div>
                 }
                 @if (Vm.MediaItems.Count == 0)
@@ -183,7 +220,7 @@
                 @if (Vm.SelectedItem is { } si)
                 {
                     <div class="ga-prev">
-                        @if (si.IsVideo && !si.IsSample)
+                        @if (si.IsVideo && !si.IsSample && _releaseId != si.ItemId)
                         {
                             <video src="@Media.ToPlaybackUrl(si.FilePath)" controls loop muted></video>
                         }
@@ -204,7 +241,18 @@
                         <span>시드</span><b>@si.Seed.ToString(CultureInfo.InvariantCulture)</b>
                         <span>해상도</span><b>@si.Resolution</b>
                         <span>렌더 시간</span><b>@(si.RenderDurationSec.ToString("0.0", CultureInfo.InvariantCulture))초</b>
+                        @if (!si.IsSample && !si.IsStill)
+                        {
+                            <span>프롬프트</span><b>@(si.IsRefinedPrompt ? "🛡️ AI 보정본" : "원문")</b>
+                            <span>모델</span><b>@(PromptFlowStudio.Services.Gallery.GalleryMediaService.ModelBadge(si) ?? "—")</b>
+                            <span>QC</span><b title="@si.QcDiagnosis">@(PromptFlowStudio.Services.Gallery.GalleryMediaService.QcBadge(si.QcStatus) ?? "기록 없음")</b>
+                        }
                     </div>
+                    @if (si.IsRefinedPrompt)
+                    {
+                        <div class="ga-k">보정 전 원문</div>
+                        <textarea class="ga-prompt raw" readonly value="@si.RawPrompt"></textarea>
+                    }
                     <div class="ga-acts">
                         <button class="gl-btn up" @onclick="() => Vm.RestoreToWorkspace(si)">✨ 이 프롬프트로 작업실 복원 →</button>
                         @if (si.IsVideo && !si.IsSample)
@@ -214,6 +262,10 @@
                         @if (si.IsVideo && !si.IsSample)
                         {
                             <button class="gl-btn up" @onclick="() => ExportStock(si)" disabled="@_stockBusy" title="StockSuite 에셋 폴더에 즉시 덮어쓰기">💼 StockSuite</button>
+                        }
+                        @if (si.IsVideo && !si.IsSample && !si.IsMock)
+                        {
+                            <button class="gl-btn up" disabled="@si.IsLearned" data-gallery-learn="1" @onclick="() => LearnItem(si)" title="잘 나온 클립을 Pluto 성공 레시피로 학습 등록">@(si.IsLearned ? "🧠 학습 등록됨" : "👍 학습 등록")</button>
                         }
                         <button class="gl-btn bad" @onclick="() => DeleteArchive(si)">🗑 삭제</button>
                     </div>
@@ -538,7 +590,14 @@
     .ga-badge.dur { top: auto; bottom: 6px; background: rgba(0,0,0,.72); }
     .ga-badge.smp { left: auto; right: 6px; background: color-mix(in srgb, var(--flow-violet) 70%, #000); }
     .ga-t { font-size: 12px; font-weight: 700; color: var(--text-primary); padding: 6px 8px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .ga-d { font: 600 10px var(--mono); color: var(--text-muted); padding: 2px 8px 7px; }
+    .ga-d { font: 600 10px var(--mono); color: var(--text-muted); padding: 2px 8px 6px; display: flex; flex-wrap: wrap; align-items: center; gap: 3px 4px; }
+    .ga-mb { font: 700 9.5px var(--mono); border-radius: 999px; padding: 1px 6px; border: 1px solid var(--line); color: var(--text-secondary); white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+    .ga-mb.ref { color: #a78bfa; border-color: color-mix(in srgb, #a78bfa 45%, var(--line)); }
+    .ga-mb.ok { color: #10b981; border-color: color-mix(in srgb, #10b981 45%, var(--line)); }
+    .ga-mb.warn { color: #f59e0b; border-color: color-mix(in srgb, #f59e0b 50%, var(--line)); }
+    .ga-learn { margin-left: auto; border: 1px solid var(--line); background: var(--card); border-radius: 7px; padding: 0 5px; font-size: 11px; line-height: 18px; cursor: pointer; }
+    .ga-learn.on, .ga-learn:disabled { cursor: default; opacity: .7; }
+    .ga-prompt.raw { opacity: .75; min-height: 48px; }
     .ga-insp { border: 1px solid var(--line); border-radius: 12px; background: var(--card-2); padding: 12px; display: flex; flex-direction: column; gap: 8px; }
     .ga-prev { background: #000; border-radius: 8px; overflow: hidden; display: grid; place-items: center; max-height: 260px; }
     .ga-prev img, .ga-prev video { max-width: 100%; max-height: 260px; display: block; }
@@ -669,10 +728,41 @@
         Vm.ApplyFilter();
     }
 
-    private void DeleteArchive(GalleryItem g)
+    // 🔓 삭제 전 <video> 언마운트 — WebView2 재생 핸들이 남아 있으면 Windows 공유 위반으로 삭제 실패
+    private Guid? _releaseId;
+    public const int VideoHandleReleaseDelayMs = 150;
+
+    private async Task DeleteArchive(GalleryItem g)
     {
-        if (Vm.Delete(g)) Refresh();   // 파일 삭제 → 하단 MP4 그리드 동기화
+        if (g.IsVideo && !g.IsSample)
+        {
+            _releaseId = g.ItemId;
+            if (_hoverId == g.ItemId) { Vm.EndHoverPreview(g.ItemId); _hoverId = null; }
+            StateHasChanged();
+            await Task.Delay(VideoHandleReleaseDelayMs);
+        }
+        try { if (Vm.Delete(g)) Refresh(); }   // 파일 삭제 → 하단 MP4 그리드 동기화
+        finally { _releaseId = null; }
     }
+
+    // ── 👍 Pluto 학습 등록 · 🗑️ 중복/실패 파일 일괄 정리 ──
+    private void LearnItem(GalleryItem g) => Vm.LearnFromItem(g, PlutoLearn);
+
+    private async Task PlanCleanup()
+    {
+        _releaseId = Vm.SelectedItem?.ItemId;   // 인스펙터 재생 핸들 선해제(중복 후보일 수 있음)
+        _hoverId = null;
+        await Vm.PlanCleanupAsync(Media.MediaRoot);
+    }
+
+    private async Task ExecuteCleanup()
+    {
+        await Task.Delay(VideoHandleReleaseDelayMs);
+        try { if (await Vm.ExecutePendingCleanupAsync() is { Deleted: > 0 }) await InvokeAsync(Refresh); }
+        finally { _releaseId = null; }
+    }
+
+    private void CancelCleanup() { Vm.CancelPendingCleanup(); _releaseId = null; }
 
     private void CopyPrompt(GalleryItem g) => Clipboard.SetText(g.Prompt);
 
@@ -943,11 +1033,16 @@
         _freeBytes = Library.FreeSpaceBytes();
     }
 
-    private void Confirm(MediaItem m)
+    private async Task Confirm(MediaItem m)
     {
-        Library.Delete(m.Path);
         _pendingDelete = null;
-        if (_modal?.Path == m.Path) _modal = null;
+        if (_modal?.Path == m.Path)
+        {
+            _modal = null;   // 🔓 재생 중인 모달 <video> 를 먼저 언마운트해야 파일 핸들이 풀림
+            StateHasChanged();
+            await Task.Delay(VideoHandleReleaseDelayMs);
+        }
+        Library.Delete(m.Path);
         Refresh();
     }
 

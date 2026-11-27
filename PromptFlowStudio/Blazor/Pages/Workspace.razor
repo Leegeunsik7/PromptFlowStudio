@@ -6520,6 +6520,8 @@
         if (antiArtifact) negative = PromptFlowStudio.Services.AI.PromptPreflightDirector.MergeNegative(negative, out _);   // 🛡️ 안티 아티팩트 네거티브(중복 없이)
         if (!string.IsNullOrWhiteSpace(negative))   // ☁️ Cloud 요청에 네거티브 프롬프트 전달
             meta = PromptFlowStudio.Services.Render.MultiDurationPlanner.WithMeta(meta, PromptFlowStudio.Services.Render.VideoEngineRenderExecutionEngine.MetaNegativePrompt, negative);
+        if (antiArtifact && _learnRawPrompt is { Length: > 0 } rawForGallery)   // 🛡️ 갤러리 '보정본/원문' 표시 · 👍 학습 등록 기준 원문
+            meta = PromptFlowStudio.Services.Render.MultiDurationPlanner.WithMeta(meta, PromptFlowStudio.Services.Gallery.GalleryMediaService.MetaKeyRawPrompt, rawForGallery);
         var template = new PromptFlowStudio.Services.Batch.BatchRenderJob
         {
             Prompt = prompt,

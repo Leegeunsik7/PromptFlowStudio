@@ -37,7 +37,7 @@
         <div class="q-hud-c eng"><span class="q-hud-l">실행 엔진</span><span class="q-eng @EngineCls(Vm.ActiveEngineKind)">@(Vm.ActiveEngineKind ?? "대기")</span></div>
         <div class="q-hud-a">
             <button class="q-btn ghost" @onclick="Vm.TogglePause">@(Vm.IsPaused ? "▶ 큐 재개" : "⏸ 큐 일시정지")</button>
-            <button class="q-btn ghost" disabled="@(Vm.CompletedCount == 0)" @onclick="Vm.ClearCompleted">🧹 완료 항목 정리</button>
+            <button class="q-btn ghost" disabled="@(Vm.FinishedCount == 0)" data-queue-clear-finished="1" title="완료·실패·취소 항목을 큐 목록에서만 제거합니다(내보낸 영상·메타 파일은 그대로 보존)" @onclick="ClearFinished">🧹 완료/실패 항목 정리</button>
             <button class="q-btn ghost" disabled="@_cleaning" title="합본 목록·믹싱 중간본·TTS 임시 음성 등 완료된 중간 조각 삭제(완성 영상 보존)" @onclick="CleanCacheAsync">🧹 임시 렌더 캐시 비우기</button>
         </div>
     </section>
@@ -78,7 +78,7 @@
                             <td class="q-mono">@job.Resolution</td>
                             <td class="q-mono">@(job.DurationSec.ToString("0.#", CultureInfo.InvariantCulture))s</td>
                             <td>@if (job.EngineKind is { } ek) { <span class="q-eng @EngineCls(ek)">@ek</span> } else { <span class="q-dim">—</span> }</td>
-                            <td><span class="q-st @JobCls(job.Status)" tabindex="@(job.Status == BatchJobStatus.Failed && !string.IsNullOrEmpty(job.ErrorMessage) ? "0" : null)" aria-label="@(job.Status == BatchJobStatus.Failed && !string.IsNullOrEmpty(job.ErrorMessage) ? job.ErrorMessage : null)" data-tip="@(job.Status == BatchJobStatus.Failed && !string.IsNullOrEmpty(job.ErrorMessage) ? job.ErrorMessage : null)">@JobLabel(job.Status)@(job.Status == BatchJobStatus.Failed && !string.IsNullOrEmpty(job.ErrorMessage) ? " ⓘ" : "")</span>@if (job.IsQuarantined && job.Status == BatchJobStatus.Failed) { <span class="q-st fail" title="🧯 결함 격리 — 나머지 큐는 계속 진행">🧯 격리 · @(job.QuarantineReason)</span> }@if (PromptFlowStudio.Services.Render.VideoEngineRenderExecutionEngine.CheckpointNoticeOf(job) is { } ckpt) { <span class="q-badge sm ckpt" data-checkpoint-reuse="1" title="@ckpt">@(PromptFlowStudio.Services.Render.VideoEngineRenderExecutionEngine.CheckpointBadgeLabel)</span><span class="q-ckpt-note">@ckpt</span> }</td>
+                            <td><span class="q-st @JobCls(job.Status)" tabindex="@(job.Status == BatchJobStatus.Failed && !string.IsNullOrEmpty(job.ErrorMessage) ? "0" : null)" aria-label="@(job.Status == BatchJobStatus.Failed && !string.IsNullOrEmpty(job.ErrorMessage) ? job.ErrorMessage : null)" data-tip="@(job.Status == BatchJobStatus.Failed && !string.IsNullOrEmpty(job.ErrorMessage) ? job.ErrorMessage : null)">@JobLabel(job.Status)@(job.Status == BatchJobStatus.Failed && !string.IsNullOrEmpty(job.ErrorMessage) ? " ⓘ" : "")</span>@if (job.IsQuarantined && job.Status == BatchJobStatus.Failed) { <span class="q-st fail" title="🧯 결함 격리 — 나머지 큐는 계속 진행">🧯 격리 · @(job.QuarantineReason)</span> }@if (PromptFlowStudio.ViewModels.RenderQueueViewModel.IsQcWarned(job) && job.Status == BatchJobStatus.Completed) { <span class="q-st warn" data-queue-qc-warn="1" title="@job.ErrorMessage">⚠ QC 경고</span> }@if (PromptFlowStudio.Services.Render.VideoEngineRenderExecutionEngine.CheckpointNoticeOf(job) is { } ckpt) { <span class="q-badge sm ckpt" data-checkpoint-reuse="1" title="@ckpt">@(PromptFlowStudio.Services.Render.VideoEngineRenderExecutionEngine.CheckpointBadgeLabel)</span><span class="q-ckpt-note">@ckpt</span> }</td>
                             <td>
                                 <div class="q-scene-bar"><div class="q-scene-bar-f" style="width:@(job.ProgressPercent.ToString(CultureInfo.InvariantCulture))%"></div></div>
                                 <span class="q-mono q-pct">@(job.ProgressPercent.ToString(CultureInfo.InvariantCulture))%</span>
@@ -96,9 +96,13 @@
                                 }
                                 else if (job.Status is BatchJobStatus.Failed or BatchJobStatus.Cancelled)
                                 {
-                                    <button class="q-ic" title="재시도(오류 초기화 후 재큐잉)" @onclick="() => Vm.Retry(job.JobId)">↺</button>
+                                    <button class="q-ic" title="재시도(같은 시드 · 오류 초기화 후 재큐잉)" @onclick="() => Vm.Retry(job.JobId)">↺</button>
                                 }
-                                else if (PromptFlowStudio.ViewModels.RenderQueueViewModel.GalleryLinkFor(job) is { } link)
+                                @if (PromptFlowStudio.ViewModels.RenderQueueViewModel.CanRetryFresh(job))
+                                {
+                                    <button class="q-ic fresh" data-queue-retry-fresh="1" title="🎲 새 시드 + 안정화 프롬프트로 1클릭 재시도" @onclick="() => Vm.RetryFresh(job.JobId)">🎲</button>
+                                }
+                                @if (PromptFlowStudio.ViewModels.RenderQueueViewModel.GalleryLinkFor(job) is { } link)
                                 {
                                     <button class="q-ic" title="📂 갤러리에서 보기" @onclick="() => Nav.NavigateTo(link)">📂</button>
                                 }
@@ -238,7 +242,10 @@
     .q-tbl th { text-align: left; font: 700 10.5px var(--mono); color: var(--text-muted); padding: 6px 8px; border-bottom: 1px solid var(--line); }
     .q-tbl td { padding: 7px 8px; border-bottom: 1px solid var(--line); color: var(--text-secondary); vertical-align: middle; }
     .q-tbl-p { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .q-tbl-a { width: 36px; text-align: center; }
+    .q-tbl-a { width: 36px; text-align: center; white-space: nowrap; }
+    .q-tbl-a .q-ic + .q-ic { margin-left: 3px; }
+    .q-ic.fresh { color: #a78bfa; border-color: color-mix(in srgb, #a78bfa 45%, var(--line)); }
+    .q-st.warn { color: #f59e0b; border-color: color-mix(in srgb, #f59e0b 50%, var(--line)); margin-left: 4px; }
     .q-hud-c.eng { justify-content: space-between; }
     .q-eng { font: 800 10.5px var(--mono); border-radius: 999px; padding: 3px 9px; border: 1px solid var(--line); color: var(--text-muted); white-space: nowrap; align-self: flex-start; }
     .q-eng.comfy { color: #10b981; border-color: color-mix(in srgb, #10b981 55%, var(--line)); background: color-mix(in srgb, #10b981 12%, transparent); }
@@ -321,6 +328,13 @@
         }
         catch (Exception ex) { Program.Log("RenderQueue.CleanCache", ex); _cacheMessage = "임시 캐시 정리 실패"; }
         finally { _cleaning = false; _extDirty = true; }
+    }
+    private void ClearFinished()
+    {
+        var n = Vm.ClearFinished();
+        _cacheMessage = n == 0 ? "정리할 완료/실패 항목이 없습니다(합본 대기 중인 그룹은 보존)."
+            : "🧹 큐 항목 " + n.ToString(CultureInfo.InvariantCulture) + "건 정리 — 내보낸 영상 파일은 그대로 보존됩니다.";
+        _extDirty = true;
     }
     private void OnCh() => InvokeAsync(StateHasChanged);
     private void OnExt() { _extDirty = true; InvokeAsync(StateHasChanged); }
